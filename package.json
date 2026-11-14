@@ -1,0 +1,16 @@
+{
+  "name": "htmlplppt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Research project: combining HTML animations with PowerPoint/WPS",
+  "scripts": {
+    "preflight": "bash scripts/preflight.sh",
+    "setup": "bash scripts/setup.sh",
+    "check-contract": "node scripts/check-contract.mjs",
+    "capture": "node scripts/capture.mjs",
+    "encode": "node scripts/encode.mjs",
+    "compress": "node scripts/compress-clips.mjs",
+    "verify": "python3 scripts/verify.py"
+  }
+}

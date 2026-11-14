@@ -1,0 +1,29 @@
+# Generated artifacts
+out/
+dist/
+*.pptx
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Logs and runtime flags
+*.log
+watch-log.txt
+bring-log.txt
+cover-log.txt
+launch-log.txt
+watcher.lock
+edge-closed.flag
+cover-*.flag
+agent-*.flag
+return-request.flag
+
+# Node
+node_modules/
+
+# Windows
+~$*.pptx
+*.pptx:WPSSyncID

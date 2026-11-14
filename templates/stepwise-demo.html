@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stepwise Capture Fixture</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #050d0b; color: #f0ecdf; font-family: "Microsoft YaHei", "DengXian", sans-serif; }
+  .stage { position: relative; width: 100vw; height: 100vh; display: grid; place-items: center; }
+  .card {
+    width: 38vw; height: 52vh; border-radius: 24px;
+    background: linear-gradient(145deg, #0b1d17, #12352b);
+    border: 1px solid rgba(120, 203, 180, .35);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .55), 0 0 60px rgba(120, 203, 180, .12);
+    display: grid; place-content: center; gap: 1.2vh; text-align: center;
+    will-change: transform, opacity;
+  }
+  .title { font-size: 6vh; letter-spacing: .08em; }
+  .sub { font-size: 2.4vh; color: #9db3a7; }
+  .hud { position: fixed; left: 24px; bottom: 20px; font-size: 14px; color: #6f897c; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="card" id="card">
+    <div class="title" id="title">LYMTRIX / TEF</div>
+    <div class="sub" id="sub">STEPWISE CAPTURE FIXTURE</div>
+  </div>
+</div>
+<div class="hud" id="hud">step 0 / 2</div>
+<script>
+(function () {
+  const card = document.getElementById('card');
+  const title = document.getElementById('title');
+  const hud = document.getElementById('hud');
+  const steps = [
+    { duration: 800, from: { x: -520, y: 0, rot: -6, opacity: 0.25, scale: 0.92 }, to: { x: 0, y: 0, rot: 0, opacity: 1, scale: 1 } },
+    { duration: 800, from: { x: 0, y: 0, rot: 0, opacity: 1, scale: 1 }, to: { x: 420, y: -40, rot: 8, opacity: 1, scale: 1.04 } }
+  ];
+  const capture = new URLSearchParams(location.search).get('capture') === '1';
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  function apply(stepIndex, s, p) {
+    const e = ease(Math.min(1, Math.max(0, p)));
+    const x = lerp(s.from.x, s.to.x, e);
+    const y = lerp(s.from.y, s.to.y, e);
+    const rot = lerp(s.from.rot, s.to.rot, e);
+    const op = lerp(s.from.opacity, s.to.opacity, e);
+    const sc = lerp(s.from.scale, s.to.scale, e);
+    card.style.transform = `translate(${x}px, ${y}px) rotate(${rot}deg) scale(${sc})`;
+    card.style.opacity = String(op);
+    title.textContent = stepIndex === 1 && p > 0.05 ? 'LYMTRIX / TEF · STEP 2' : 'LYMTRIX / TEF';
+    hud.textContent = `step ${stepIndex} / ${steps.length}`;
+  }
+
+  function seek(step, tMs) {
+    const index = Math.max(0, Math.min(steps.length - 1, step));
+    const s = steps[index];
+    const p = Math.min(1, Math.max(0, tMs / s.duration));
+    apply(index, s, p);
+  }
+
+  window.__tefSteps = { total: steps.length, durations: steps.map((s) => s.duration), seek };
+  seek(0, 0);
+
+  if (capture) {
+    hud.style.display = 'none';
+  } else {
+    let current = 0;
+    addEventListener('keydown', (event) => {
+      if (event.code !== 'Space') return;
+      event.preventDefault();
+      current = Math.min(steps.length - 1, current + 1);
+      seek(current, steps[current].duration);
+    });
+  }
+})();
+</script>
+</body>
+</html>

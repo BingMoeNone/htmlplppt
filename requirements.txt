@@ -1,0 +1,4 @@
+# Python dependencies for mode A assembly/verification.
+# python-pptx is already vendored under vendor/; keep this for reproducibility.
+python-pptx==1.0.2
+Pillow>=10

@@ -1,0 +1,14 @@
+{
+  "source_html": "page.html",
+  "output_dir": "out",
+  "width": 1920,
+  "height": 1080,
+  "fps": 60,
+  "crf": 14,
+  "first_step_auto": true,
+  "deck": {
+    "source": "deck.pptx",
+    "insert_after_slide": 1,
+    "animated_output": "deck-animated.pptx"
+  }
+}
