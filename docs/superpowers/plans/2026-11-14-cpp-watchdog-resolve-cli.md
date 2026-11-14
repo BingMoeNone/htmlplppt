@@ -2563,3 +2563,72 @@ Deferred to later plans: WPS COM `DeckInfoProvider`, staging copy execution, `--
 ## Execution Handoff
 
 Plan 2B is ready. Execute Tasks 1-4 in order. Each task ends with a green full suite and a commit. Task 4 records the final gate and any as-built deviations.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 2B was executed and the final gate was re-run on 2026-11-15. This section
+records the observed results, the deviations approved during execution, and the
+items explicitly deferred to later plans.
+
+### Final gate results
+
+- `cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON`:
+  configure and generate succeeded.
+- `cmake --build native/build --parallel --clean-first`: exit 0 with `-Werror`
+  and `-Wall -Wextra -Wpedantic`; no warnings were emitted.
+- `./native/build/htmlppt_core_tests`: 97/97 cases passed, ending with
+  `ALL TESTS PASSED`.
+- `ctest --test-dir native/build --output-on-failure`: 7/7 tests passed
+  (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`,
+  `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`).
+- `npm test`: 2 of 3 tests passed. `stepwise demo satisfies the HTML contract`
+  fails with `Chrome did not start on port 9334` because Chrome is not
+  installed in this WSL environment. This failure predates Plan 2B and is an
+  environment limitation, not a regression; the root test was left unchanged.
+  With Chrome installed the suite remains 3/3.
+
+### Approved deviations
+
+1. Unknown root-level deck-info fields force `DeckInfoResult::info` to
+   `nullopt`. The `has_error` flag is declared before the root key scan and set
+   for unknown root keys, so `info` is only populated for a fully valid
+   document. This matches the slide-level unknown-field behavior and is covered
+   by `deck_info_rejects_unknown_root_field`.
+2. The FNV-1a offset basis is the standard `14695981039346656037ULL`; the plan
+   draft had `1469598103934665603ULL`, one digit short. The prime is unchanged
+   at `1099511628211ULL`.
+3. Query conflicts are cross-source only: a key repeated within one source
+   keeps every occurrence, while a key whose value differs between the HTML
+   query and `htmlQuery` is an error. Covered by
+   `resolve_html_query_duplicate_keys_allowed` and `resolve_html_query_conflict`.
+4. `cli_validate_missing_html` uses the `cmake -P` wrapper
+   `native/tests/cmake/expect_validation_failure.cmake` instead of `WILL_FAIL`
+   plus `PASS_REGULAR_EXPRESSION`, because CTest on CMake 4.x inverts the
+   regular-expression check under `WILL_FAIL`. The wrapper asserts both the
+   exact exit code 1 and the expected diagnostic text.
+5. The fixture `native/tests/fixtures/deck.pptx` is intentionally tracked
+   despite the repository-wide `*.pptx` rule; the `.gitignore` negation
+   `!native/tests/fixtures/deck.pptx` keeps it in the index. The fixture is a
+   small valid deck used only for fingerprint and resolution tests.
+
+### Deferred items
+
+Explicitly deferred to later plans:
+
+- The WPS COM `DeckInfoProvider` for Windows/WPS hosts; Plan 2B ships only the
+  JSON provider and `--deck-info`.
+- Staging copy execution: Plan 2B resolves and reports targets, but performs no
+  staging copy.
+- `--watch-config` hot reload and `--init-config`.
+- The config UI, including a `ConfigToJson` representation that preserves
+  profile structure.
+- Source-priority-based target conflict overrides; `--allow-override` is not
+  implemented.
+- Windows reserved-name, path-case, and UTF-8 hardening of generated names.
+- Owner-table error ordering when several conflicts are reported at once.
+- CLI include hygiene and deduplication of the CLI pipeline helpers.
+- Exit-code assertions for the remaining CTest success cases (`cli_version`,
+  `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`), which
+  currently rely on `PASS_REGULAR_EXPRESSION` alone.
