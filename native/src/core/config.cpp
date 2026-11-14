@@ -1,10 +1,10 @@
 #include "core/config.h"
 
-#include <algorithm>
-#include <cctype>
+#include <charconv>
 #include <fstream>
+#include <limits>
 #include <sstream>
-#include <stdexcept>
+#include <system_error>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -40,6 +40,13 @@ void AddError(std::vector<ConfigIssue>& issues, std::string path, std::string me
 void AddWarning(std::vector<ConfigIssue>& issues, std::string path,
                 std::string message) {
   AddIssue(issues, IssueSeverity::Warning, std::move(path), std::move(message));
+}
+
+bool HasErrorIssue(const std::vector<ConfigIssue>& issues) {
+  for (const auto& issue : issues) {
+    if (issue.severity == IssueSeverity::Error) return true;
+  }
+  return false;
 }
 
 std::string FieldPath(const std::string& parent, const std::string& key) {
@@ -83,16 +90,41 @@ std::optional<std::string> ReadString(const json& object, const char* key,
   return it->get<std::string>();
 }
 
+std::optional<std::int64_t> ReadInt64Value(const json& value, const std::string& path,
+                                           std::vector<ConfigIssue>& issues) {
+  if (!value.is_number_integer()) {
+    AddError(issues, path, "must be an integer");
+    return std::nullopt;
+  }
+  if (value.is_number_unsigned()) {
+    const auto number = value.get<std::uint64_t>();
+    if (number > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+      AddError(issues, path, "integer is out of int64 range");
+      return std::nullopt;
+    }
+    return static_cast<std::int64_t>(number);
+  }
+  return value.get<std::int64_t>();
+}
+
+std::optional<int> ReadIntValue(const json& value, const std::string& path,
+                                std::vector<ConfigIssue>& issues) {
+  const auto number = ReadInt64Value(value, path, issues);
+  if (!number.has_value()) return std::nullopt;
+  if (*number < std::numeric_limits<int>::min() ||
+      *number > std::numeric_limits<int>::max()) {
+    AddError(issues, path, "integer is out of 32-bit range");
+    return std::nullopt;
+  }
+  return static_cast<int>(*number);
+}
+
 std::optional<int> ReadInt(const json& object, const char* key,
                            const std::string& path,
                            std::vector<ConfigIssue>& issues) {
   const auto it = object.find(key);
   if (it == object.end()) return std::nullopt;
-  if (!it->is_number_integer()) {
-    AddError(issues, FieldPath(path, key), "must be an integer");
-    return std::nullopt;
-  }
-  return it->get<int>();
+  return ReadIntValue(*it, FieldPath(path, key), issues);
 }
 
 std::optional<std::int64_t> ReadInt64(const json& object, const char* key,
@@ -100,11 +132,7 @@ std::optional<std::int64_t> ReadInt64(const json& object, const char* key,
                                       std::vector<ConfigIssue>& issues) {
   const auto it = object.find(key);
   if (it == object.end()) return std::nullopt;
-  if (!it->is_number_integer()) {
-    AddError(issues, FieldPath(path, key), "must be an integer");
-    return std::nullopt;
-  }
-  return it->get<std::int64_t>();
+  return ReadInt64Value(*it, FieldPath(path, key), issues);
 }
 
 std::optional<bool> ReadBool(const json& object, const char* key,
@@ -152,11 +180,9 @@ std::vector<int> ReadIntArray(const json& object, const char* key,
   }
   for (std::size_t i = 0; i < it->size(); ++i) {
     const auto& item = (*it)[i];
-    if (!item.is_number_integer()) {
-      AddError(issues, IndexPath(FieldPath(path, key), i), "must be an integer");
-      continue;
+    if (auto number = ReadIntValue(item, IndexPath(FieldPath(path, key), i), issues)) {
+      values.push_back(*number);
     }
-    values.push_back(item.get<int>());
   }
   return values;
 }
@@ -205,15 +231,45 @@ DisplayConfig ParseDisplay(const json& value, const std::string& path,
     return result;
   }
   CheckKnownKeys(value, {"monitor"}, path, issues);
-  if (auto monitor = ReadString(value, "monitor", path, issues)) result.monitor = *monitor;
-  if (!IsOneOf(result.monitor, {"primary", "secondary"})) {
-    try {
-      const int index = std::stoi(result.monitor);
-      if (index < 1) AddError(issues, FieldPath(path, "monitor"), "must be >= 1");
-    } catch (const std::exception&) {
-      AddError(issues, FieldPath(path, "monitor"), "must be primary, secondary, or an index >= 1");
+  const std::string monitor_path = FieldPath(path, "monitor");
+  const auto monitor = value.find("monitor");
+  if (monitor == value.end()) return result;
+  if (monitor->is_number_integer()) {
+    if (monitor->is_number_unsigned()) {
+      const auto index = monitor->get<std::uint64_t>();
+      if (index < 1) {
+        AddError(issues, monitor_path, "must be >= 1");
+      } else {
+        result.monitor = std::to_string(index);
+      }
+    } else {
+      const auto index = monitor->get<std::int64_t>();
+      if (index < 1) {
+        AddError(issues, monitor_path, "must be >= 1");
+      } else {
+        result.monitor = std::to_string(index);
+      }
     }
+    return result;
   }
+  if (!monitor->is_string()) {
+    AddError(issues, monitor_path, "must be a string or an integer");
+    return result;
+  }
+  const std::string text = monitor->get<std::string>();
+  if (IsOneOf(text, {"primary", "secondary"})) {
+    result.monitor = text;
+    return result;
+  }
+  int index = 0;
+  const char* const begin = text.data();
+  const char* const end = begin + text.size();
+  const auto parsed = std::from_chars(begin, end, index);
+  if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != end || index < 1) {
+    AddError(issues, monitor_path, "must be primary, secondary, or an index >= 1");
+    return result;
+  }
+  result.monitor = std::to_string(index);
   return result;
 }
 
@@ -289,13 +345,25 @@ TargetConfig ParseTarget(const json& value, const std::string& path, int priorit
                   "focus", "onFailure", "maxConsecutiveTriggerFailures", "enabled", "tags"},
                  path, issues);
   if (auto slide = ReadInt(value, "slide", path, issues)) target.slide = *slide;
+  if (target.slide.has_value() && *target.slide < 1) {
+    AddError(issues, FieldPath(path, "slide"), "must be >= 1");
+  }
   if (const auto it = value.find("match"); it != value.end()) {
     target.match = ParseMatch(*it, FieldPath(path, "match"), issues);
   }
   if (target.slide.has_value() == target.match.has_value()) {
     AddError(issues, path, "exactly one of slide or match is required");
   }
-  target.html = ReadString(value, "html", path, issues, true).value_or("");
+  if (const auto it = value.find("html"); it == value.end()) {
+    AddError(issues, FieldPath(path, "html"), "required string is missing");
+  } else if (!it->is_string()) {
+    AddError(issues, FieldPath(path, "html"), "must be a string");
+  } else {
+    target.html = it->get<std::string>();
+    if (target.html.empty()) {
+      AddError(issues, FieldPath(path, "html"), "must not be empty");
+    }
+  }
   target.label = ReadString(value, "label", path, issues).value_or("");
   target.edge_profile = ReadString(value, "edgeProfile", path, issues).value_or("");
   target.stage_name = ReadString(value, "stageName", path, issues).value_or("");
@@ -316,7 +384,17 @@ TargetConfig ParseTarget(const json& value, const std::string& path, int priorit
   if (const auto it = value.find("focus"); it != value.end()) {
     target.focus = ParseFocus(*it, FieldPath(path, "focus"), defaults.focus, issues);
   }
-  target.on_failure = ReadString(value, "onFailure", path, issues).value_or(defaults.on_failure);
+  if (const auto it = value.find("onFailure"); it == value.end()) {
+    target.on_failure = defaults.on_failure;
+  } else if (!it->is_string()) {
+    AddError(issues, FieldPath(path, "onFailure"), "must be a string");
+  } else {
+    target.on_failure = it->get<std::string>();
+    if (!IsOneOf(target.on_failure, {"self-heal", "strict", "safe", "legacy"})) {
+      AddError(issues, FieldPath(path, "onFailure"),
+               "must be self-heal, strict, safe, or legacy");
+    }
+  }
   if (auto failures = ReadInt(value, "maxConsecutiveTriggerFailures", path, issues)) {
     target.max_consecutive_trigger_failures = *failures;
   }
@@ -334,13 +412,8 @@ TargetConfig ParseTarget(const json& value, const std::string& path, int priorit
       }
     }
   }
-  if (target.html.empty()) AddError(issues, FieldPath(path, "html"), "must not be empty");
   if (!IsOneOf(target.trigger, {"leave-forward", "arrive"})) {
     AddError(issues, FieldPath(path, "trigger"), "must be leave-forward or arrive");
-  }
-  if (!target.on_failure.empty() &&
-      !IsOneOf(target.on_failure, {"self-heal", "strict", "safe", "legacy"})) {
-    AddError(issues, FieldPath(path, "onFailure"), "must be self-heal, strict, safe, or legacy");
   }
   if (target.max_consecutive_trigger_failures.has_value() &&
       *target.max_consecutive_trigger_failures < 0) {
@@ -643,10 +716,10 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
 
   Config config;
   config.source_path = source_path;
-  if (auto version = ReadInt(root, "version", "", result.issues)) {
-    config.version = *version;
-  } else {
+  if (root.find("version") == root.end()) {
     AddError(result.issues, "version", "required integer is missing");
+  } else if (auto version = ReadInt(root, "version", "", result.issues)) {
+    config.version = *version;
   }
   if (config.version != 1) AddError(result.issues, "version", "only version 1 is supported");
   config.active_profile = ReadString(root, "activeProfile", "", result.issues).value_or("");
@@ -677,7 +750,8 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
     config.legacy = ParseLegacy(*it, "legacy", config.defaults, result.issues);
   }
 
-  std::string selected = overrides.profile.empty() ? config.active_profile : overrides.profile;
+  const std::string selected =
+      overrides.profile.empty() ? config.active_profile : overrides.profile;
   if (config.profiles.empty()) {
     if (!selected.empty()) {
       AddWarning(result.issues, "activeProfile",
@@ -685,29 +759,34 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
     }
     config.active = config.top_level;
   } else {
-    if (selected.empty()) {
-      if (config.profiles.size() == 1) {
-        selected = config.profiles.begin()->first;
-      } else {
-        AddError(result.issues, "activeProfile",
-                 "multiple profiles require --profile or activeProfile");
-      }
-    }
-    if (!selected.empty()) {
-      const auto chosen = config.profiles.find(selected);
-      if (chosen == config.profiles.end()) {
+    const ProfileConfig* chosen = nullptr;
+    std::string chosen_name;
+    if (config.profiles.size() == 1) {
+      // Spec 8.2: a single-profile config ignores --profile.
+      chosen_name = config.profiles.begin()->first;
+      chosen = &config.profiles.begin()->second;
+    } else if (selected.empty()) {
+      AddError(result.issues, "activeProfile",
+               "multiple profiles require --profile or activeProfile");
+    } else {
+      const auto profile = config.profiles.find(selected);
+      if (profile == config.profiles.end()) {
         AddError(result.issues, "activeProfile", "unknown profile: " + selected);
       } else {
-        config.active_profile = selected;
-        config.active = chosen->second;
-        if (config.active.deck.empty()) config.active.deck = config.top_level.deck;
-        if (config.active.state_dir.empty()) {
-          config.active.state_dir = config.top_level.state_dir;
-        }
-        config.active.targets.insert(config.active.targets.end(),
-                                     config.top_level.targets.begin(),
-                                     config.top_level.targets.end());
+        chosen_name = selected;
+        chosen = &profile->second;
       }
+    }
+    if (chosen != nullptr) {
+      config.active_profile = chosen_name;
+      config.active = *chosen;
+      if (config.active.deck.empty()) config.active.deck = config.top_level.deck;
+      if (config.active.state_dir.empty()) {
+        config.active.state_dir = config.top_level.state_dir;
+      }
+      config.active.targets.insert(config.active.targets.end(),
+                                   config.top_level.targets.begin(),
+                                   config.top_level.targets.end());
     }
   }
 
@@ -719,7 +798,9 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
   }
 
   ApplyOverrides(config, overrides, result.issues);
-  result.config = std::move(config);
+  if (!HasErrorIssue(result.issues)) {
+    result.config = std::move(config);
+  }
   return result;
 }
 

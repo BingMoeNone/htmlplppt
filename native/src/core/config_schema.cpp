@@ -44,7 +44,14 @@ std::string_view ConfigSchema() {
     },
     "display": {
       "type": "object",
-      "properties": { "monitor": { "type": "string", "minLength": 1 } },
+      "properties": {
+        "monitor": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      },
       "additionalProperties": false
     },
     "focus": {

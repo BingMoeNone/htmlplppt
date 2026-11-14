@@ -50,3 +50,18 @@ HTMLPPT_TEST_CASE(config_schema_rejects_unknown_top_level_fields) {
     }
   }
 }
+
+HTMLPPT_TEST_CASE(config_schema_display_monitor_accepts_integer) {
+  const auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
+  const auto& monitor = schema["$defs"]["display"]["properties"]["monitor"];
+  HTMLPPT_CHECK(monitor.contains("oneOf"));
+  HTMLPPT_CHECK(monitor.at("oneOf").is_array());
+  bool integer_branch = false;
+  for (const auto& branch : monitor.at("oneOf")) {
+    if (branch.contains("type") && branch.at("type") == "integer" &&
+        branch.contains("minimum") && branch.at("minimum") == 1) {
+      integer_branch = true;
+    }
+  }
+  HTMLPPT_CHECK(integer_branch);
+}

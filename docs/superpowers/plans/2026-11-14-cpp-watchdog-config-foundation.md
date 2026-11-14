@@ -55,35 +55,6 @@ native/
 
 `native/CMakeLists.txt` needs no changes: the existing `CONFIGURE_DEPENDS` globs pick up new core sources and tests.
 
-## File Structure
-
-```text
-native/
-  src/
-    core/
-      config.h                 # typed config model + load/serialize API
-      config.cpp               # JSON parsing, legacy/profiles, precedence
-      config_schema.h          # ConfigSchema() declaration
-      config_schema.cpp        # embedded JSON Schema document
-      deck_info.h              # DeckInfo + provider interface
-      deck_info.cpp            # JSON deck-info provider
-      resolve.h                # ResolvedTarget + ResolveTargets
-      resolve.cpp              # index/title resolution, paths, names
-    app/
-      cli_app.h                # CliOptions, ParseCli, RunCli
-      cli_app.cpp              # config commands and output
-      main.cpp                 # argument conversion + RunCli
-  tests/
-    unit/
-      config_test.cpp
-      config_schema_test.cpp
-      deck_info_test.cpp
-      resolve_test.cpp
-      cli_app_test.cpp
-```
-
-`native/CMakeLists.txt` changes only the executable sources plus a Windows-only `shell32` link. The existing `CONFIGURE_DEPENDS` globs pick up new core sources and tests.
-
 ---
 
 ## Task 1: Config types and top-level JSON parsing
@@ -1762,5 +1733,13 @@ Plan 2A was executed on branch `worktree-feat-cpp-watchdog-config-foundation`. T
 
 5. **Final gate**: 47/47 unit cases, CTest 3/3, `npm test` 3/3, `-Werror` clean, working tree clean.
 
-Deferred to Plan 2B/7: parser `slide >= 1` validation, schema/parser key-parity automation, stageName strictness unification, `ConfigToJson` cannot preserve profile structure for the config UI, and source-priority-based target conflict resolution.
+6. **Final review fixes (2026-11-14)**:
+   - `display.monitor` accepts the spec's numeric form as well as strings. A JSON integer >= 1 is normalized to its decimal string (`2` becomes `"2"`); `primary`/`secondary` are preserved; any other string must parse completely with `std::from_chars` and be >= 1, so `"2abc"` is rejected. The embedded schema declares `display.monitor` as `oneOf` integer (minimum 1) or string (minLength 1).
+   - Integer reads no longer narrow silently. `ReadInt64` rejects unsigned values above `INT64_MAX` with `integer is out of int64 range`; `ReadInt` builds on it and rejects values outside `INT_MIN..INT_MAX` with `integer is out of 32-bit range`; legacy `targetSlides` items use the same 32-bit check. `version` reports `required integer is missing` only when the key is absent, and a missing `html` produces one `required string is missing` error rather than also reporting emptiness.
+   - Error results no longer carry a usable `Config`. `LoadConfigFromString` sets `result.config` only when no Error issue was recorded; warnings alone still yield a config, and `available_profiles` stays populated.
+   - A single-profile config ignores `--profile` per spec 8.2: the sole profile is selected regardless of `activeProfile` or the CLI override, and `active_profile` is set to the sole profile name. Multiple profiles keep the CLI/`activeProfile` selection and the unknown-profile error.
+   - A target-level `onFailure` present but empty is rejected with the enum error; only an absent key inherits `defaults.onFailure`.
+   - A modern target `slide` below 1 is rejected with `must be >= 1`.
+
+Deferred to Plan 2B/7: schema/parser key-parity automation, stageName strictness unification, `ConfigToJson` cannot preserve profile structure for the config UI, and source-priority-based target conflict resolution.
 

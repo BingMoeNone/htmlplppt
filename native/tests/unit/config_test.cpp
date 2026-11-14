@@ -23,6 +23,29 @@ bool HasError(const ConfigLoadResult& result) {
   return false;
 }
 
+bool HasIssueAt(const ConfigLoadResult& result, std::string_view path) {
+  for (const auto& issue : result.issues) {
+    if (issue.path == path) return true;
+  }
+  return false;
+}
+
+bool HasIssueAtWithMessage(const ConfigLoadResult& result, std::string_view path,
+                           std::string_view message) {
+  for (const auto& issue : result.issues) {
+    if (issue.path == path && issue.message == message) return true;
+  }
+  return false;
+}
+
+std::size_t CountIssuesAt(const ConfigLoadResult& result, std::string_view path) {
+  std::size_t count = 0;
+  for (const auto& issue : result.issues) {
+    if (issue.path == path) ++count;
+  }
+  return count;
+}
+
 } // namespace
 
 HTMLPPT_TEST_CASE(config_parses_minimal) {
@@ -485,4 +508,144 @@ HTMLPPT_TEST_CASE(config_rejects_unknown_profile) {
     if (issue.path == "activeProfile") found = true;
   }
   HTMLPPT_CHECK(found);
+}
+
+HTMLPPT_TEST_CASE(config_accepts_numeric_monitor) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{
+      "slide": 5,
+      "html": "page1.html",
+      "display": { "monitor": 2 }
+    }]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  const auto& target = result.config->active.targets[0];
+  HTMLPPT_CHECK(target.display.has_value());
+  HTMLPPT_CHECK_EQ(target.display->monitor, std::string{"2"});
+}
+
+HTMLPPT_TEST_CASE(config_rejects_partial_numeric_monitor) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{
+      "slide": 5,
+      "html": "page1.html",
+      "display": { "monitor": "2abc" }
+    }]
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(HasIssueAt(result, "targets[0].display.monitor"));
+  HTMLPPT_CHECK(!result.config.has_value());
+}
+
+HTMLPPT_TEST_CASE(config_rejects_out_of_range_integers) {
+  const auto result = Parse(R"({
+    "version": 4294967297,
+    "deck": "deck-live.pptx",
+    "targets": [{
+      "slide": 4294967297,
+      "html": "a.html",
+      "assets": { "maxBytes": 9223372036854775808 }
+    }]
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(!result.config.has_value());
+  HTMLPPT_CHECK(HasIssueAtWithMessage(result, "version", "integer is out of 32-bit range"));
+  HTMLPPT_CHECK(HasIssueAtWithMessage(result, "targets[0].slide",
+                                      "integer is out of 32-bit range"));
+  HTMLPPT_CHECK(HasIssueAtWithMessage(result, "targets[0].assets.maxBytes",
+                                      "integer is out of int64 range"));
+  HTMLPPT_CHECK(!HasIssueAtWithMessage(result, "version", "required integer is missing"));
+}
+
+HTMLPPT_TEST_CASE(config_rejects_zero_slide) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 0, "html": "a.html" }]
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(HasIssueAtWithMessage(result, "targets[0].slide", "must be >= 1"));
+  HTMLPPT_CHECK(!result.config.has_value());
+}
+
+HTMLPPT_TEST_CASE(config_error_result_has_no_config) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "profiles": {
+      "a": { "deck": "a.pptx", "targets": [] },
+      "b": { "deck": "b.pptx", "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(!result.config.has_value());
+}
+
+HTMLPPT_TEST_CASE(config_unknown_profile_has_no_config) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "activeProfile": "missing",
+    "profiles": {
+      "a": { "deck": "a.pptx", "targets": [] },
+      "b": { "deck": "b.pptx", "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(!result.config.has_value());
+}
+
+HTMLPPT_TEST_CASE(config_single_profile_ignores_unknown_cli_profile) {
+  htmlppt::CliConfigOverrides overrides;
+  overrides.profile = "other";
+  const auto result = LoadConfigFromString(R"({
+    "version": 1,
+    "profiles": {
+      "only": {
+        "deck": "only.pptx",
+        "targets": [{ "slide": 5, "html": "only.html" }]
+      }
+    }
+  })", std::filesystem::path{"watcher.json"}, overrides);
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK_EQ(result.config->active_profile, std::string{"only"});
+  HTMLPPT_CHECK_EQ(result.config->active.deck, std::string{"only.pptx"});
+  HTMLPPT_CHECK_EQ(result.config->active.targets.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(result.config->active.targets[0].html, std::string{"only.html"});
+}
+
+HTMLPPT_TEST_CASE(config_rejects_empty_on_failure) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 1, "html": "a.html", "onFailure": "" }]
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  HTMLPPT_CHECK(HasIssueAt(result, "targets[0].onFailure"));
+  HTMLPPT_CHECK(!result.config.has_value());
+}
+
+HTMLPPT_TEST_CASE(config_reports_single_html_error) {
+  const auto missing = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 1 }]
+  })");
+  HTMLPPT_CHECK(HasError(missing));
+  HTMLPPT_CHECK_EQ(CountIssuesAt(missing, "targets[0].html"), std::size_t{1});
+  HTMLPPT_CHECK(HasIssueAtWithMessage(missing, "targets[0].html",
+                                      "required string is missing"));
+
+  const auto empty = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 1, "html": "" }]
+  })");
+  HTMLPPT_CHECK(HasError(empty));
+  HTMLPPT_CHECK_EQ(CountIssuesAt(empty, "targets[0].html"), std::size_t{1});
+  HTMLPPT_CHECK(HasIssueAtWithMessage(empty, "targets[0].html", "must not be empty"));
 }
