@@ -1731,7 +1731,7 @@ Plan 2A was executed on branch `worktree-feat-cpp-watchdog-config-foundation`. T
 
 4. **Task 3 follow-up fix**: the root schema declares `additionalProperties: false`, matching the parser's rejection of unknown top-level fields.
 
-5. **Final gate**: 47/47 unit cases, CTest 3/3, `npm test` 3/3, `-Werror` clean, working tree clean.
+5. **Final gate**: 57/57 unit cases, CTest 3/3, `npm test` 3/3, `-Werror` clean, working tree clean.
 
 6. **Final review fixes (2026-11-14)**:
    - `display.monitor` accepts the spec's numeric form as well as strings. A JSON integer >= 1 is normalized to its decimal string (`2` becomes `"2"`); `primary`/`secondary` are preserved; any other string must parse completely with `std::from_chars` and be >= 1, so `"2abc"` is rejected. The embedded schema declares `display.monitor` as `oneOf` integer (minimum 1) or string (minLength 1).
