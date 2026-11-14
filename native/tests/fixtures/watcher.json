@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "deck": "deck.pptx",
+  "targets": [
+    { "slide": 1, "html": "page1.html", "label": "First" },
+    {
+      "match": { "slideTitle": "Second", "mode": "exact" },
+      "html": "page2.html"
+    }
+  ]
+}

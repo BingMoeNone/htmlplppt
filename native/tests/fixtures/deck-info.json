@@ -1,0 +1,6 @@
+{
+  "slides": [
+    { "index": 1, "title": "First", "name": "Slide1" },
+    { "index": 2, "title": "Second", "name": "Slide2" }
+  ]
+}

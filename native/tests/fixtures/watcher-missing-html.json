@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "deck": "deck.pptx",
+  "targets": [
+    { "slide": 1, "html": "missing.html" }
+  ]
+}
