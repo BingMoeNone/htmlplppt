@@ -1739,3 +1739,28 @@ No Plan 2A requirement is orphaned.
 
 Plan 2A is ready. Continue with subagent-driven development: create a fresh worktree, commit this plan, then execute Tasks 1-3 with task-level reviews and a final whole-branch review. Plan 2B (deck-info, resolve, CLI) will be authored after Plan 2A lands.
 
+---
+
+## As-Built Amendments (2026-11-14)
+
+Plan 2A was executed on branch `worktree-feat-cpp-watchdog-config-foundation`. The following approved amendments differ from the Task 1-3 code blocks above and are the source of truth for the implemented config foundation.
+
+1. **Field-path convention**: field paths are root-relative (`targets[0].mystery`, `activeProfile`, `defaults.cover`), not `$`-prefixed. Only JSON parse errors and non-object roots use `$`. Task 1's implementation and the Task 2 code blocks were normalized accordingly.
+
+2. **Task 1 follow-up fixes**:
+   - `ParseEdge` and `ParseAssets` only overwrite `args` / `include` / `exclude` when the key is present, preserving defaults on partial overrides.
+   - CLI `--map` targets inherit `defaults.trigger` and `defaults.on_failure`.
+   - `assets.maxBytes` uses `ReadInt64`; values above `INT_MAX` are preserved.
+
+3. **Task 2 follow-up fixes**:
+   - Legacy targets inherit `defaults.trigger` and `defaults.on_failure`.
+   - `ParseStage` and `ParseProfile` inherit stage fields one by one; profile `mode` and `root` are no longer lost.
+   - `ConfigToJson` is a one-way effective-config snapshot: it expands profiles, drops legacy/raw profiles, omits `activeProfile`, does not serialize `source_priority`, and is not a profile-preserving save path. Reloading the snapshot produces no warnings.
+   - Legacy `targetHtmls` values are validated as ASCII at `legacy.targetHtmls[i]`.
+
+4. **Task 3 follow-up fix**: the root schema declares `additionalProperties: false`, matching the parser's rejection of unknown top-level fields.
+
+5. **Final gate**: 47/47 unit cases, CTest 3/3, `npm test` 3/3, `-Werror` clean, working tree clean.
+
+Deferred to Plan 2B/7: parser `slide >= 1` validation, schema/parser key-parity automation, stageName strictness unification, `ConfigToJson` cannot preserve profile structure for the config UI, and source-priority-based target conflict resolution.
+
