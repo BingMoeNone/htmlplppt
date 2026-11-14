@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 #include "core/journal.h"
 
@@ -101,3 +102,44 @@ HTMLPPT_TEST_CASE(jsonl_journal_skips_type_mismatched_lines) {
   HTMLPPT_CHECK_EQ(tail.size(), std::size_t{1});
   HTMLPPT_CHECK_EQ(tail[0].run_id, std::string{"good"});
 }
+
+HTMLPPT_TEST_CASE(jsonl_journal_marks_unhealthy_on_invalid_utf8) {
+  TempDir directory;
+  const auto path = directory.path() / "journal.jsonl";
+  JsonlJournal journal(path);
+  JournalRecord record;
+  record.detail = std::string("\xFF", 1);
+  journal.append(record);
+  HTMLPPT_CHECK(!journal.healthy());
+  HTMLPPT_CHECK(!journal.last_error().empty());
+}
+
+#ifndef _WIN32
+HTMLPPT_TEST_CASE(jsonl_journal_marks_unhealthy_on_write_failure) {
+  JsonlJournal journal("/dev/full");
+  JournalRecord record;
+  record.event = "full";
+  journal.append(record);
+  journal.flush();
+  HTMLPPT_CHECK(!journal.healthy());
+}
+
+HTMLPPT_TEST_CASE(jsonl_journal_marks_unhealthy_on_read_open_failure) {
+  TempDir directory;
+  const auto path = directory.path() / "journal.jsonl";
+  JsonlJournal journal(path);
+  JournalRecord record;
+  record.event = "removed";
+  journal.append(record);
+  journal.flush();
+
+  std::error_code error;
+  if (!std::filesystem::remove(path, error)) {
+    return; // Platform does not allow unlinking an open file; skip.
+  }
+
+  const auto tail = journal.read_tail(1);
+  HTMLPPT_CHECK(tail.empty());
+  HTMLPPT_CHECK(!journal.healthy());
+}
+#endif

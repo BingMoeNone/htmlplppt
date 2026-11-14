@@ -45,6 +45,7 @@ HTMLPPT_TEST_CASE(retry_jitter_is_bounded_and_deterministic) {
   const auto second = second_policy.next_delay(0);
   HTMLPPT_CHECK(first.has_value());
   HTMLPPT_CHECK(second.has_value());
+  HTMLPPT_CHECK(first->count() != 100);
   HTMLPPT_CHECK(first->count() >= 50);
   HTMLPPT_CHECK(first->count() <= 150);
   HTMLPPT_CHECK_EQ(first->count(), second->count());
@@ -53,6 +54,30 @@ HTMLPPT_TEST_CASE(retry_jitter_is_bounded_and_deterministic) {
   const auto after_reset = first_policy.next_delay(0);
   HTMLPPT_CHECK(after_reset.has_value());
   HTMLPPT_CHECK_EQ(after_reset->count(), first->count());
+}
+
+HTMLPPT_TEST_CASE(jitter_never_exceeds_max_delay) {
+  RetryConfig config;
+  config.max_attempts = 1;
+  config.base_delay = Duration{1000};
+  config.max_delay = Duration{1000};
+  config.jitter_ratio = 0.5;
+  config.seed = 42;
+
+  RetryPolicy policy(config);
+  const auto first = policy.next_delay(0);
+  HTMLPPT_CHECK(first.has_value());
+  HTMLPPT_CHECK(first->count() <= 1000);
+  HTMLPPT_CHECK(first->count() >= 0);
+
+  // Seed 6 yields a positive jitter offset; the result must still be
+  // clamped to max_delay instead of exceeding it.
+  config.seed = 6;
+  RetryPolicy positive_jitter_policy(config);
+  const auto positive_jitter = positive_jitter_policy.next_delay(0);
+  HTMLPPT_CHECK(positive_jitter.has_value());
+  HTMLPPT_CHECK(positive_jitter->count() <= 1000);
+  HTMLPPT_CHECK(positive_jitter->count() >= 0);
 }
 
 HTMLPPT_TEST_CASE(restart_budget_expires_old_entries) {

@@ -49,6 +49,14 @@ std::vector<JournalRecord> InMemoryJournal::read_tail(
                                     records_.end());
 }
 
+bool InMemoryJournal::healthy() const {
+  return true;
+}
+
+std::string InMemoryJournal::last_error() const {
+  return {};
+}
+
 JsonlJournal::JsonlJournal(std::filesystem::path path)
     : path_(std::move(path)) {
   if (!path_.parent_path().empty()) {
@@ -67,25 +75,43 @@ void JsonlJournal::append(const JournalRecord& record) {
     copy.timestamp = utc_timestamp();
   }
 
-  nlohmann::json line{
-      {"run_id", copy.run_id},
-      {"sequence", copy.sequence},
-      {"timestamp", copy.timestamp},
-      {"event", copy.event},
-      {"state", copy.state},
-      {"slide", copy.slide},
-      {"detail", copy.detail},
-  };
-  output_ << line.dump() << '\n';
+  try {
+    nlohmann::json line{
+        {"run_id", copy.run_id},
+        {"sequence", copy.sequence},
+        {"timestamp", copy.timestamp},
+        {"event", copy.event},
+        {"state", copy.state},
+        {"slide", copy.slide},
+        {"detail", copy.detail},
+    };
+    output_ << line.dump() << '\n';
+  } catch (const nlohmann::json::exception& error) {
+    mark_unhealthy(std::string{"failed to serialize journal record: "} +
+                   error.what());
+    return;
+  }
+
+  if (!output_) {
+    mark_unhealthy("failed to write journal file: " + path_.string());
+  }
 }
 
 void JsonlJournal::flush() {
   output_.flush();
+  if (!output_) {
+    mark_unhealthy("failed to flush journal file: " + path_.string());
+  }
 }
 
 std::vector<JournalRecord> JsonlJournal::read_tail(
     std::size_t max_records) const {
   std::ifstream input(path_);
+  if (!input.is_open()) {
+    mark_unhealthy("failed to open journal file for reading: " +
+                   path_.string());
+    return {};
+  }
   std::vector<JournalRecord> records;
   std::string text;
   while (std::getline(input, text)) {
@@ -113,6 +139,19 @@ std::vector<JournalRecord> JsonlJournal::read_tail(
                   records.end() - static_cast<std::ptrdiff_t>(max_records));
   }
   return records;
+}
+
+bool JsonlJournal::healthy() const {
+  return healthy_;
+}
+
+std::string JsonlJournal::last_error() const {
+  return last_error_;
+}
+
+void JsonlJournal::mark_unhealthy(std::string message) const {
+  healthy_ = false;
+  last_error_ = std::move(message);
 }
 
 } // namespace htmlppt

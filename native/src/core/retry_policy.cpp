@@ -22,13 +22,10 @@ std::optional<Duration> RetryPolicy::next_delay(int attempt_index) {
 
   const int shift = std::min(attempt_index, 20);
   Duration delay = config_.base_delay * (1LL << shift);
-  if (delay > config_.max_delay) {
-    delay = config_.max_delay;
-  }
 
   if (config_.jitter_ratio > 0.0) {
-    const auto max_jitter =
-        static_cast<long long>(delay.count() * config_.jitter_ratio);
+    const auto max_jitter = static_cast<long long>(
+        static_cast<double>(delay.count()) * config_.jitter_ratio);
     if (max_jitter > 0) {
       const auto span = static_cast<std::uint64_t>(2 * max_jitter + 1);
       const auto offset =
@@ -38,6 +35,10 @@ std::optional<Duration> RetryPolicy::next_delay(int attempt_index) {
         delay = Duration{0};
       }
     }
+  }
+
+  if (delay > config_.max_delay) {
+    delay = config_.max_delay;
   }
 
   return delay;

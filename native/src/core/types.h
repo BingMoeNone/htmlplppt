@@ -39,6 +39,14 @@ enum class ThreadTier {
   Critical,
 };
 
+enum class ThreadRole {
+  Supervisor,
+  IpcHealth,
+  UiOverlay,
+  Focus,
+  ComState,
+};
+
 enum class TriggerMode {
   LeaveForward,
   Arrive,

@@ -6,19 +6,37 @@ using htmlppt::Duration;
 using htmlppt::PowerSource;
 using htmlppt::SchedulingProfile;
 using htmlppt::State;
+using htmlppt::ThreadRole;
 using htmlppt::ThreadTier;
 
 HTMLPPT_TEST_CASE(adaptive_intervals_follow_state_and_distance) {
+  // A negative distance is the sentinel for "no known target"; Monitoring
+  // treats it like any other far distance.
   HTMLPPT_CHECK_EQ(
-      poll_interval(State::Monitoring, 5, SchedulingProfile::Adaptive,
+      poll_interval(State::Monitoring, 0, SchedulingProfile::Adaptive,
                     PowerSource::AC)
           .count(),
-      10);
+      1);
+  HTMLPPT_CHECK_EQ(
+      poll_interval(State::Monitoring, 1, SchedulingProfile::Adaptive,
+                    PowerSource::AC)
+          .count(),
+      2);
   HTMLPPT_CHECK_EQ(
       poll_interval(State::Monitoring, 2, SchedulingProfile::Adaptive,
                     PowerSource::AC)
           .count(),
-      1);
+      2);
+  HTMLPPT_CHECK_EQ(
+      poll_interval(State::Monitoring, 3, SchedulingProfile::Adaptive,
+                    PowerSource::AC)
+          .count(),
+      10);
+  HTMLPPT_CHECK_EQ(
+      poll_interval(State::Monitoring, -1, SchedulingProfile::Adaptive,
+                    PowerSource::AC)
+          .count(),
+      10);
   HTMLPPT_CHECK_EQ(
       poll_interval(State::CoverIn, 5, SchedulingProfile::Adaptive,
                     PowerSource::AC)
@@ -42,6 +60,16 @@ HTMLPPT_TEST_CASE(safe_profile_is_conservative) {
                     PowerSource::AC)
           .count(),
       20);
+  HTMLPPT_CHECK_EQ(
+      poll_interval(State::Monitoring, 2, SchedulingProfile::Safe,
+                    PowerSource::AC)
+          .count(),
+      10);
+  HTMLPPT_CHECK_EQ(
+      poll_interval(State::Monitoring, 0, SchedulingProfile::Safe,
+                    PowerSource::AC)
+          .count(),
+      5);
   HTMLPPT_CHECK_EQ(
       poll_interval(State::CoverIn, 5, SchedulingProfile::Safe,
                     PowerSource::AC)
@@ -75,9 +103,10 @@ HTMLPPT_TEST_CASE(battery_downgrades_aggressive_and_adaptive) {
       2);
 }
 
-HTMLPPT_TEST_CASE(thread_tiers_follow_criticality) {
-  HTMLPPT_CHECK(thread_tier(State::CoverIn) == ThreadTier::Critical);
-  HTMLPPT_CHECK(thread_tier(State::Monitoring) == ThreadTier::Focus);
-  HTMLPPT_CHECK(thread_tier(State::Warming) == ThreadTier::Ui);
-  HTMLPPT_CHECK(thread_tier(State::Faulted) == ThreadTier::Background);
+HTMLPPT_TEST_CASE(thread_tiers_follow_role) {
+  HTMLPPT_CHECK(thread_tier(ThreadRole::ComState) == ThreadTier::Critical);
+  HTMLPPT_CHECK(thread_tier(ThreadRole::Focus) == ThreadTier::Focus);
+  HTMLPPT_CHECK(thread_tier(ThreadRole::UiOverlay) == ThreadTier::Ui);
+  HTMLPPT_CHECK(thread_tier(ThreadRole::IpcHealth) == ThreadTier::Background);
+  HTMLPPT_CHECK(thread_tier(ThreadRole::Supervisor) == ThreadTier::Supervisor);
 }

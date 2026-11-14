@@ -4,8 +4,10 @@ namespace htmlppt {
 namespace {
 
 struct Intervals {
+  Duration far;
+  Duration near;
+  Duration at_target;
   Duration critical;
-  Duration idle;
   Duration live;
   Duration stalled;
 };
@@ -13,15 +15,40 @@ struct Intervals {
 Intervals intervals_for(SchedulingProfile profile) {
   switch (profile) {
     case SchedulingProfile::Aggressive:
-      return {Duration{1}, Duration{5}, Duration{1}, Duration{10}};
+      return {.far = Duration{5},
+              .near = Duration{1},
+              .at_target = Duration{1},
+              .critical = Duration{1},
+              .live = Duration{1},
+              .stalled = Duration{10}};
     case SchedulingProfile::Adaptive:
-      return {Duration{1}, Duration{10}, Duration{1}, Duration{10}};
+      return {.far = Duration{10},
+              .near = Duration{2},
+              .at_target = Duration{1},
+              .critical = Duration{1},
+              .live = Duration{1},
+              .stalled = Duration{10}};
     case SchedulingProfile::Balanced:
-      return {Duration{2}, Duration{10}, Duration{2}, Duration{20}};
+      return {.far = Duration{10},
+              .near = Duration{2},
+              .at_target = Duration{2},
+              .critical = Duration{2},
+              .live = Duration{2},
+              .stalled = Duration{20}};
     case SchedulingProfile::Safe:
-      return {Duration{5}, Duration{20}, Duration{10}, Duration{50}};
+      return {.far = Duration{20},
+              .near = Duration{10},
+              .at_target = Duration{5},
+              .critical = Duration{5},
+              .live = Duration{10},
+              .stalled = Duration{50}};
   }
-  return {Duration{10}, Duration{10}, Duration{10}, Duration{20}};
+  return {.far = Duration{10},
+          .near = Duration{2},
+          .at_target = Duration{2},
+          .critical = Duration{2},
+          .live = Duration{2},
+          .stalled = Duration{20}};
 }
 
 } // namespace
@@ -32,11 +59,16 @@ Duration poll_interval(State state, int distance_to_nearest_target,
 
   switch (state) {
     case State::Monitoring:
-      if (distance_to_nearest_target >= 0 &&
-          distance_to_nearest_target <= 2) {
-        return intervals.critical;
+      if (distance_to_nearest_target == 0) {
+        return intervals.at_target;
       }
-      return intervals.idle;
+      if (distance_to_nearest_target >= 1 &&
+          distance_to_nearest_target <= 2) {
+        return intervals.near;
+      }
+      // Negative distances are the sentinel for "no known target" and share
+      // the far bucket with distances greater than two.
+      return intervals.far;
     case State::CoverIn:
     case State::EdgeStarting:
     case State::ShowExit:
@@ -53,32 +85,24 @@ Duration poll_interval(State state, int distance_to_nearest_target,
     case State::Boot:
     case State::Warming:
     case State::DegradedNoSupervisor:
-      return intervals.idle;
+      return intervals.far;
   }
 
-  return intervals.idle;
+  return intervals.far;
 }
 
-ThreadTier thread_tier(State state) {
-  switch (state) {
-    case State::CoverIn:
-    case State::EdgeStarting:
-    case State::ShowExit:
-    case State::Live:
-    case State::Returning:
-    case State::ReturnCoverOut:
+ThreadTier thread_tier(ThreadRole role) {
+  switch (role) {
+    case ThreadRole::ComState:
       return ThreadTier::Critical;
-    case State::Monitoring:
+    case ThreadRole::Focus:
       return ThreadTier::Focus;
-    case State::Warming:
-    case State::Boot:
-    case State::DegradedNoSupervisor:
+    case ThreadRole::UiOverlay:
       return ThreadTier::Ui;
-    case State::Stopping:
-    case State::Faulted:
-    case State::SafeMode:
-    case State::Exited:
+    case ThreadRole::IpcHealth:
       return ThreadTier::Background;
+    case ThreadRole::Supervisor:
+      return ThreadTier::Supervisor;
   }
   return ThreadTier::Background;
 }

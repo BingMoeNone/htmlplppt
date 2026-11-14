@@ -25,6 +25,8 @@ class Journal {
   virtual void append(const JournalRecord& record) = 0;
   virtual void flush() = 0;
   virtual std::vector<JournalRecord> read_tail(std::size_t max_records) const = 0;
+  virtual bool healthy() const = 0;
+  virtual std::string last_error() const = 0;
 };
 
 class InMemoryJournal final : public Journal {
@@ -32,6 +34,8 @@ class InMemoryJournal final : public Journal {
   void append(const JournalRecord& record) override;
   void flush() override;
   std::vector<JournalRecord> read_tail(std::size_t max_records) const override;
+  bool healthy() const override;
+  std::string last_error() const override;
 
  private:
   std::vector<JournalRecord> records_;
@@ -45,11 +49,17 @@ class JsonlJournal final : public Journal {
   void append(const JournalRecord& record) override;
   void flush() override;
   std::vector<JournalRecord> read_tail(std::size_t max_records) const override;
+  bool healthy() const override;
+  std::string last_error() const override;
 
  private:
+  void mark_unhealthy(std::string message) const;
+
   std::filesystem::path path_;
   std::ofstream output_;
   std::uint64_t next_sequence_ = 0;
+  mutable bool healthy_ = true;
+  mutable std::string last_error_;
 };
 
 } // namespace htmlppt
