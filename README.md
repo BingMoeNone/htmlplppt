@@ -59,6 +59,7 @@ htmlplppt/
     live-content-trigger.md    模式 B2 空格触发 + 黑场
   scripts/                     捕获、编码、组装、监视器、聚焦/黑场
   templates/                   stepwise-demo.html、config 示例
+  tests/                       最小研究基线测试
   vendor/                      python-pptx 1.0.2（离线组装依赖）
 ```
 
@@ -67,6 +68,9 @@ htmlplppt/
 ### 模式 A（Linux 侧捕获/编码/组装）
 
 ```bash
+# 最小研究基线：契约、脚本编码、vendor 导入
+npm test
+
 bash scripts/preflight.sh
 # 可选：python-pptx 已在 vendor/，需要重建时运行
 bash scripts/setup.sh

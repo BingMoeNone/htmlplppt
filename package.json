@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Research project: combining HTML animations with PowerPoint/WPS",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "preflight": "bash scripts/preflight.sh",
     "setup": "bash scripts/setup.sh",
     "check-contract": "node scripts/check-contract.mjs",
