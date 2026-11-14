@@ -1712,3 +1712,21 @@ Plan complete and saved to `docs/superpowers/plans/2026-11-14-cpp-watchdog-found
 2. **Inline Execution** - execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
 
 Which approach?
+
+---
+
+## As-Built Amendments (2026-11-14)
+
+Plan 1 was executed on branch `worktree-feat-cpp-watchdog-foundation`. The following approved amendments differ from the code blocks above and are the source of truth for the implemented foundation.
+
+1. **Task 4 retry policy**: `max_delay` is a hard upper bound. Jitter is applied before the final clamp, and the jitter calculation uses an explicit `static_cast<double>` to avoid MSVC C4244. Tests assert that jitter is active and that the result never exceeds `max_delay`.
+
+2. **Task 5 journal**: the `Journal` interface exposes `healthy()` and `last_error()`. `JsonlJournal` throws on construction open failure (human-approved deviation), marks itself unhealthy on serialization, write, flush, and read-open failures, and `append` catches invalid UTF-8 instead of letting `nlohmann::json` exceptions escape. Tests cover invalid UTF-8, write failure on Linux, and read-open failure on Linux.
+
+3. **Task 6 scheduling**: Monitoring has distinct far / near / at-target tiers matching spec 7.2. `Intervals` uses C++20 designated initializers. `thread_tier` is role-based via the new `ThreadRole` enum and matches spec 7.3; the old `thread_tier(State)` API was removed.
+
+4. **Task 7 final gate**: CTest 3/3, unit binary 21/21, `npm test` 3/3, `-Werror` clean, working tree clean.
+
+5. **Task 7 unit count**: the plan's expected 17 unit cases became 21 after the final-review fixes (three journal failure-channel tests and one retry hard-bound test).
+
+Deferred to later plans: `JournalRecord` schema expansion, journal sequence recovery, tail-reading optimization, `ThreadTier::Supervisor` to `BELOW_NORMAL` mapping in Plan 6, Windows MSVC/MinGW CI verification in Plan 8, and vendor provenance README / `.gitattributes` hardening.
