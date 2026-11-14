@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -62,7 +63,7 @@ std::string ComputeDeckFingerprint(const std::filesystem::path& deck_path) {
       canonical.string() + "|" + std::to_string(size) + "|" +
       std::to_string(static_cast<std::int64_t>(
           write_time.time_since_epoch().count()));
-  std::uint64_t hash = 1469598103934665603ULL;
+  std::uint64_t hash = 14695981039346656037ULL;
   for (unsigned char character : seed) {
     hash ^= character;
     hash *= 1099511628211ULL;
@@ -87,9 +88,11 @@ DeckInfoResult LoadDeckInfoFromJson(std::string_view text,
     AddError(result.issues, "$", "root must be an object");
     return result;
   }
+  bool has_error = false;
   for (auto it = root.begin(); it != root.end(); ++it) {
     if (it.key() != "slides") {
       AddError(result.issues, it.key(), "unknown field");
+      has_error = true;
     }
   }
   const auto slides = root.find("slides");
@@ -109,7 +112,6 @@ DeckInfoResult LoadDeckInfoFromJson(std::string_view text,
   DeckInfo info;
   info.path = deck_path;
   std::set<int> seen;
-  bool has_error = false;
   for (std::size_t i = 0; i < slides->size(); ++i) {
     const auto& item = (*slides)[i];
     const std::string path = "slides[" + std::to_string(i) + "]";

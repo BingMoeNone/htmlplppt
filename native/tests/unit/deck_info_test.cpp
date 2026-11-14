@@ -90,6 +90,15 @@ HTMLPPT_TEST_CASE(deck_info_rejects_unknown_fields) {
   HTMLPPT_CHECK(HasIssueAt(result, "slides[0].mystery"));
 }
 
+HTMLPPT_TEST_CASE(deck_info_rejects_unknown_root_field) {
+  const auto result = ParseDeckInfo(R"({
+    "mystery": true,
+    "slides": [{ "index": 1, "title": "One" }]
+  })");
+  HTMLPPT_CHECK(!result.info.has_value());
+  HTMLPPT_CHECK(HasIssueAt(result, "mystery"));
+}
+
 HTMLPPT_TEST_CASE(deck_info_reports_parse_error) {
   const auto result = ParseDeckInfo(R"({ "slides": [)");
   HTMLPPT_CHECK(!result.info.has_value());
