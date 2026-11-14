@@ -1836,6 +1836,7 @@ git commit -m "feat: resolve slide targets and HTML references"
 - Create: `native/tests/fixtures/deck.pptx`
 - Create: `native/tests/fixtures/page1.html`
 - Create: `native/tests/fixtures/page2.html`
+- Create: `native/tests/cmake/expect_validation_failure.cmake`
 - Modify: `native/src/app/main.cpp`
 - Modify: `native/CMakeLists.txt`
 
@@ -1909,6 +1910,34 @@ Create `native/tests/fixtures/page2.html`:
 
 - [ ] **Step 2: Add the failing CTest cases**
 
+Create `native/tests/cmake/expect_validation_failure.cmake`:
+
+```cmake
+if(NOT DEFINED EXE OR NOT DEFINED CONFIG OR NOT DEFINED DECK_INFO OR
+   NOT DEFINED EXPECT)
+  message(FATAL_ERROR "EXE, CONFIG, DECK_INFO, and EXPECT are required")
+endif()
+
+execute_process(
+  COMMAND "${EXE}" --validate --config "${CONFIG}" --deck-info "${DECK_INFO}"
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error)
+
+if(NOT result EQUAL 1)
+  message(FATAL_ERROR "expected exit code 1, got '${result}'\n${output}${error}")
+endif()
+
+string(FIND "${output}${error}" "${EXPECT}" found)
+if(found EQUAL -1)
+  message(FATAL_ERROR "expected output to contain '${EXPECT}'\n${output}${error}")
+endif()
+```
+
+This wrapper asserts both the exact exit code and the diagnostic text. CTest's
+`WILL_FAIL` inverts `PASS_REGULAR_EXPRESSION` on CMake 4.x, so the wrapper is
+used instead of combining those two properties.
+
 In `native/CMakeLists.txt`, change the executable target to include `cli.cpp`:
 
 ```cmake
@@ -1935,12 +1964,13 @@ Inside the `if (HTMLPPT_BUILD_TESTS)` block, after the existing `cli_help` test,
   set_tests_properties(cli_resolve_ok PROPERTIES
     PASS_REGULAR_EXPRESSION "page2.html")
 
-  add_test(NAME cli_validate_missing_html COMMAND htmlppt-watchdog --validate
-    --config "${HTMLPPT_FIXTURES}/watcher-missing-html.json"
-    --deck-info "${HTMLPPT_FIXTURES}/deck-info.json")
-  set_tests_properties(cli_validate_missing_html PROPERTIES
-    WILL_FAIL TRUE
-    PASS_REGULAR_EXPRESSION "HTML file does not exist")
+  add_test(NAME cli_validate_missing_html
+    COMMAND ${CMAKE_COMMAND}
+      "-DEXE=$<TARGET_FILE:htmlppt-watchdog>"
+      "-DCONFIG=${HTMLPPT_FIXTURES}/watcher-missing-html.json"
+      "-DDECK_INFO=${HTMLPPT_FIXTURES}/deck-info.json"
+      "-DEXPECT=HTML file does not exist"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/expect_validation_failure.cmake")
 ```
 
 - [ ] **Step 3: Run the tests and verify they fail**
@@ -2388,7 +2418,7 @@ Expected: help lists the six commands; schema starts with `{`; validate prints `
 
 ```bash
 git add native/src/app/cli.h native/src/app/cli.cpp native/src/app/main.cpp \
-  native/CMakeLists.txt native/tests/fixtures
+  native/CMakeLists.txt native/tests/fixtures native/tests/cmake
 git commit -m "feat: add validate, resolve, and print CLI commands"
 ```
 
