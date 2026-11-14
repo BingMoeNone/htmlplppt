@@ -941,6 +941,27 @@ HTMLPPT_TEST_CASE(state_machine_transient_failure_retries_after_backoff) {
   HTMLPPT_CHECK(m.machine->state() == State::Live);
 }
 
+HTMLPPT_TEST_CASE(state_machine_launch_retry_kills_edge_first) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  const auto failed = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Edge,
+                  "launch failed"));
+  HTMLPPT_CHECK(HasJournalContaining(failed, "retry in"));
+  m.AdvanceToNextDeadline();
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::LaunchEdge));
+  std::size_t kill_index = retried.size();
+  std::size_t launch_index = retried.size();
+  for (std::size_t i = 0; i < retried.size(); ++i) {
+    if (retried[i].kind == ActionKind::KillEdge) kill_index = i;
+    if (retried[i].kind == ActionKind::LaunchEdge) launch_index = i;
+  }
+  HTMLPPT_CHECK(kill_index < launch_index);
+}
+
 HTMLPPT_TEST_CASE(state_machine_retries_exhausted_escalate_to_switch_failure) {
   auto config = MakeConfig();
   config.retry.max_attempts = 1;
@@ -1074,7 +1095,9 @@ HTMLPPT_TEST_CASE(state_machine_cover_done_timeout_hides_cover_and_monitors) {
   m.Advance(10001);
   const auto actions = m.machine->Tick();
   HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
-  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  const auto* hide = FindAction(actions, ActionKind::CoverHide);
+  HTMLPPT_CHECK(hide != nullptr);
+  HTMLPPT_CHECK_EQ(hide->slide, 5);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
 }
 
@@ -1170,9 +1193,6 @@ class StateMachine {
     CoverFadeIn,
     LaunchEdge,
     ExitShow,
-    ResumeShow,
-    FocusEdge,
-    FocusWps,
   };
 
   const TargetPlan* FindTarget(int slide) const;
@@ -1248,7 +1268,6 @@ Create `native/src/core/state_machine.cpp`:
 ```cpp
 #include "core/state_machine.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace htmlppt {
@@ -1635,15 +1654,17 @@ std::vector<Action> StateMachine::OnTimeout(const Event& event) {
     case TimeoutKind::CoverDone:
       if (state_ == State::ReturnCoverOut) {
         ClearDeadline(TimeoutKind::CoverDone);
+        const int slide = current_target_slide_.value_or(0);
         Enter(State::Monitoring);
         ignore_until_ = event.at + config_.return_ignore;
         prev_slide_ = -1;
         current_target_slide_.reset();
         return_prepared_ = false;
-        auto actions = Journal("cover done timeout; hiding cover");
-        actions.push_back({ActionKind::CoverHide, 0, "cover done timeout"});
+        auto actions = Journal("cover done timeout; hiding cover", slide);
         actions.push_back(
-            {ActionKind::Diagnostic, 0, "cover fade-out timed out"});
+            {ActionKind::CoverHide, slide, "cover done timeout"});
+        actions.push_back(
+            {ActionKind::Diagnostic, slide, "cover fade-out timed out"});
         return actions;
       }
       break;
@@ -1795,19 +1816,12 @@ std::vector<Action> StateMachine::ExecuteRetry(ClockPoint at) {
     case RetryOperation::LaunchEdge: {
       SetDeadline(TimeoutKind::EdgeReady, at + config_.edge_ready_timeout);
       const TargetPlan* target = FindTarget(slide);
-      return {{ActionKind::LaunchEdge, slide,
+      return {{ActionKind::KillEdge, slide, "retry launch Edge"},
+              {ActionKind::LaunchEdge, slide,
                target ? target->edge_profile : std::string{}}};
     }
     case RetryOperation::ExitShow:
       return {{ActionKind::ExitShow, slide, "retry exit show"}};
-    case RetryOperation::ResumeShow:
-      SetDeadline(TimeoutKind::ReturnResume, at + config_.cover_max_hold);
-      return {{ActionKind::ResumeShow, slide, "retry resume show"},
-              {ActionKind::FocusWps, slide, "retry focus WPS"}};
-    case RetryOperation::FocusEdge:
-      return {{ActionKind::FocusEdge, slide, "retry focus Edge"}};
-    case RetryOperation::FocusWps:
-      return {{ActionKind::FocusWps, slide, "retry focus WPS"}};
     case RetryOperation::None:
       return {};
   }
@@ -1940,7 +1954,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 137/137 unit cases pass, CTest 8/8, no warnings.
+Expected: 138/138 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -2003,6 +2017,12 @@ Failure policy:
 Timers: cover hold safety, Edge ready 20s, Edge live 600s, return resume,
 cover fade-out completion, and retry backoff. `NextDeadline()` exposes the
 next timer; `Tick()` dispatches the due timeout.
+
+Host contract: `showStarted` means a genuinely new slideshow. The
+`SlideShowBegin` produced by `ResumeShow` must not be forwarded as
+`showStarted`, or the state machine clears `done` and a target can re-trigger.
+`LaunchEdge` retries are preceded by `KillEdge`, so the host's `KillEdge`
+must be idempotent.
 ````
 
 Update the `Layout` section with:
@@ -2025,14 +2045,14 @@ CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrom
 
 Expected:
 
-- Native unit tests: 137/137 pass.
+- Native unit tests: 138/138 pass.
 - CTest: 8/8 pass.
 - `-Werror` build with no warnings.
 - `npm test`: expected 3/3 with the `CHROME_BIN` set above. Without `CHROME_BIN`, the existing contract smoke test fails with `Chrome did not start`.
 
 - [ ] **Step 3: Record as-built amendments**
 
-At the end of this plan file, add an `As-Built Amendments (2026-11-15)` section with the actual unit/CTest counts, any deviations from the code blocks above, and deferred items assigned to Plan 4/5/6. Do not leave placeholders.
+At the end of this plan file, add an `As-Built Amendments (2026-11-15)` section with the actual unit/CTest counts, any deviations from the code blocks above, and deferred items assigned to Plan 4/5/6. Record the Task 2 review fixes: LaunchEdge retries kill the owned Edge first; the dead retry branches were removed; CoverDone timeout preserves the target slide. Do not leave placeholders.
 
 - [ ] **Step 4: Commit**
 
