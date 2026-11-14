@@ -22,6 +22,7 @@ std::string_view ConfigSchema() {
     },
     "legacy": { "$ref": "#/$defs/legacy" }
   },
+  "additionalProperties": false,
   "$defs": {
     "cover": {
       "type": "object",

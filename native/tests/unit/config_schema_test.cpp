@@ -27,3 +27,26 @@ HTMLPPT_TEST_CASE(config_schema_declares_core_properties) {
   HTMLPPT_CHECK(schema["$defs"]["target"]["properties"].contains("edgeProfile"));
   HTMLPPT_CHECK(schema["$defs"]["target"]["properties"]["trigger"]["enum"].size() >= 2);
 }
+
+HTMLPPT_TEST_CASE(config_schema_rejects_unknown_top_level_fields) {
+  auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
+  HTMLPPT_CHECK(schema["additionalProperties"] == false);
+
+  const auto names = {"cover", "edge", "display", "focus", "assets", "match",
+                      "target", "defaults", "stage", "profile", "legacy"};
+  for (const char* name : names) {
+    HTMLPPT_CHECK(schema["$defs"].contains(name));
+    const auto& definition = schema["$defs"].at(name);
+    HTMLPPT_CHECK(definition.is_object());
+    HTMLPPT_CHECK(definition.contains("properties"));
+    HTMLPPT_CHECK(definition.at("additionalProperties") == false);
+  }
+
+  for (auto definition = schema["$defs"].begin();
+       definition != schema["$defs"].end(); ++definition) {
+    if (definition->is_object() && definition->contains("properties")) {
+      HTMLPPT_CHECK(definition->contains("additionalProperties"));
+      HTMLPPT_CHECK(definition->at("additionalProperties") == false);
+    }
+  }
+}
