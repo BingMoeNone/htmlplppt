@@ -47,7 +47,7 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
       return actions;
     }
     case WorkerEventKind::Hung: {
-      if (stopping_) return {};
+      if (!worker_running_ || stopping_) return {};
       worker_running_ = false;
       auto actions = std::vector<SupervisorAction>{
           {SupervisorActionKind::RequestDump, "worker hung"},

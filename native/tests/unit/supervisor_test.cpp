@@ -160,6 +160,19 @@ HTMLPPT_TEST_CASE(supervisor_hung_event_requests_dump_and_terminate) {
   HTMLPPT_CHECK(!core.worker_running());
 }
 
+HTMLPPT_TEST_CASE(supervisor_duplicate_hung_does_not_consume_budget) {
+  FakeClock clock;
+  auto config = Config();
+  config.max_restarts = 1;
+  SupervisorCore core(config, clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto duplicate =
+      core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  HTMLPPT_CHECK(duplicate.empty());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
 HTMLPPT_TEST_CASE(supervisor_stop_terminates_and_completes) {
   FakeClock clock;
   SupervisorCore core(Config(), clock);
