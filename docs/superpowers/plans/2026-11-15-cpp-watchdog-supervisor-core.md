@@ -1623,7 +1623,7 @@ HTMLPPT_TEST_CASE(reconcile_safe_mode_cleans_leftovers) {
 
 HTMLPPT_TEST_CASE(reconcile_clean_preserves_target_slide) {
   const auto decision = htmlppt::ReconcileStartup(
-      {Record("run-1", "Monitoring", 5)}, ReconcileFacts{}, "run-1");
+      {Record("run-1", "Live", 5)}, ReconcileFacts{}, "run-1");
   HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Clean);
   HTMLPPT_CHECK_EQ(decision.target_slide, 5);
   HTMLPPT_CHECK(!decision.kill_edge);
@@ -1948,6 +1948,11 @@ from the canonical config directory plus config hash, formats the
 restore WPS, or enter SafeMode from the last journal state and observed
 resources.
 
+For reconciliation, outcomes that request actions populate `kill_edge`,
+`hide_overlay`, and `resume_wps` from the observed facts; the host must apply
+every true flag. `Clean` preserves the last slide for diagnostics but does not
+set `resume_wps`; the empty-journal path has no facts to apply.
+
 Plan 4B maps these cores onto Windows Job Objects, named pipes, shared memory,
 MiniDump, process launch/termination, and CLI mode dispatch. No Windows API is
 used in Plan 4A.
@@ -2158,3 +2163,7 @@ Observed results:
 - Apply every true reconciliation flag (`kill_edge`, `hide_overlay`,
   `resume_wps`).
 - Update the design spec 10.1 directory tree for the new `core/` modules.
+- The host must ensure the first heartbeat arrives within 2 s of a Start; an
+  initial `Started` does not reset the heartbeat baseline.
+- Empty journal with leftover Edge/overlay facts is deferred to Plan 4B
+  reconciliation wiring.

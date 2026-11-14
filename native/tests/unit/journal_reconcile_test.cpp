@@ -100,7 +100,7 @@ HTMLPPT_TEST_CASE(reconcile_safe_mode_cleans_leftovers) {
 
 HTMLPPT_TEST_CASE(reconcile_clean_preserves_target_slide) {
   const auto decision = htmlppt::ReconcileStartup(
-      {Record("run-1", "Monitoring", 5)}, ReconcileFacts{}, "run-1");
+      {Record("run-1", "Live", 5)}, ReconcileFacts{}, "run-1");
   HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Clean);
   HTMLPPT_CHECK_EQ(decision.target_slide, 5);
   HTMLPPT_CHECK(!decision.kill_edge);

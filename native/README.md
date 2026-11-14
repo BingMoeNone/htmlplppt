@@ -159,9 +159,10 @@ from the canonical config directory plus config hash, formats the
 restore WPS, or enter SafeMode from the last journal state and observed
 resources.
 
-For reconciliation, every outcome fills `kill_edge`, `hide_overlay`, and
-`resume_wps` from the observed facts; the host must apply every true flag.
-`Clean` preserves the last slide for diagnostics but requests no actions.
+For reconciliation, outcomes that request actions populate `kill_edge`,
+`hide_overlay`, and `resume_wps` from the observed facts; the host must apply
+every true flag. `Clean` preserves the last slide for diagnostics but does not
+set `resume_wps`; the empty-journal path has no facts to apply.
 
 Plan 4B maps these cores onto Windows Job Objects, named pipes, shared memory,
 MiniDump, process launch/termination, and CLI mode dispatch. No Windows API is
