@@ -130,3 +130,31 @@ Host contracts (Plan 4/5):
   error window is not a timer.
 - Cover fade/hold and focus timings are host-facing fields; the host maps the
   Plan 2 configuration into `StateMachineConfig` and `TargetPlan`.
+
+## Supervisor core (Plan 4A)
+
+`core/supervisor_protocol` defines the worker-to-supervisor wire format: frame
+magic/version/sequence/timestamp/type/length plus CRC32 over the header and
+payload, with a 64 KiB payload limit. `SequenceTracker` reports heartbeat
+stalls.
+
+`core/blackbox` is a fixed 96-byte-record ring buffer; Plan 4B maps it onto
+shared memory. `core/worker_health` tracks registered thread roles and reports
+stale heartbeats.
+
+`core/supervisor` is a declarative decision engine. It emits `StartWorker`,
+`RequestDump`, `TerminateWorker`, `RestartWorker`, `EnterSafeMode`,
+`RunLegacyFallback`, and `StopComplete`. It uses a 2 s heartbeat timeout, a
+5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s backoff with
+jitter. `NextDeadline()` exposes the pending restart; `Tick()` dispatches it.
+
+`core/single_instance` derives a stable instance fingerprint and mutex name
+from the canonical config directory plus config hash, formats the
+`watcher.lock` JSON line, and recognizes legacy lock lines.
+`core/journal_reconcile` decides whether startup should clean up, take over,
+restore WPS, or enter SafeMode from the last journal state and observed
+resources.
+
+Plan 4B maps these cores onto Windows Job Objects, named pipes, shared memory,
+MiniDump, process launch/termination, and CLI mode dispatch. No Windows API is
+used in Plan 4A.

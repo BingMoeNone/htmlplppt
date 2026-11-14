@@ -1911,3 +1911,117 @@ Deferred to Plan 4B: Windows Job Object, named pipe framing transport, shared-me
 ## Execution Handoff
 
 Plan 4A is ready. Execute Tasks 1-4 in order. Each task ends with a green full suite and a commit. Task 4 records the final gate and as-built amendments.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 4A was executed end to end on branch
+`worktree-feat-cpp-watchdog-supervisor-core`. Commits: `fd384a8` (Task 1
+protocol), `2720ba1` (Task 2 black box and worker health), `a5f9c23` (plan
+correction for the worker-health stale boundary), `6a7f6c0` (Task 3 restart
+policy), `c087857` (plan correction for the duplicate-`Hung` budget guard),
+`b191802` (Task 3 review fix), and the Task 4 commit. The worktree was clean
+after each commit.
+
+### Final gate (observed)
+
+Commands, run from this worktree's root:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+cmake --build native/build --parallel
+./native/build/htmlppt_core_tests
+ctest --test-dir native/build --output-on-failure
+CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
+```
+
+Observed results:
+
+- Configure: success, exit 0.
+- `-Werror` build: exit 0, zero `warning:` or `error:` lines in the build log.
+- Unit suite: 184 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 184
+  cases are 145 pre-existing cases + 9 protocol + 9 black box/worker-health +
+  11 supervisor (10 planned + 1 Task 3 review regression) + 10
+  identity/reconciliation (4 single-instance + 6 reconciliation).
+- CTest: 8/8 passed, 100%, exit 0.
+- `npm test` with `CHROME_BIN`: 3/3 pass, 0 fail, exit 0. Without
+  `CHROME_BIN` the existing contract test fails with `Chrome did not start`,
+  so the variable is required in this WSL environment.
+
+### Source as built
+
+- Task 1 created `native/src/core/supervisor_protocol.h`,
+  `native/src/core/supervisor_protocol.cpp`, and
+  `native/tests/unit/supervisor_protocol_test.cpp` (352 insertions, no
+  existing files changed).
+- Task 2 created `native/src/core/blackbox.h`,
+  `native/src/core/blackbox.cpp`, `native/src/core/worker_health.h`,
+  `native/src/core/worker_health.cpp`,
+  `native/tests/unit/blackbox_test.cpp`, and
+  `native/tests/unit/worker_health_test.cpp` (289 insertions, no existing
+  files changed).
+- Task 3 created `native/src/core/supervisor.h`,
+  `native/src/core/supervisor.cpp`, and
+  `native/tests/unit/supervisor_test.cpp` (425 insertions, no existing files
+  changed). The review fix modified only `supervisor.cpp` and
+  `supervisor_test.cpp` (+14/-1).
+- Task 4 created `native/src/core/single_instance.h`,
+  `native/src/core/single_instance.cpp`,
+  `native/src/core/journal_reconcile.h`,
+  `native/src/core/journal_reconcile.cpp`,
+  `native/tests/unit/single_instance_test.cpp`, and
+  `native/tests/unit/journal_reconcile_test.cpp`; it also appended the
+  supervisor-core section to `native/README.md` and this as-built section.
+- No CMake changes were needed: `src/core/*.cpp` and `tests/unit/*.cpp` are
+  globbed with `CONFIGURE_DEPENDS`, so the new sources were picked up on the
+  automatic re-configure.
+- No existing source, script, root test, or production documentation was
+  modified by this plan. `core/` remains free of Windows headers, COM, and
+  Win32; all new project-authored source is ASCII and 2-space indented.
+
+### Approved deviations and fixes
+
+1. `WorkerHealthMonitor::Stale` uses a strict `>` boundary. The original plan
+   text used `>=`, which made a heartbeat that arrived exactly at the timeout
+   stale and conflicted with `SequenceTracker` (which correctly uses `>=` for
+   channel frame absence at the exact deadline). The plan was corrected in
+   `a5f9c23`, and the as-built code uses
+   `now - slot.last_beat > timeout`.
+2. Duplicate `Hung` events during restart backoff are ignored. The `Hung`
+   handler now returns early when `!worker_running_`, so a second `Hung`
+   delivered while the supervisor waits for the restart deadline neither
+   re-requests a dump/terminate nor consumes a restart-budget slot. The
+   regression test `supervisor_duplicate_hung_does_not_consume_budget` sets
+   `max_restarts = 1`, sends two `Hung` events, asserts the second returns no
+   actions, and asserts safe mode is not entered. The plan's expected counts
+   were corrected in `c087857` (174 after Task 3, 184 final).
+3. None of the Task 4 code blocks needed correction. The tests reached RED
+   through missing headers and GREEN with the implementations exactly as
+   specified. `journal_reconcile.cpp` keeps the planned `<algorithm>` include
+   even though only `<utility>` is used; it produces no diagnostic under the
+   project warning set.
+
+### Minor coverage notes
+
+- `ReconcileOutcome::TakeOver` is implemented but has no dedicated test case;
+  the planned 10 identity/reconciliation cases cover the Clean, Cleanup,
+  RestoreWps, and SafeMode paths only.
+- `MakeInstanceIdentity` config-hash sensitivity is exercised indirectly
+  through the `StableHash16` cases; no test compares two identities built from
+  the same directory with different config hashes.
+- The identity and reconciliation functions are pure (paths and records in,
+  values out). Named-mutex creation, lock-file I/O, and journal file reads are
+  host wiring deferred to Plan 4B.
+
+### Deferred to Plan 4B/5/6/8
+
+- Plan 4B: Windows Job Object, named-pipe framing transport, shared-memory
+  black-box mapping, MiniDump helper, process launch/termination,
+  single-instance named-mutex creation, actual journal I/O wiring, and CLI
+  `--supervisor`/`--worker`/`--stop`/`--status`/`--dump-helper` dispatch.
+- Plan 5: WPS COM host, overlay, focus, and Edge execution.
+- Plan 6: event-driven scheduling, thread priorities, power policy, and fault
+  injection.
+- Plan 8: Windows end-to-end acceptance and release packaging.
