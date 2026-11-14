@@ -1373,21 +1373,19 @@ std::string QueryKey(const std::string& part) {
 bool MergeQuery(const std::string& first, const std::string& second,
                 std::string* merged, std::string* conflict) {
   std::vector<std::string> parts = SplitQuery(first);
-  std::map<std::string, std::set<std::string>> values;
+  std::map<std::string, std::set<std::string>> first_values;
   for (const auto& part : parts) {
-    values[QueryKey(part)].insert(part);
+    first_values[QueryKey(part)].insert(part);
   }
+  std::set<std::string> seen(parts.begin(), parts.end());
   for (const auto& part : SplitQuery(second)) {
     const auto key = QueryKey(part);
-    const auto found = values.find(key);
-    if (found == values.end()) {
-      values[key].insert(part);
-      parts.push_back(part);
-      continue;
+    const auto found = first_values.find(key);
+    if (found != first_values.end() && found->second.count(part) == 0) {
+      *conflict = key;
+      return false;
     }
-    if (found->second.count(part) != 0) continue;
-    *conflict = key;
-    return false;
+    if (seen.insert(part).second) parts.push_back(part);
   }
   std::ostringstream out;
   for (std::size_t i = 0; i < parts.size(); ++i) {
