@@ -20,7 +20,7 @@
 - The supervisor core does not parse business configuration and does not call COM.
 - Defaults: heartbeat timeout 2s, restart budget 5 restarts per 10 minutes, backoff 200ms/500ms/1s/2s/5s with jitter, black-box record size 96 bytes, frame payload limit 64 KiB.
 - Existing suite (145 unit cases, CTest 8/8) must stay green.
-- Final gate expected: 183/183 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN` in this WSL environment.
+- Final gate expected: 184/184 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN` in this WSL environment.
 
 ## File Structure
 
@@ -1042,6 +1042,19 @@ HTMLPPT_TEST_CASE(supervisor_hung_event_requests_dump_and_terminate) {
   HTMLPPT_CHECK(!core.worker_running());
 }
 
+HTMLPPT_TEST_CASE(supervisor_duplicate_hung_does_not_consume_budget) {
+  FakeClock clock;
+  auto config = Config();
+  config.max_restarts = 1;
+  SupervisorCore core(config, clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto duplicate =
+      core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  HTMLPPT_CHECK(duplicate.empty());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
 HTMLPPT_TEST_CASE(supervisor_stop_terminates_and_completes) {
   FakeClock clock;
   SupervisorCore core(Config(), clock);
@@ -1223,7 +1236,7 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
       return actions;
     }
     case WorkerEventKind::Hung: {
-      if (stopping_) return {};
+      if (!worker_running_ || stopping_) return {};
       worker_running_ = false;
       auto actions = std::vector<SupervisorAction>{
           {SupervisorActionKind::RequestDump, "worker hung"},
@@ -1338,7 +1351,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 173/173 unit cases pass, CTest 8/8, no warnings.
+Expected: 174/174 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -1792,7 +1805,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 183/183 unit cases pass, CTest 8/8, no warnings.
+Expected: 184/184 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 7: Document the supervisor core and run the final gate**
 
@@ -1839,11 +1852,11 @@ ctest --test-dir native/build --output-on-failure
 CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
 ```
 
-Expected: 183/183 unit cases, CTest 8/8, npm 3/3, `-Werror` clean.
+Expected: 184/184 unit cases, CTest 8/8, npm 3/3, `-Werror` clean.
 
 - [ ] **Step 8: Record as-built amendments and commit**
 
-Append an `As-Built Amendments (2026-11-15)` section to this plan with the actual counts, deviations, and deferred items assigned to Plan 4B/5/6/8. Then:
+Append an `As-Built Amendments (2026-11-15)` section to this plan with the actual counts, deviations, and deferred items assigned to Plan 4B/5/6/8. Record the Task 3 review fix: duplicate `Hung` events during restart backoff are ignored and do not consume the restart budget. Then:
 
 ```bash
 git add native/src/core/single_instance.h native/src/core/single_instance.cpp \
@@ -1874,7 +1887,7 @@ git commit -m "feat: add supervisor identity and startup reconciliation"
 | `watcher.lock` JSON line and legacy detection | Task 4 |
 | Startup reconciliation: last state, Edge/overlay ownership, WPS restore, SafeMode | Task 4 |
 | Platform neutrality on Linux/WSL | Tasks 1-4; no Windows headers or APIs |
-| Existing suite stays green | Every task; final gate 183/183 |
+| Existing suite stays green | Every task; final gate 184/184 |
 
 Deferred to Plan 4B: Windows Job Object, named pipe framing transport, shared-memory mapping, MiniDump helper, process launch/termination, single-instance mutex creation, actual journal I/O wiring, and CLI `--supervisor`/`--worker`/`--stop`/`--status`/`--dump-helper`. Deferred to Plan 5: WPS COM host, overlay, focus, Edge execution. Deferred to Plan 6: event-driven scheduling, thread priorities, power policy, fault injection. Deferred to Plan 8: Windows end-to-end acceptance and release.
 
@@ -1891,7 +1904,7 @@ Deferred to Plan 4B: Windows Job Object, named pipe framing transport, shared-me
 - `WorkerHealthMonitor` uses the Plan 1 `ThreadRole` enum.
 - `SupervisorCore` actions are the same enum values referenced by Task 3 tests.
 - `SingleInstance` uses `std::string` for the fingerprint and mutex name; `ReconcileStartup` uses the Plan 1 `JournalRecord`.
-- Final count: 145 baseline + 9 protocol + 9 blackbox/health + 10 supervisor + 10 identity/reconcile = 183.
+- Final count: 145 baseline + 9 protocol + 9 blackbox/health + 11 supervisor + 10 identity/reconcile = 184.
 
 ---
 
