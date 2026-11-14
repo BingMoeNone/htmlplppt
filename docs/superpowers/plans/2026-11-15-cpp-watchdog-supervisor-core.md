@@ -20,7 +20,7 @@
 - The supervisor core does not parse business configuration and does not call COM.
 - Defaults: heartbeat timeout 2s, restart budget 5 restarts per 10 minutes, backoff 200ms/500ms/1s/2s/5s with jitter, black-box record size 96 bytes, frame payload limit 64 KiB.
 - Existing suite (145 unit cases, CTest 8/8) must stay green.
-- Final gate expected: 184/184 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN` in this WSL environment.
+- Final gate expected: 191/191 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN` in this WSL environment.
 
 ## File Structure
 
@@ -1075,6 +1075,68 @@ HTMLPPT_TEST_CASE(supervisor_stale_heartbeat_after_stop_is_ignored) {
   clock.advance(Duration{3000});
   HTMLPPT_CHECK(core.Tick().empty());
 }
+
+HTMLPPT_TEST_CASE(supervisor_rolling_window_allows_restart_after_expiry) {
+  FakeClock clock;
+  auto config = Config();
+  config.max_restarts = 2;
+  config.restart_window = Duration{1000};
+  config.backoff = {Duration{10}, Duration{20}};
+  SupervisorCore core(config, clock);
+  core.Start();
+  for (int i = 0; i < 2; ++i) {
+    core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+    AdvanceToDeadline(core, clock);
+    const auto restart = core.Tick();
+    HTMLPPT_CHECK(HasAction(restart, SupervisorActionKind::RestartWorker));
+  }
+  clock.advance(Duration{1001});
+  const auto after_window =
+      core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  HTMLPPT_CHECK(!core.safe_mode());
+  HTMLPPT_CHECK(HasAction(after_window, SupervisorActionKind::RequestDump));
+  const auto deadline = core.NextDeadline();
+  HTMLPPT_CHECK(deadline.has_value());
+  HTMLPPT_CHECK_EQ(
+      std::chrono::duration_cast<Duration>(*deadline - clock.now()).count(),
+      20);
+}
+
+HTMLPPT_TEST_CASE(supervisor_start_during_backoff_is_ignored) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto started = core.Start();
+  HTMLPPT_CHECK(started.empty());
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
+HTMLPPT_TEST_CASE(supervisor_started_during_backoff_is_ignored) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto started =
+      core.Handle(Event(WorkerEventKind::Started, clock.now()));
+  HTMLPPT_CHECK(started.empty());
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+HTMLPPT_TEST_CASE(supervisor_duplicate_started_does_not_reset_heartbeat) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1500});
+  core.Handle(Event(WorkerEventKind::Started, clock.now()));
+  clock.advance(Duration{600});
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+}
 ```
 
 - [ ] **Step 2: Run the tests and verify they fail**
@@ -1189,6 +1251,7 @@ Create `native/src/core/supervisor.cpp`:
 ```cpp
 #include "core/supervisor.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace htmlppt {
@@ -1201,7 +1264,10 @@ SupervisorCore::SupervisorCore(SupervisorConfig config, Clock& clock)
       random_state_(config_.seed == 0 ? 0x9e3779b9u : config_.seed) {}
 
 std::vector<SupervisorAction> SupervisorCore::Start() {
-  if (worker_running_ || safe_mode_ || stopping_) return {};
+  if (worker_running_ || safe_mode_ || stopping_ ||
+      restart_deadline_.has_value()) {
+    return {};
+  }
   worker_running_ = true;
   sequence_.reset(clock_.now());
   return {{SupervisorActionKind::StartWorker, "start worker"}};
@@ -1217,7 +1283,9 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
   }
   switch (event.kind) {
     case WorkerEventKind::Started:
-      if (stopping_) return {};
+      if (stopping_ || worker_running_ || restart_deadline_.has_value()) {
+        return {};
+      }
       worker_running_ = true;
       sequence_.reset(event.at);
       return {};
@@ -1285,11 +1353,11 @@ std::vector<SupervisorAction> SupervisorCore::Tick() {
 }
 
 std::optional<Duration> SupervisorCore::BackoffFor(int attempt) {
-  if (attempt < 0 ||
-      static_cast<std::size_t>(attempt) >= config_.backoff.size()) {
-    return std::nullopt;
-  }
-  Duration delay = config_.backoff[static_cast<std::size_t>(attempt)];
+  if (config_.backoff.empty()) return std::nullopt;
+  const std::size_t index = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(attempt, 0)),
+      config_.backoff.size() - 1);
+  Duration delay = config_.backoff[index];
   if (config_.jitter_ratio > 0.0) {
     const auto max_jitter = static_cast<long long>(
         static_cast<double>(delay.count()) * config_.jitter_ratio);
@@ -1351,7 +1419,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 174/174 unit cases pass, CTest 8/8, no warnings.
+Expected: 178/178 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -1523,6 +1591,44 @@ HTMLPPT_TEST_CASE(reconcile_faulted_enters_safe_mode) {
   const auto decision = htmlppt::ReconcileStartup(
       {Record("run-1", "Faulted", 5)}, ReconcileFacts{}, "run-1");
   HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::SafeMode);
+}
+
+HTMLPPT_TEST_CASE(reconcile_restore_wps_also_cleans_leftovers) {
+  ReconcileFacts facts;
+  facts.can_restore_wps = true;
+  facts.edge_process_alive = true;
+  facts.overlay_owned = true;
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-1", "Live", 5)}, facts, "run-1");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::RestoreWps);
+  HTMLPPT_CHECK(decision.resume_wps);
+  HTMLPPT_CHECK(decision.kill_edge);
+  HTMLPPT_CHECK(decision.hide_overlay);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 5);
+}
+
+HTMLPPT_TEST_CASE(reconcile_safe_mode_cleans_leftovers) {
+  ReconcileFacts facts;
+  facts.edge_process_alive = true;
+  facts.overlay_owned = true;
+  facts.can_restore_wps = true;
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-1", "Faulted", 5)}, facts, "run-1");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::SafeMode);
+  HTMLPPT_CHECK(decision.kill_edge);
+  HTMLPPT_CHECK(decision.hide_overlay);
+  HTMLPPT_CHECK(decision.resume_wps);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 5);
+}
+
+HTMLPPT_TEST_CASE(reconcile_clean_preserves_target_slide) {
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-1", "Monitoring", 5)}, ReconcileFacts{}, "run-1");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Clean);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 5);
+  HTMLPPT_CHECK(!decision.kill_edge);
+  HTMLPPT_CHECK(!decision.hide_overlay);
+  HTMLPPT_CHECK(!decision.resume_wps);
 }
 ```
 
@@ -1718,9 +1824,10 @@ const JournalRecord* LastStateRecord(const std::vector<JournalRecord>& tail) {
   return nullptr;
 }
 
-ReconcileDecision Clean(std::string reason) {
+ReconcileDecision Clean(std::string reason, int target_slide) {
   ReconcileDecision decision;
   decision.outcome = ReconcileOutcome::Clean;
+  decision.target_slide = target_slide;
   decision.reason = std::move(reason);
   return decision;
 }
@@ -1731,7 +1838,7 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
                                    const ReconcileFacts& facts,
                                    std::string_view run_id) {
   const JournalRecord* last = LastStateRecord(tail);
-  if (last == nullptr) return Clean("empty journal");
+  if (last == nullptr) return Clean("empty journal", 0);
 
   ReconcileDecision decision;
   decision.target_slide = last->slide;
@@ -1757,6 +1864,8 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
   if (last->state == "Live" || last->state == "Returning") {
     if (facts.can_restore_wps) {
       decision.outcome = ReconcileOutcome::RestoreWps;
+      decision.kill_edge = facts.edge_process_alive;
+      decision.hide_overlay = facts.overlay_owned;
       decision.resume_wps = true;
       decision.reason = "restore WPS after an interrupted live/return state";
       return decision;
@@ -1768,7 +1877,7 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
       decision.reason = "clean up an interrupted live/return state";
       return decision;
     }
-    return Clean("live/return state has no leftover resources");
+    return Clean("live/return state has no leftover resources", last->slide);
   }
 
   if (last->state == "CoverIn" || last->state == "EdgeStarting" ||
@@ -1783,6 +1892,9 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
 
   if (last->state == "Faulted" || last->state == "SafeMode") {
     decision.outcome = ReconcileOutcome::SafeMode;
+    decision.kill_edge = facts.edge_process_alive;
+    decision.hide_overlay = facts.overlay_owned;
+    decision.resume_wps = facts.can_restore_wps;
     decision.reason = "previous run ended in " + last->state;
     return decision;
   }
@@ -1805,7 +1917,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 184/184 unit cases pass, CTest 8/8, no warnings.
+Expected: 191/191 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 7: Document the supervisor core and run the final gate**
 
@@ -1852,7 +1964,7 @@ ctest --test-dir native/build --output-on-failure
 CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
 ```
 
-Expected: 184/184 unit cases, CTest 8/8, npm 3/3, `-Werror` clean.
+Expected: 191/191 unit cases, CTest 8/8, npm 3/3, `-Werror` clean.
 
 - [ ] **Step 8: Record as-built amendments and commit**
 
@@ -1887,7 +1999,7 @@ git commit -m "feat: add supervisor identity and startup reconciliation"
 | `watcher.lock` JSON line and legacy detection | Task 4 |
 | Startup reconciliation: last state, Edge/overlay ownership, WPS restore, SafeMode | Task 4 |
 | Platform neutrality on Linux/WSL | Tasks 1-4; no Windows headers or APIs |
-| Existing suite stays green | Every task; final gate 184/184 |
+| Existing suite stays green | Every task; final gate 191/191 |
 
 Deferred to Plan 4B: Windows Job Object, named pipe framing transport, shared-memory mapping, MiniDump helper, process launch/termination, single-instance mutex creation, actual journal I/O wiring, and CLI `--supervisor`/`--worker`/`--stop`/`--status`/`--dump-helper`. Deferred to Plan 5: WPS COM host, overlay, focus, Edge execution. Deferred to Plan 6: event-driven scheduling, thread priorities, power policy, fault injection. Deferred to Plan 8: Windows end-to-end acceptance and release.
 
@@ -1904,7 +2016,7 @@ Deferred to Plan 4B: Windows Job Object, named pipe framing transport, shared-me
 - `WorkerHealthMonitor` uses the Plan 1 `ThreadRole` enum.
 - `SupervisorCore` actions are the same enum values referenced by Task 3 tests.
 - `SingleInstance` uses `std::string` for the fingerprint and mutex name; `ReconcileStartup` uses the Plan 1 `JournalRecord`.
-- Final count: 145 baseline + 9 protocol + 9 blackbox/health + 11 supervisor + 10 identity/reconcile = 184.
+- Final count: 145 baseline + 9 protocol + 9 blackbox/health + 15 supervisor + 13 identity/reconcile = 191.
 
 ---
 
@@ -1921,8 +2033,9 @@ Plan 4A was executed end to end on branch
 protocol), `2720ba1` (Task 2 black box and worker health), `a5f9c23` (plan
 correction for the worker-health stale boundary), `6a7f6c0` (Task 3 restart
 policy), `c087857` (plan correction for the duplicate-`Hung` budget guard),
-`b191802` (Task 3 review fix), and the Task 4 commit. The worktree was clean
-after each commit.
+`b191802` (Task 3 review fix), the Task 4 commit, and the final whole-branch
+review fix (`fix: harden supervisor budget, start guards, and reconciliation
+flags`). The worktree was clean after each commit.
 
 ### Final gate (observed)
 
@@ -1941,10 +2054,11 @@ Observed results:
 
 - Configure: success, exit 0.
 - `-Werror` build: exit 0, zero `warning:` or `error:` lines in the build log.
-- Unit suite: 184 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 184
+- Unit suite: 191 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 191
   cases are 145 pre-existing cases + 9 protocol + 9 black box/worker-health +
-  11 supervisor (10 planned + 1 Task 3 review regression) + 10
-  identity/reconciliation (4 single-instance + 6 reconciliation).
+  15 supervisor (10 planned + 1 duplicate-`Hung` regression + 4 final-review
+  regressions) + 13 identity/reconciliation (4 single-instance + 9
+  reconciliation).
 - CTest: 8/8 passed, 100%, exit 0.
 - `npm test` with `CHROME_BIN`: 3/3 pass, 0 fail, exit 0. Without
   `CHROME_BIN` the existing contract test fails with `Chrome did not start`,
@@ -1996,12 +2110,19 @@ Observed results:
    regression test `supervisor_duplicate_hung_does_not_consume_budget` sets
    `max_restarts = 1`, sends two `Hung` events, asserts the second returns no
    actions, and asserts safe mode is not entered. The plan's expected counts
-   were corrected in `c087857` (174 after Task 3, 184 final).
+   were corrected in `c087857` and later raised to 178 after Task 3 and 191
+   final by the final whole-branch review.
 3. None of the Task 4 code blocks needed correction. The tests reached RED
    through missing headers and GREEN with the implementations exactly as
    specified. `journal_reconcile.cpp` keeps the planned `<algorithm>` include
    even though only `<utility>` is used; it produces no diagnostic under the
    project warning set.
+4. The final review fixed the rolling restart budget by saturating the backoff
+   index, enforced the Start/Started backoff invariant, and made reconciliation
+   populate `kill_edge`/`hide_overlay`/`resume_wps` for RestoreWps and SafeMode.
+   `Clean` now preserves the journal's target slide for diagnostics. Seven
+   tests were added (4 supervisor, 3 reconciliation). The plan counts are now
+   178 after Task 3 and 191 final.
 
 ### Minor coverage notes
 
@@ -2025,3 +2146,15 @@ Observed results:
 - Plan 6: event-driven scheduling, thread priorities, power policy, and fault
   injection.
 - Plan 8: Windows end-to-end acceptance and release packaging.
+
+### Plan 4B obligations
+
+- Call `Tick()` at least every 100 ms, or extend `NextDeadline()` with the
+  heartbeat-stall check.
+- Implement the 15-second legacy lock reclaim.
+- Map the black box onto shared memory with atomics/raw entry and
+  `offsetof`/trivially-copyable assertions.
+- Validate frame types.
+- Apply every true reconciliation flag (`kill_edge`, `hide_overlay`,
+  `resume_wps`).
+- Update the design spec 10.1 directory tree for the new `core/` modules.

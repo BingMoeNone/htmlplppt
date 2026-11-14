@@ -13,9 +13,10 @@ const JournalRecord* LastStateRecord(const std::vector<JournalRecord>& tail) {
   return nullptr;
 }
 
-ReconcileDecision Clean(std::string reason) {
+ReconcileDecision Clean(std::string reason, int target_slide) {
   ReconcileDecision decision;
   decision.outcome = ReconcileOutcome::Clean;
+  decision.target_slide = target_slide;
   decision.reason = std::move(reason);
   return decision;
 }
@@ -26,7 +27,7 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
                                    const ReconcileFacts& facts,
                                    std::string_view run_id) {
   const JournalRecord* last = LastStateRecord(tail);
-  if (last == nullptr) return Clean("empty journal");
+  if (last == nullptr) return Clean("empty journal", 0);
 
   ReconcileDecision decision;
   decision.target_slide = last->slide;
@@ -52,6 +53,8 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
   if (last->state == "Live" || last->state == "Returning") {
     if (facts.can_restore_wps) {
       decision.outcome = ReconcileOutcome::RestoreWps;
+      decision.kill_edge = facts.edge_process_alive;
+      decision.hide_overlay = facts.overlay_owned;
       decision.resume_wps = true;
       decision.reason = "restore WPS after an interrupted live/return state";
       return decision;
@@ -63,7 +66,7 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
       decision.reason = "clean up an interrupted live/return state";
       return decision;
     }
-    return Clean("live/return state has no leftover resources");
+    return Clean("live/return state has no leftover resources", last->slide);
   }
 
   if (last->state == "CoverIn" || last->state == "EdgeStarting" ||
@@ -78,6 +81,9 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
 
   if (last->state == "Faulted" || last->state == "SafeMode") {
     decision.outcome = ReconcileOutcome::SafeMode;
+    decision.kill_edge = facts.edge_process_alive;
+    decision.hide_overlay = facts.overlay_owned;
+    decision.resume_wps = facts.can_restore_wps;
     decision.reason = "previous run ended in " + last->state;
     return decision;
   }

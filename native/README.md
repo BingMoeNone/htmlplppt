@@ -147,6 +147,10 @@ stale heartbeats.
 `RunLegacyFallback`, and `StopComplete`. It uses a 2 s heartbeat timeout, a
 5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s backoff with
 jitter. `NextDeadline()` exposes the pending restart; `Tick()` dispatches it.
+The host must call `Tick()` at least every 100 ms (design spec 6.1);
+`NextDeadline()` exposes restart deadlines but not the heartbeat-stall check.
+`Start()` and a late `Started` are ignored while a restart is scheduled; the
+scheduled restart is authoritative.
 
 `core/single_instance` derives a stable instance fingerprint and mutex name
 from the canonical config directory plus config hash, formats the
@@ -154,6 +158,10 @@ from the canonical config directory plus config hash, formats the
 `core/journal_reconcile` decides whether startup should clean up, take over,
 restore WPS, or enter SafeMode from the last journal state and observed
 resources.
+
+For reconciliation, every outcome fills `kill_edge`, `hide_overlay`, and
+`resume_wps` from the observed facts; the host must apply every true flag.
+`Clean` preserves the last slide for diagnostics but requests no actions.
 
 Plan 4B maps these cores onto Windows Job Objects, named pipes, shared memory,
 MiniDump, process launch/termination, and CLI mode dispatch. No Windows API is

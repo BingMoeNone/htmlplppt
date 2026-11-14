@@ -1,5 +1,6 @@
 #include "core/supervisor.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace htmlppt {
@@ -12,7 +13,10 @@ SupervisorCore::SupervisorCore(SupervisorConfig config, Clock& clock)
       random_state_(config_.seed == 0 ? 0x9e3779b9u : config_.seed) {}
 
 std::vector<SupervisorAction> SupervisorCore::Start() {
-  if (worker_running_ || safe_mode_ || stopping_) return {};
+  if (worker_running_ || safe_mode_ || stopping_ ||
+      restart_deadline_.has_value()) {
+    return {};
+  }
   worker_running_ = true;
   sequence_.reset(clock_.now());
   return {{SupervisorActionKind::StartWorker, "start worker"}};
@@ -28,7 +32,9 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
   }
   switch (event.kind) {
     case WorkerEventKind::Started:
-      if (stopping_) return {};
+      if (stopping_ || worker_running_ || restart_deadline_.has_value()) {
+        return {};
+      }
       worker_running_ = true;
       sequence_.reset(event.at);
       return {};
@@ -96,11 +102,11 @@ std::vector<SupervisorAction> SupervisorCore::Tick() {
 }
 
 std::optional<Duration> SupervisorCore::BackoffFor(int attempt) {
-  if (attempt < 0 ||
-      static_cast<std::size_t>(attempt) >= config_.backoff.size()) {
-    return std::nullopt;
-  }
-  Duration delay = config_.backoff[static_cast<std::size_t>(attempt)];
+  if (config_.backoff.empty()) return std::nullopt;
+  const std::size_t index = std::min<std::size_t>(
+      static_cast<std::size_t>(std::max(attempt, 0)),
+      config_.backoff.size() - 1);
+  Duration delay = config_.backoff[index];
   if (config_.jitter_ratio > 0.0) {
     const auto max_jitter = static_cast<long long>(
         static_cast<double>(delay.count()) * config_.jitter_ratio);

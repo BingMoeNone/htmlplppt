@@ -193,3 +193,65 @@ HTMLPPT_TEST_CASE(supervisor_stale_heartbeat_after_stop_is_ignored) {
   clock.advance(Duration{3000});
   HTMLPPT_CHECK(core.Tick().empty());
 }
+
+HTMLPPT_TEST_CASE(supervisor_rolling_window_allows_restart_after_expiry) {
+  FakeClock clock;
+  auto config = Config();
+  config.max_restarts = 2;
+  config.restart_window = Duration{1000};
+  config.backoff = {Duration{10}, Duration{20}};
+  SupervisorCore core(config, clock);
+  core.Start();
+  for (int i = 0; i < 2; ++i) {
+    core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+    AdvanceToDeadline(core, clock);
+    const auto restart = core.Tick();
+    HTMLPPT_CHECK(HasAction(restart, SupervisorActionKind::RestartWorker));
+  }
+  clock.advance(Duration{1001});
+  const auto after_window =
+      core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  HTMLPPT_CHECK(!core.safe_mode());
+  HTMLPPT_CHECK(HasAction(after_window, SupervisorActionKind::RequestDump));
+  const auto deadline = core.NextDeadline();
+  HTMLPPT_CHECK(deadline.has_value());
+  HTMLPPT_CHECK_EQ(
+      std::chrono::duration_cast<Duration>(*deadline - clock.now()).count(),
+      20);
+}
+
+HTMLPPT_TEST_CASE(supervisor_start_during_backoff_is_ignored) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto started = core.Start();
+  HTMLPPT_CHECK(started.empty());
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
+HTMLPPT_TEST_CASE(supervisor_started_during_backoff_is_ignored) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Event(WorkerEventKind::Hung, clock.now()));
+  const auto started =
+      core.Handle(Event(WorkerEventKind::Started, clock.now()));
+  HTMLPPT_CHECK(started.empty());
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+HTMLPPT_TEST_CASE(supervisor_duplicate_started_does_not_reset_heartbeat) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1500});
+  core.Handle(Event(WorkerEventKind::Started, clock.now()));
+  clock.advance(Duration{600});
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+}
