@@ -133,3 +133,51 @@ HTMLPPT_TEST_CASE(config_cli_map_override_is_appended) {
   HTMLPPT_CHECK_EQ(*result.config->active.targets.back().slide, 7);
   HTMLPPT_CHECK_EQ(result.config->active.targets.back().html, std::string{"override.html"});
 }
+
+HTMLPPT_TEST_CASE(config_partial_edge_keeps_default_args) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "edge": { "args": ["--foo"] } },
+    "targets": [{ "slide": 1, "html": "a.html", "edge": { "maxLiveMs": 1000 } }]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  const auto& target = result.config->active.targets[0];
+  HTMLPPT_CHECK(target.edge.has_value());
+  HTMLPPT_CHECK_EQ(target.edge->args.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(target.edge->args[0], std::string{"--foo"});
+  HTMLPPT_CHECK_EQ(target.edge->max_live_ms, 1000);
+}
+
+HTMLPPT_TEST_CASE(config_cli_map_inherits_defaults) {
+  htmlppt::CliConfigOverrides overrides;
+  overrides.map_overrides[7] = "override.html";
+  const auto result = LoadConfigFromString(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "trigger": "arrive", "onFailure": "safe" },
+    "targets": []
+  })", std::filesystem::path{"watcher.json"}, overrides);
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  const auto& target = result.config->active.targets.back();
+  HTMLPPT_CHECK_EQ(target.trigger, std::string{"arrive"});
+  HTMLPPT_CHECK_EQ(target.on_failure, std::string{"safe"});
+}
+
+HTMLPPT_TEST_CASE(config_reads_large_max_bytes) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "a.html",
+      "assets": { "mode": "tree", "maxBytes": 4294967296 }
+    }]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.config->active.targets[0].assets.max_bytes,
+                   std::int64_t{4294967296});
+}

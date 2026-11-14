@@ -96,6 +96,18 @@ std::optional<int> ReadInt(const json& object, const char* key,
   return it->get<int>();
 }
 
+std::optional<std::int64_t> ReadInt64(const json& object, const char* key,
+                                      const std::string& path,
+                                      std::vector<ConfigIssue>& issues) {
+  const auto it = object.find(key);
+  if (it == object.end()) return std::nullopt;
+  if (!it->is_number_integer()) {
+    AddError(issues, FieldPath(path, key), "must be an integer");
+    return std::nullopt;
+  }
+  return it->get<std::int64_t>();
+}
+
 std::optional<bool> ReadBool(const json& object, const char* key,
                              const std::string& path,
                              std::vector<ConfigIssue>& issues) {
@@ -180,7 +192,9 @@ EdgeConfig ParseEdge(const json& value, const std::string& path,
   CheckKnownKeys(value, {"maxLiveMs", "prewarmProfile", "args"}, path, issues);
   if (auto number = ReadInt(value, "maxLiveMs", path, issues)) result.max_live_ms = *number;
   if (auto flag = ReadBool(value, "prewarmProfile", path, issues)) result.prewarm_profile = *flag;
-  result.args = ReadStringArray(value, "args", path, issues);
+  if (value.contains("args")) {
+    result.args = ReadStringArray(value, "args", path, issues);
+  }
   if (result.max_live_ms <= 0) AddError(issues, FieldPath(path, "maxLiveMs"), "must be > 0");
   return result;
 }
@@ -229,9 +243,13 @@ AssetsConfig ParseAssets(const json& value, const std::string& path,
   CheckKnownKeys(value, {"mode", "root", "include", "exclude", "maxBytes"}, path, issues);
   if (auto mode = ReadString(value, "mode", path, issues)) result.mode = *mode;
   if (auto root = ReadString(value, "root", path, issues)) result.root = *root;
-  result.include = ReadStringArray(value, "include", path, issues);
-  result.exclude = ReadStringArray(value, "exclude", path, issues);
-  if (auto bytes = ReadInt(value, "maxBytes", path, issues)) result.max_bytes = *bytes;
+  if (value.contains("include")) {
+    result.include = ReadStringArray(value, "include", path, issues);
+  }
+  if (value.contains("exclude")) {
+    result.exclude = ReadStringArray(value, "exclude", path, issues);
+  }
+  if (auto bytes = ReadInt64(value, "maxBytes", path, issues)) result.max_bytes = *bytes;
   if (!IsOneOf(result.mode, {"file", "tree", "direct"})) {
     AddError(issues, FieldPath(path, "mode"), "must be file, tree, or direct");
   }
@@ -435,6 +453,8 @@ void ApplyOverrides(Config& config, const CliConfigOverrides& overrides,
     TargetConfig target;
     target.slide = slide;
     target.html = html;
+    target.trigger = config.defaults.trigger;
+    target.on_failure = config.defaults.on_failure;
     target.source_priority = 3;
     if (slide < 1) AddError(issues, "map", "slide must be >= 1");
     if (html.empty()) AddError(issues, "map", "html must not be empty");
