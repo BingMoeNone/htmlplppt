@@ -878,27 +878,27 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
   CheckKnownKeys(root,
                  {"version", "activeProfile", "deck", "stateDir", "stage",
                   "defaults", "targets", "profiles", "legacy"},
-                 "$", result.issues);
+                 "", result.issues);
 
   Config config;
   config.source_path = source_path;
-  if (auto version = ReadInt(root, "version", "$", result.issues)) {
+  if (auto version = ReadInt(root, "version", "", result.issues)) {
     config.version = *version;
   } else {
     AddError(result.issues, "version", "required integer is missing");
   }
   if (config.version != 1) AddError(result.issues, "version", "only version 1 is supported");
-  config.active_profile = ReadString(root, "activeProfile", "$", result.issues).value_or("");
-  config.top_level.deck = ReadString(root, "deck", "$", result.issues).value_or("");
-  config.top_level.state_dir = ReadString(root, "stateDir", "$", result.issues).value_or("");
+  config.active_profile = ReadString(root, "activeProfile", "", result.issues).value_or("");
+  config.top_level.deck = ReadString(root, "deck", "", result.issues).value_or("");
+  config.top_level.state_dir = ReadString(root, "stateDir", "", result.issues).value_or("");
   if (const auto it = root.find("stage"); it != root.end()) {
-    config.top_level.stage = ParseStage(*it, "$.stage", result.issues);
+    config.top_level.stage = ParseStage(*it, "stage", result.issues);
   }
   if (const auto it = root.find("defaults"); it != root.end()) {
-    config.defaults = ParseDefaults(*it, "$.defaults", config.defaults, result.issues);
+    config.defaults = ParseDefaults(*it, "defaults", config.defaults, result.issues);
   }
   if (const auto it = root.find("targets"); it != root.end()) {
-    config.top_level.targets = ParseTargets(*it, "$.targets", 1, config.defaults, result.issues);
+    config.top_level.targets = ParseTargets(*it, "targets", 1, config.defaults, result.issues);
   }
 
   config.active = config.top_level;
@@ -1317,42 +1317,42 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
   CheckKnownKeys(root,
                  {"version", "activeProfile", "deck", "stateDir", "stage",
                   "defaults", "targets", "profiles", "legacy"},
-                 "$", result.issues);
+                 "", result.issues);
 
   Config config;
   config.source_path = source_path;
-  if (auto version = ReadInt(root, "version", "$", result.issues)) {
+  if (auto version = ReadInt(root, "version", "", result.issues)) {
     config.version = *version;
   } else {
     AddError(result.issues, "version", "required integer is missing");
   }
   if (config.version != 1) AddError(result.issues, "version", "only version 1 is supported");
-  config.active_profile = ReadString(root, "activeProfile", "$", result.issues).value_or("");
-  config.top_level.deck = ReadString(root, "deck", "$", result.issues).value_or("");
-  config.top_level.state_dir = ReadString(root, "stateDir", "$", result.issues).value_or("");
+  config.active_profile = ReadString(root, "activeProfile", "", result.issues).value_or("");
+  config.top_level.deck = ReadString(root, "deck", "", result.issues).value_or("");
+  config.top_level.state_dir = ReadString(root, "stateDir", "", result.issues).value_or("");
   if (const auto it = root.find("stage"); it != root.end()) {
-    config.top_level.stage = ParseStage(*it, "$.stage", result.issues);
+    config.top_level.stage = ParseStage(*it, "stage", result.issues);
   }
   if (const auto it = root.find("defaults"); it != root.end()) {
-    config.defaults = ParseDefaults(*it, "$.defaults", config.defaults, result.issues);
+    config.defaults = ParseDefaults(*it, "defaults", config.defaults, result.issues);
   }
   if (const auto it = root.find("targets"); it != root.end()) {
-    config.top_level.targets = ParseTargets(*it, "$.targets", 1, config.defaults, result.issues);
+    config.top_level.targets = ParseTargets(*it, "targets", 1, config.defaults, result.issues);
   }
   if (const auto it = root.find("profiles"); it != root.end()) {
     if (!it->is_object()) {
-      AddError(result.issues, "$.profiles", "must be an object");
+      AddError(result.issues, "profiles", "must be an object");
     } else {
       for (auto profile = it->begin(); profile != it->end(); ++profile) {
         result.available_profiles.push_back(profile.key());
         config.profiles[profile.key()] =
-            ParseProfile(*profile, "$.profiles." + profile.key(), 2, config.defaults,
+            ParseProfile(*profile, "profiles." + profile.key(), 2, config.defaults,
                          result.issues);
       }
     }
   }
   if (const auto it = root.find("legacy"); it != root.end()) {
-    config.legacy = ParseLegacy(*it, "$.legacy", result.issues);
+    config.legacy = ParseLegacy(*it, "legacy", result.issues);
   }
 
   std::string selected = overrides.profile.empty() ? config.active_profile : overrides.profile;
