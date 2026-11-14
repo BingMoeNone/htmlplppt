@@ -469,6 +469,8 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
     case State::SafeMode:
     case State::Exited:
     case State::DegradedNoSupervisor:
+      // Stopping/Faulted/SafeMode/Exited are handled by the early returns above;
+      // the remaining states are structural failures.
       return HandleStructuralFailure(event.detail);
   }
   return BeginRetry(operation, event.at, event.detail);
@@ -571,6 +573,7 @@ std::vector<Action> StateMachine::HandleSwitchFailure(ClockPoint at,
                                : config_.max_consecutive_trigger_failures;
 
   ClearDeadlines();
+  com_window_.reset();
   ResetRetries();
   ++consecutive_trigger_failures_;
 

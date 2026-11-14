@@ -107,6 +107,8 @@ struct RunPlan {
 struct StateMachineConfig {
   Duration startup_ignore{1000};
   Duration return_ignore{2000};
+  // Host-facing overlay/focus timings; the state machine does not read
+  // cover_fade, cover_hold, or focus_timeout directly.
   Duration cover_fade{300};
   Duration cover_hold{1000};
   Duration cover_max_hold{10000};

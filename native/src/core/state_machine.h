@@ -79,6 +79,8 @@ class StateMachine {
   int prev_slide_ = -1;
   std::set<int> done_slides_;
   std::optional<int> current_target_slide_;
+  // Diagnostic/status only. Duplicate-resume prevention is enforced by the
+  // Returning/ReturnCoverOut state gates, not by this flag.
   bool return_prepared_ = false;
   bool degraded_ = false;
   bool safe_mode_ = false;

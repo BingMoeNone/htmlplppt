@@ -12,9 +12,17 @@ FailureKind EscalateFailure(State state) {
     case State::Returning:
     case State::ReturnCoverOut:
       return FailureKind::Return;
-    default:
+    case State::Boot:
+    case State::Warming:
+    case State::Monitoring:
+    case State::Stopping:
+    case State::Faulted:
+    case State::SafeMode:
+    case State::Exited:
+    case State::DegradedNoSupervisor:
       return FailureKind::Structural;
   }
+  return FailureKind::Structural;
 }
 
 ComErrorWindow::ComErrorWindow(Duration window) : window_(window) {}

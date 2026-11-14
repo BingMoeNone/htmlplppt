@@ -102,8 +102,8 @@ Failure policy:
   legacy-fallback action.
 - Return failures hide the cover and enter Faulted; Edge is left for manual
   close, and `edgeClosed` only journals.
-- Structural failures clean up and enter SafeMode; `legacy` policy emits a
-  legacy-fallback action.
+- Structural failures hide the cover, kill the owned Edge job, and enter
+  SafeMode; `legacy` policy emits a legacy-fallback action.
 - Stop moves to Stopping, emits cleanup actions, and enters Exited after
   `cleanupDone`. Supervisor loss continues by default or cleans up when
   configured.
@@ -112,8 +112,21 @@ Timers: cover hold safety, Edge ready 20s, Edge live 600s, return resume,
 cover fade-out completion, and retry backoff. `NextDeadline()` exposes the
 next timer; `Tick()` dispatches the due timeout.
 
-Host contract: `showStarted` means a genuinely new slideshow. The
-`SlideShowBegin` produced by `ResumeShow` must not be forwarded as
-`showStarted`, or the state machine clears `done` and a target can re-trigger.
-`LaunchEdge` retries are preceded by `KillEdge`, so the host's `KillEdge`
-must be idempotent.
+Host contracts (Plan 4/5):
+
+- `showStarted` means a genuinely new slideshow. The `SlideShowBegin` produced
+  by `ResumeShow` must not be forwarded as `showStarted`, or the state machine
+  clears `done` and a target can re-trigger.
+- Events carry no trigger generation. The host must tag or filter events so a
+  late `edgeReady`, `edgeClosed`, or `showEnded` from a previous trigger cannot
+  reach the current generation.
+- `ShowExit` has no built-in timer. If `ExitShow` does not produce `showEnded`,
+  the host must synthesize a switch failure; otherwise the cover can remain
+  visible.
+- Execute action batches in order and abort the remainder when an action fails
+  (a failed `ResumeShow` must not be followed by `CoverFadeOut`).
+- `KillEdge` and `RestoreShow` must be idempotent.
+- COM failures are evaluated when the next COM failure event arrives; the
+  error window is not a timer.
+- Cover fade/hold and focus timings are host-facing fields; the host maps the
+  Plan 2 configuration into `StateMachineConfig` and `TargetPlan`.

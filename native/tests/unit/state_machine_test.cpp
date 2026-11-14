@@ -256,6 +256,13 @@ HTMLPPT_TEST_CASE(state_machine_cover_hold_in_returning_resumes_show) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeOut));
   HTMLPPT_CHECK(HasJournalContaining(actions, "resumed at slide 5"));
+  std::size_t resume_index = actions.size();
+  std::size_t fade_index = actions.size();
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    if (actions[i].kind == ActionKind::ResumeShow) resume_index = i;
+    if (actions[i].kind == ActionKind::CoverFadeOut) fade_index = i;
+  }
+  HTMLPPT_CHECK(resume_index < fade_index);
 }
 
 HTMLPPT_TEST_CASE(state_machine_cover_done_returns_to_monitoring) {
@@ -586,6 +593,101 @@ HTMLPPT_TEST_CASE(state_machine_snapshot_reports_guards) {
   HTMLPPT_CHECK_EQ(snapshot.current_target_slide.value_or(0), 5);
   HTMLPPT_CHECK(snapshot.show_active);
   HTMLPPT_CHECK(m.machine->IsDone(5));
+}
+
+HTMLPPT_TEST_CASE(state_machine_return_resume_timeout_enters_faulted) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  m.Advance(10001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::KillEdge));
+}
+
+HTMLPPT_TEST_CASE(state_machine_returning_transient_failure_retries_then_faults) {
+  auto config = MakeConfig();
+  config.retry.max_attempts = 1;
+  config.retry.jitter_ratio = 0.0;
+  Machine m(config);
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  const auto failed = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Other,
+                  "cover failed"));
+  HTMLPPT_CHECK(HasJournalContaining(failed, "retry in"));
+  m.AdvanceToNextDeadline();
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::CoverFadeIn));
+  const auto exhausted = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Other,
+                  "cover failed again"));
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(exhausted, ActionKind::CoverHide));
+}
+
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_return_enters_faulted) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+}
+
+HTMLPPT_TEST_CASE(state_machine_edge_closed_before_ready_is_switch_failure) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  const auto actions = m.machine->Handle(MakeEdgeClosed(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::RestoreShow));
+}
+
+HTMLPPT_TEST_CASE(state_machine_com_success_resets_window) {
+  auto config = MakeConfig();
+  config.com_error_window = Duration{2000};
+  config.retry.max_attempts = 10;
+  Machine m(config);
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  m.machine->Handle(MakeFailure(m.clock.now(), FailureKind::Transient,
+                                FailureSource::Com, "COM busy"));
+  m.machine->Handle(MakeEdgeReady(m.clock.now()));
+  m.Advance(2000);
+  const auto actions = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Com,
+                  "COM busy"));
+  HTMLPPT_CHECK(m.machine->state() != State::SafeMode);
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::EnterSafeMode));
+}
+
+HTMLPPT_TEST_CASE(state_machine_per_target_cover_max_hold_override) {
+  auto plan = MakePlan();
+  plan.targets[0].cover_max_hold = Duration{5000};
+  Machine m(MakeConfig(), plan);
+  m.TriggerTargetFive();
+  m.Advance(5001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::RestoreShow));
+}
+
+HTMLPPT_TEST_CASE(state_machine_per_target_failure_threshold_override) {
+  auto config = MakeConfig();
+  config.max_consecutive_trigger_failures = 5;
+  auto plan = MakePlan();
+  plan.targets[0].max_consecutive_trigger_failures = 1;
+  Machine m(config, plan);
+  m.TriggerTargetFive();
+  m.Advance(10001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::SafeMode);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
 }
 
 HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {

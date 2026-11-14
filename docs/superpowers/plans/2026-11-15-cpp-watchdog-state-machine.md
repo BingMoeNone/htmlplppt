@@ -268,6 +268,8 @@ struct RunPlan {
 struct StateMachineConfig {
   Duration startup_ignore{1000};
   Duration return_ignore{2000};
+  // Host-facing overlay/focus timings; the state machine does not read
+  // cover_fade, cover_hold, or focus_timeout directly.
   Duration cover_fade{300};
   Duration cover_hold{1000};
   Duration cover_max_hold{10000};
@@ -487,9 +489,17 @@ FailureKind EscalateFailure(State state) {
     case State::Returning:
     case State::ReturnCoverOut:
       return FailureKind::Return;
-    default:
+    case State::Boot:
+    case State::Warming:
+    case State::Monitoring:
+    case State::Stopping:
+    case State::Faulted:
+    case State::SafeMode:
+    case State::Exited:
+    case State::DegradedNoSupervisor:
       return FailureKind::Structural;
   }
+  return FailureKind::Structural;
 }
 
 ComErrorWindow::ComErrorWindow(Duration window) : window_(window) {}
@@ -806,6 +816,13 @@ HTMLPPT_TEST_CASE(state_machine_cover_hold_in_returning_resumes_show) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeOut));
   HTMLPPT_CHECK(HasJournalContaining(actions, "resumed at slide 5"));
+  std::size_t resume_index = actions.size();
+  std::size_t fade_index = actions.size();
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    if (actions[i].kind == ActionKind::ResumeShow) resume_index = i;
+    if (actions[i].kind == ActionKind::CoverFadeOut) fade_index = i;
+  }
+  HTMLPPT_CHECK(resume_index < fade_index);
 }
 
 HTMLPPT_TEST_CASE(state_machine_cover_done_returns_to_monitoring) {
@@ -1137,6 +1154,101 @@ HTMLPPT_TEST_CASE(state_machine_snapshot_reports_guards) {
   HTMLPPT_CHECK(m.machine->IsDone(5));
 }
 
+HTMLPPT_TEST_CASE(state_machine_return_resume_timeout_enters_faulted) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  m.Advance(10001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::KillEdge));
+}
+
+HTMLPPT_TEST_CASE(state_machine_returning_transient_failure_retries_then_faults) {
+  auto config = MakeConfig();
+  config.retry.max_attempts = 1;
+  config.retry.jitter_ratio = 0.0;
+  Machine m(config);
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  const auto failed = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Other,
+                  "cover failed"));
+  HTMLPPT_CHECK(HasJournalContaining(failed, "retry in"));
+  m.AdvanceToNextDeadline();
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::CoverFadeIn));
+  const auto exhausted = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Other,
+                  "cover failed again"));
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(exhausted, ActionKind::CoverHide));
+}
+
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_return_enters_faulted) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Faulted);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+}
+
+HTMLPPT_TEST_CASE(state_machine_edge_closed_before_ready_is_switch_failure) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  const auto actions = m.machine->Handle(MakeEdgeClosed(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::RestoreShow));
+}
+
+HTMLPPT_TEST_CASE(state_machine_com_success_resets_window) {
+  auto config = MakeConfig();
+  config.com_error_window = Duration{2000};
+  config.retry.max_attempts = 10;
+  Machine m(config);
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  m.machine->Handle(MakeFailure(m.clock.now(), FailureKind::Transient,
+                                FailureSource::Com, "COM busy"));
+  m.machine->Handle(MakeEdgeReady(m.clock.now()));
+  m.Advance(2000);
+  const auto actions = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Com,
+                  "COM busy"));
+  HTMLPPT_CHECK(m.machine->state() != State::SafeMode);
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::EnterSafeMode));
+}
+
+HTMLPPT_TEST_CASE(state_machine_per_target_cover_max_hold_override) {
+  auto plan = MakePlan();
+  plan.targets[0].cover_max_hold = Duration{5000};
+  Machine m(MakeConfig(), plan);
+  m.TriggerTargetFive();
+  m.Advance(5001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::RestoreShow));
+}
+
+HTMLPPT_TEST_CASE(state_machine_per_target_failure_threshold_override) {
+  auto config = MakeConfig();
+  config.max_consecutive_trigger_failures = 5;
+  auto plan = MakePlan();
+  plan.targets[0].max_consecutive_trigger_failures = 1;
+  Machine m(config, plan);
+  m.TriggerTargetFive();
+  m.Advance(10001);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::SafeMode);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
+}
+
 HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {
   Machine m;
   m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
@@ -1241,6 +1353,8 @@ class StateMachine {
   int prev_slide_ = -1;
   std::set<int> done_slides_;
   std::optional<int> current_target_slide_;
+  // Diagnostic/status only. Duplicate-resume prevention is enforced by the
+  // Returning/ReturnCoverOut state gates, not by this flag.
   bool return_prepared_ = false;
   bool degraded_ = false;
   bool safe_mode_ = false;
@@ -1736,6 +1850,8 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
     case State::SafeMode:
     case State::Exited:
     case State::DegradedNoSupervisor:
+      // Stopping/Faulted/SafeMode/Exited are handled by the early returns above;
+      // the remaining states are structural failures.
       return HandleStructuralFailure(event.detail);
   }
   return BeginRetry(operation, event.at, event.detail);
@@ -1838,6 +1954,7 @@ std::vector<Action> StateMachine::HandleSwitchFailure(ClockPoint at,
                                : config_.max_consecutive_trigger_failures;
 
   ClearDeadlines();
+  com_window_.reset();
   ResetRetries();
   ++consecutive_trigger_failures_;
 
@@ -1954,7 +2071,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 138/138 unit cases pass, CTest 8/8, no warnings.
+Expected: 145/145 unit cases pass, CTest 8/8, no warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -2012,8 +2129,8 @@ Failure policy:
   legacy-fallback action.
 - Return failures hide the cover and enter Faulted; Edge is left for manual
   close, and `edgeClosed` only journals.
-- Structural failures clean up and enter SafeMode; `legacy` policy emits a
-  legacy-fallback action.
+- Structural failures hide the cover, kill the owned Edge job, and enter
+  SafeMode; `legacy` policy emits a legacy-fallback action.
 - Stop moves to Stopping, emits cleanup actions, and enters Exited after
   `cleanupDone`. Supervisor loss continues by default or cleans up when
   configured.
@@ -2022,11 +2139,24 @@ Timers: cover hold safety, Edge ready 20s, Edge live 600s, return resume,
 cover fade-out completion, and retry backoff. `NextDeadline()` exposes the
 next timer; `Tick()` dispatches the due timeout.
 
-Host contract: `showStarted` means a genuinely new slideshow. The
-`SlideShowBegin` produced by `ResumeShow` must not be forwarded as
-`showStarted`, or the state machine clears `done` and a target can re-trigger.
-`LaunchEdge` retries are preceded by `KillEdge`, so the host's `KillEdge`
-must be idempotent.
+Host contracts (Plan 4/5):
+
+- `showStarted` means a genuinely new slideshow. The `SlideShowBegin` produced
+  by `ResumeShow` must not be forwarded as `showStarted`, or the state machine
+  clears `done` and a target can re-trigger.
+- Events carry no trigger generation. The host must tag or filter events so a
+  late `edgeReady`, `edgeClosed`, or `showEnded` from a previous trigger cannot
+  reach the current generation.
+- `ShowExit` has no built-in timer. If `ExitShow` does not produce `showEnded`,
+  the host must synthesize a switch failure; otherwise the cover can remain
+  visible.
+- Execute action batches in order and abort the remainder when an action fails
+  (a failed `ResumeShow` must not be followed by `CoverFadeOut`).
+- `KillEdge` and `RestoreShow` must be idempotent.
+- COM failures are evaluated when the next COM failure event arrives; the
+  error window is not a timer.
+- Cover fade/hold and focus timings are host-facing fields; the host maps the
+  Plan 2 configuration into `StateMachineConfig` and `TargetPlan`.
 ````
 
 Update the `Layout` section with:
@@ -2049,7 +2179,7 @@ CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrom
 
 Expected:
 
-- Native unit tests: 138/138 pass.
+- Native unit tests: 145/145 pass.
 - CTest: 8/8 pass.
 - `-Werror` build with no warnings.
 - `npm test`: expected 3/3 with the `CHROME_BIN` set above. Without `CHROME_BIN`, the existing contract smoke test fails with `Chrome did not start`.
@@ -2081,7 +2211,7 @@ git commit -m "docs: record Plan 3 as-built amendments"
 | Trigger rule: forward leave from target, once per show; arrive mode | Task 2 `OnSlideChanged` |
 | Return signal via page title, Alt+F4 fallback, Edge live timeout | Task 2 `OnReturnRequested`, `OnEdgeClosed`, `OnTimeout` |
 | Transient retries with backoff and jitter | Task 2 `BeginRetry`/`ExecuteRetry` |
-| Switch failure: hide cover, kill Edge, restore WPS, self-heal/strict/safe/legacy, consecutive threshold | Task 2 `HandleSwitchFailure` |
+| Switch failure: hide cover, kill Edge; Safe/Legacy policy or consecutive threshold enters SafeMode without `RestoreShow`, otherwise restore WPS and self-heal or keep done per target policy | Task 2 `HandleSwitchFailure` |
 | Return failure: hide cover, diagnostic, keep Edge, Faulted, edgeClosed logs only, manual retry | Task 2 `HandleReturnFailure`, `OnEdgeClosed`, `OnReturnRequested` |
 | Structural failure: cleanup, SafeMode, legacy fallback | Task 2 `HandleStructuralFailure` |
 | Stop/timeout cleanup | Task 2 `BeginCleanup`, `OnCleanupDone`, timer handlers |
@@ -2136,7 +2266,7 @@ Observed results:
 
 - Configure: success, exit 0.
 - `-Werror` build: exit 0, zero `warning` or `error` lines in the full build log.
-- Unit suite: 138 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 138 cases are 97 pre-existing cases + 6 Task 1 failure-policy cases + 34 Task 2 state-machine cases + 1 Task 2 fix-round regression case (`state_machine_launch_retry_kills_edge_first`).
+- Unit suite: 145 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 145 cases are 97 pre-existing cases + 6 Task 1 failure-policy cases + 34 Task 2 state-machine cases + 1 Task 2 fix-round regression case (`state_machine_launch_retry_kills_edge_first`) + 7 final-review tests.
 - CTest: 8/8 passed, 100%, exit 0.
 - `npm test` with `CHROME_BIN`: 3/3 pass, 0 fail, exit 0. Without `CHROME_BIN` the existing contract smoke test fails with `Chrome did not start`, so the variable is required in this WSL environment.
 
@@ -2157,13 +2287,19 @@ Observed results:
 5. Unused `#include <algorithm>` removed from `state_machine.cpp`.
 6. `CoverDone` timeout preserves the target slide. The handler captures `current_target_slide_.value_or(0)` before resetting the target and uses that value for the `Journal`, `CoverHide`, and `Diagnostic` actions, which previously hard-coded `0`. `state_machine_cover_done_timeout_hides_cover_and_monitors` now also asserts `CoverHide.slide == 5`.
 7. The Task 3 review corrected the README switch-failure contract: Safe, legacy, and threshold-exceeded paths enter SafeMode without `RestoreShow`. The as-built deferred ownership now follows the Plan 1 roadmap (Plans 4-8).
+8. The final review added tests for ReturnResume timeout, Returning retry/exhaustion, ShowEnded during return, EdgeClosed before ready, COM success reset, and both per-target overrides; it also made EscalateFailure explicit, reset the COM window on switch failure, clarified return_prepared_, and documented the host contracts above.
 
 The Task 2 code blocks in this plan were corrected in commit `2da1819` so the plan text and the implemented behavior agree.
 
 ### Plan 4/5 host contracts
 
 - `showStarted` must mean a genuinely new slideshow. The `SlideShowBegin` notification produced by `ResumeShow` must not be forwarded as `showStarted`; forwarding it clears `done`, and the same target can trigger again.
-- `KillEdge` must be idempotent. Because `LaunchEdge` retries are preceded by `KillEdge` (deviation 3), the Windows host can receive a kill request for an Edge job that is already gone.
+- Events carry no trigger generation. The host must tag or filter events so a late `edgeReady`, `edgeClosed`, or `showEnded` from a previous trigger cannot reach the current generation.
+- `ShowExit` has no built-in timer. If `ExitShow` does not produce `showEnded`, the host must synthesize a switch failure; otherwise the cover can remain visible.
+- Execute action batches in order and abort the remainder when an action fails. A failed `ResumeShow` must not be followed by `CoverFadeOut`.
+- `KillEdge` and `RestoreShow` must be idempotent. Because `LaunchEdge` retries are preceded by `KillEdge` (deviation 3), the Windows host can receive a kill request for an Edge job that is already gone.
+- COM failures are evaluated when the next COM failure event arrives; the error window is not a timer.
+- Cover fade/hold and focus timings are host-facing fields; the host maps the Plan 2 configuration into `StateMachineConfig` and `TargetPlan`.
 
 ### Deferred to Plan 4-8
 
@@ -2180,12 +2316,8 @@ The Task 2 code blocks in this plan were corrected in commit `2da1819` so the pl
 
 Minor coverage gaps recorded by the Task 1 and Task 2 reviews, left open by design:
 
-- `EscalateFailure` has a default branch that maps unlisted states, including `Stopping` and `DegradedNoSupervisor`, to `FailureKind::Structural`. A future `State` addition therefore will not fail the build through `-Wswitch`.
 - Event factories have no direct smoke tests; they are exercised indirectly by the state-machine cases. `EventKind::ConfigReloaded` has no factory yet and is deferred with hot reload.
 - `Event` defaults to `Timeout`/`Retry` by design, so a default-constructed event is not meaningful.
-- Per-target `cover_max_hold` and `max_consecutive_trigger_failures` overrides are untested.
-- The `Returning` transient retry and retry-exhaustion path is untested.
-- `ShowEnded` during return is untested; it routes to `HandleReturnFailure("show ended during return")` and sets `return_prepared_` per the plan.
-- The strict-policy return action-order assertion is missing.
+- Design choice: the spec's `showResumed` and `workerFault` events are folded into `CoverHold` and `Failure`; Faulted emits cover hide, journal, and diagnostic actions plus manual retry, rather than an automatic WPS restore.
 
 Accepted behavior: SafeMode is latched and has no exit transition in this plan, so leaving it requires an external stop.
