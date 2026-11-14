@@ -342,6 +342,32 @@ HTMLPPT_TEST_CASE(resolve_html_query_merges) {
   HTMLPPT_CHECK_EQ(result.targets[1].fragment, std::string{""});
 }
 
+HTMLPPT_TEST_CASE(resolve_html_query_duplicate_keys_allowed) {
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [
+      {
+        "slide": 1,
+        "html": "page1.html?a=1&a=2",
+        "htmlQuery": "?b=1&b=2"
+      },
+      {
+        "slide": 2,
+        "html": "page2.html",
+        "htmlQuery": "?c=1&c=2"
+      }
+    ]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(result.targets[0].query, std::string{"a=1&a=2&b=1&b=2"});
+  HTMLPPT_CHECK_EQ(result.targets[1].query, std::string{"c=1&c=2"});
+}
+
 HTMLPPT_TEST_CASE(resolve_html_query_conflict) {
   Fixture fixture;
   const Config config = ParseConfig(fixture, R"({
