@@ -31,9 +31,6 @@ class StateMachine {
     CoverFadeIn,
     LaunchEdge,
     ExitShow,
-    ResumeShow,
-    FocusEdge,
-    FocusWps,
   };
 
   const TargetPlan* FindTarget(int slide) const;

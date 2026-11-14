@@ -391,6 +391,27 @@ HTMLPPT_TEST_CASE(state_machine_transient_failure_retries_after_backoff) {
   HTMLPPT_CHECK(m.machine->state() == State::Live);
 }
 
+HTMLPPT_TEST_CASE(state_machine_launch_retry_kills_edge_first) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  const auto failed = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Edge,
+                  "launch failed"));
+  HTMLPPT_CHECK(HasJournalContaining(failed, "retry in"));
+  m.AdvanceToNextDeadline();
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::LaunchEdge));
+  std::size_t kill_index = retried.size();
+  std::size_t launch_index = retried.size();
+  for (std::size_t i = 0; i < retried.size(); ++i) {
+    if (retried[i].kind == ActionKind::KillEdge) kill_index = i;
+    if (retried[i].kind == ActionKind::LaunchEdge) launch_index = i;
+  }
+  HTMLPPT_CHECK(kill_index < launch_index);
+}
+
 HTMLPPT_TEST_CASE(state_machine_retries_exhausted_escalate_to_switch_failure) {
   auto config = MakeConfig();
   config.retry.max_attempts = 1;
@@ -526,6 +547,9 @@ HTMLPPT_TEST_CASE(state_machine_cover_done_timeout_hides_cover_and_monitors) {
   HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+  const auto* hide = FindAction(actions, ActionKind::CoverHide);
+  HTMLPPT_CHECK(hide != nullptr);
+  HTMLPPT_CHECK_EQ(hide->slide, 5);
 }
 
 HTMLPPT_TEST_CASE(state_machine_show_ended_resets_done_flags) {

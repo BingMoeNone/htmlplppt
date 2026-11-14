@@ -1,6 +1,5 @@
 #include "core/state_machine.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace htmlppt {
@@ -388,15 +387,17 @@ std::vector<Action> StateMachine::OnTimeout(const Event& event) {
     case TimeoutKind::CoverDone:
       if (state_ == State::ReturnCoverOut) {
         ClearDeadline(TimeoutKind::CoverDone);
+        const int slide = current_target_slide_.value_or(0);
         Enter(State::Monitoring);
         ignore_until_ = event.at + config_.return_ignore;
         prev_slide_ = -1;
         current_target_slide_.reset();
         return_prepared_ = false;
-        auto actions = Journal("cover done timeout; hiding cover");
-        actions.push_back({ActionKind::CoverHide, 0, "cover done timeout"});
+        auto actions = Journal("cover done timeout; hiding cover", slide);
         actions.push_back(
-            {ActionKind::Diagnostic, 0, "cover fade-out timed out"});
+            {ActionKind::CoverHide, slide, "cover done timeout"});
+        actions.push_back(
+            {ActionKind::Diagnostic, slide, "cover fade-out timed out"});
         return actions;
       }
       break;
@@ -548,19 +549,12 @@ std::vector<Action> StateMachine::ExecuteRetry(ClockPoint at) {
     case RetryOperation::LaunchEdge: {
       SetDeadline(TimeoutKind::EdgeReady, at + config_.edge_ready_timeout);
       const TargetPlan* target = FindTarget(slide);
-      return {{ActionKind::LaunchEdge, slide,
+      return {{ActionKind::KillEdge, slide, "retry launch Edge"},
+              {ActionKind::LaunchEdge, slide,
                target ? target->edge_profile : std::string{}}};
     }
     case RetryOperation::ExitShow:
       return {{ActionKind::ExitShow, slide, "retry exit show"}};
-    case RetryOperation::ResumeShow:
-      SetDeadline(TimeoutKind::ReturnResume, at + config_.cover_max_hold);
-      return {{ActionKind::ResumeShow, slide, "retry resume show"},
-              {ActionKind::FocusWps, slide, "retry focus WPS"}};
-    case RetryOperation::FocusEdge:
-      return {{ActionKind::FocusEdge, slide, "retry focus Edge"}};
-    case RetryOperation::FocusWps:
-      return {{ActionKind::FocusWps, slide, "retry focus WPS"}};
     case RetryOperation::None:
       return {};
   }
