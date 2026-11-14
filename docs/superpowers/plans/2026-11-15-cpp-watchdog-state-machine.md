@@ -2108,3 +2108,71 @@ Deferred to Plan 4/5/6: supervisor/worker and IPC wiring, WPS COM host, overlay/
 ## Execution Handoff
 
 Plan 3 is ready. Execute Tasks 1-3 in order. Each task ends with a green full suite and a commit. Task 3 records the final gate and any as-built deviations.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 3 was executed end to end on branch `worktree-feat-cpp-watchdog-state-machine`. Commits: `cbbf6a4` (Task 1), `24ca3c3` (Task 2), `2da1819` (plan correction for the Task 2 review), `957e5ce` (Task 2 fix round), and the Task 3 documentation commit that contains this section. The worktree was clean after each commit.
+
+### Final gate (observed)
+
+Commands, run from the repository root:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+cmake --build native/build --parallel
+./native/build/htmlppt_core_tests
+ctest --test-dir native/build --output-on-failure
+CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
+```
+
+Observed results:
+
+- Configure: success, exit 0.
+- `-Werror` build: exit 0, zero `warning` or `error` lines in the full build log.
+- Unit suite: 138 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0. The 138 cases are 97 pre-existing cases + 6 Task 1 failure-policy cases + 34 Task 2 state-machine cases + 1 Task 2 fix-round regression case (`state_machine_launch_retry_kills_edge_first`).
+- CTest: 8/8 passed, 100%, exit 0.
+- `npm test` with `CHROME_BIN`: 3/3 pass, 0 fail, exit 0. Without `CHROME_BIN` the existing contract smoke test fails with `Chrome did not start`, so the variable is required in this WSL environment.
+
+### Source as built
+
+- Task 1 created `native/src/core/state_machine_types.h`, `native/src/core/state_machine_types.cpp`, `native/src/core/failure_policy.h`, `native/src/core/failure_policy.cpp`, and `native/tests/unit/failure_policy_test.cpp` (404 insertions, no existing files changed).
+- Task 2 created `native/src/core/state_machine.h`, `native/src/core/state_machine.cpp`, and `native/tests/unit/state_machine_test.cpp` (1360 insertions, no existing files changed).
+- The Task 2 fix round modified only those three Task 2 files (31 insertions, 16 deletions).
+- No CMake changes were needed: `src/core/*.cpp` and `tests/unit/*.cpp` are globbed with `CONFIGURE_DEPENDS`, and the new sources were picked up on the automatic re-configure.
+- No existing source, script, root test, or production documentation was modified by this plan.
+
+### Approved deviations and fixes
+
+1. `(void)event;` in `StateMachine::OnEdgeReady`. The planned implementation never reads `event`, and GCC rejects the unused parameter under `-Wall -Wextra -Wpedantic -Werror`. No behavior change; the same pattern is used by `OnCleanupDone`.
+2. Designated initialization with explicit `std::nullopt` in the test `MakePlan()` helper. The planned positional aggregate initialization set only three of the eight `TargetPlan` members; `max_consecutive_trigger_failures` and `cover_max_hold` are `std::optional` members without default member initializers, so `-Wextra` raised `-Werror=missing-field-initializers` (GCC also warns for designated initialization when such a member is omitted). The helper now uses designated initializers and sets both members to `std::nullopt`. Slide, label, edge profile, trigger mode, failure policy, and enabled state are unchanged, so every test case keeps its planned semantics.
+3. `LaunchEdge` retries emit `KillEdge` before `LaunchEdge` (commit `957e5ce`). A transient failure in `EdgeStarting` now kills the owned Edge job before relaunching, which enforces the one-Edge-process-per-trigger-generation invariant instead of relying on undocumented host behavior. The EdgeReady deadline is still re-armed before the actions. Covered by the added regression test `state_machine_launch_retry_kills_edge_first`, which asserts both actions are present and that `KillEdge` precedes `LaunchEdge`.
+4. Dead `RetryOperation` branches removed. `OnFailure` never assigned `ResumeShow`, `FocusEdge`, or `FocusWps`, so those enumerators and their `ExecuteRetry` cases were deleted. `RetryOperation` now contains only `None`, `CoverFadeIn`, `LaunchEdge`, and `ExitShow`; `None` still returns an empty action list.
+5. Unused `#include <algorithm>` removed from `state_machine.cpp`.
+6. `CoverDone` timeout preserves the target slide. The handler captures `current_target_slide_.value_or(0)` before resetting the target and uses that value for the `Journal`, `CoverHide`, and `Diagnostic` actions, which previously hard-coded `0`. `state_machine_cover_done_timeout_hides_cover_and_monitors` now also asserts `CoverHide.slide == 5`.
+
+The Task 2 code blocks in this plan were corrected in commit `2da1819` so the plan text and the implemented behavior agree.
+
+### Plan 4/5 host contracts
+
+- `showStarted` must mean a genuinely new slideshow. The `SlideShowBegin` notification produced by `ResumeShow` must not be forwarded as `showStarted`; forwarding it clears `done`, and the same target can trigger again.
+- `KillEdge` must be idempotent. Because `LaunchEdge` retries are preceded by `KillEdge` (deviation 3), the Windows host can receive a kill request for an Edge job that is already gone.
+
+### Deferred to Plan 4/5/6
+
+- Plan 4: supervisor/worker lifecycle and IPC wiring; the WPS COM host; overlay, focus, and Edge job execution; event-driven scheduling, thread priorities, and power-resume timer re-arming.
+- Plan 5/6: configuration hot reload (including an `EventKind::ConfigReloaded` factory), the configuration UI, and the Windows end-to-end acceptance test.
+
+Minor coverage gaps recorded by the Task 1 and Task 2 reviews, left open by design:
+
+- `EscalateFailure` has a default branch that maps unlisted states, including `Stopping` and `DegradedNoSupervisor`, to `FailureKind::Structural`. A future `State` addition therefore will not fail the build through `-Wswitch`.
+- Event factories have no direct smoke tests; they are exercised indirectly by the state-machine cases. `EventKind::ConfigReloaded` has no factory yet and is deferred with hot reload.
+- `Event` defaults to `Timeout`/`Retry` by design, so a default-constructed event is not meaningful.
+- Per-target `cover_max_hold` and `max_consecutive_trigger_failures` overrides are untested.
+- The `Returning` transient retry and retry-exhaustion path is untested.
+- `ShowEnded` during return is untested; it routes to `HandleReturnFailure("show ended during return")` and sets `return_prepared_` per the plan.
+- The strict-policy return action-order assertion is missing.
+
+Accepted behavior: SafeMode is latched and has no exit transition in this plan, so leaving it requires an external stop.
