@@ -814,7 +814,10 @@ std::vector<ThreadRole> WorkerHealthMonitor::Stale(ClockPoint now,
                                                    Duration timeout) const {
   std::vector<ThreadRole> stale;
   for (const auto& [role, slot] : slots_) {
-    if (now - slot.last_beat >= timeout) stale.push_back(role);
+    // Worker health is strict: a role is stale only after the timeout has
+    // been exceeded. SequenceTracker uses >= because it measures channel
+    // frame absence at the exact deadline.
+    if (now - slot.last_beat > timeout) stale.push_back(role);
   }
   return stale;
 }
