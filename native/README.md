@@ -57,6 +57,14 @@ Slide indices must be contiguous starting at 1. Without `--deck-info`, numeric
 slide targets resolve with a warning and title/name matches fail with an error.
 The WPS COM implementation of `DeckInfoProvider` is a later plan.
 
+`--map` appends a target. A duplicate slide mapping is rejected until
+source-priority overrides land in a later plan. Relative HTML paths in
+`--map` resolve against the config file directory, not the current working
+directory.
+
 Auto names are deterministic: `stageName` becomes
 `target-<NN>-<ascii-slug>.html`; `edgeProfile` becomes
 `htmlppt-<deck-fingerprint>-t<NN>`. Explicit values are preserved.
+
+When the deck fingerprint is unavailable, auto Edge profiles use the
+`nodeck` segment instead of a fingerprint.

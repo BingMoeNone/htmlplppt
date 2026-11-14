@@ -1,13 +1,13 @@
 #include "app/cli.h"
 
 #include <charconv>
-#include <filesystem>
+#include <initializer_list>
 #include <iostream>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "core/config.h"
@@ -61,7 +61,7 @@ void PrintUsage(std::ostream& out) {
       << "  --stage-mode MODE      file, tree, or direct\n"
       << "  --state-dir PATH       override the state directory\n"
       << "  --scheduling MODE      adaptive, aggressive, balanced, or safe\n"
-      << "  --map SLIDE=HTML       add or override a target (repeatable)\n"
+      << "  --map SLIDE=HTML       add a target (repeatable; override is deferred)\n"
       << "  --allow-outside-folder allow HTML paths outside the config folder\n";
 }
 
@@ -74,6 +74,14 @@ bool TakeValue(int argc, char** argv, int* index, std::string_view option,
   ++*index;
   *value = argv[*index];
   return true;
+}
+
+bool IsOneOf(std::string_view value,
+             std::initializer_list<std::string_view> allowed) {
+  for (const auto candidate : allowed) {
+    if (value == candidate) return true;
+  }
+  return false;
 }
 
 bool SetCommand(CliOptions* options, Command command, std::string* error) {
@@ -179,6 +187,11 @@ ParseResult ParseCli(int argc, char** argv) {
         result.ok = false;
         return result;
       }
+      if (!IsOneOf(value, {"file", "tree", "direct"})) {
+        result.ok = false;
+        result.error = "--stage-mode must be file, tree, or direct";
+        return result;
+      }
       result.options.overrides.stage_mode = value;
     } else if (argument == "--state-dir") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
@@ -189,6 +202,12 @@ ParseResult ParseCli(int argc, char** argv) {
     } else if (argument == "--scheduling") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
         result.ok = false;
+        return result;
+      }
+      if (!IsOneOf(value, {"adaptive", "aggressive", "balanced", "safe"})) {
+        result.ok = false;
+        result.error =
+            "--scheduling must be adaptive, aggressive, balanced, or safe";
         return result;
       }
       result.options.overrides.scheduling = value;

@@ -84,4 +84,10 @@ if (HTMLPPT_BUILD_TESTS)
       "-DDECK_INFO=${HTMLPPT_FIXTURES}/deck-info.json"
       "-DEXPECT=HTML file does not exist"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/expect_validation_failure.cmake")
+
+  add_test(NAME cli_contract
+    COMMAND ${CMAKE_COMMAND}
+      "-DEXE=$<TARGET_FILE:htmlppt-watchdog>"
+      "-DFIXTURES=${HTMLPPT_FIXTURES}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cli_contract.cmake")
 endif()

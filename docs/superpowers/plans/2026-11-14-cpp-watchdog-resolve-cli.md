@@ -1837,6 +1837,7 @@ git commit -m "feat: resolve slide targets and HTML references"
 - Create: `native/tests/fixtures/page1.html`
 - Create: `native/tests/fixtures/page2.html`
 - Create: `native/tests/cmake/expect_validation_failure.cmake`
+- Create: `native/tests/cmake/cli_contract.cmake`
 - Modify: `native/src/app/main.cpp`
 - Modify: `native/CMakeLists.txt`
 
@@ -1938,6 +1939,52 @@ This wrapper asserts both the exact exit code and the diagnostic text. CTest's
 `WILL_FAIL` inverts `PASS_REGULAR_EXPRESSION` on CMake 4.x, so the wrapper is
 used instead of combining those two properties.
 
+Create `native/tests/cmake/cli_contract.cmake`:
+
+```cmake
+if(NOT DEFINED EXE OR NOT DEFINED FIXTURES)
+  message(FATAL_ERROR "EXE and FIXTURES are required")
+endif()
+
+function(expect_result NAME EXPECTED_EXIT EXPECTED_TEXT)
+  execute_process(
+    COMMAND "${EXE}" ${ARGN}
+    RESULT_VARIABLE result
+    OUTPUT_VARIABLE output
+    ERROR_VARIABLE error)
+  if(NOT result EQUAL EXPECTED_EXIT)
+    message(FATAL_ERROR
+      "${NAME}: expected exit ${EXPECTED_EXIT}, got '${result}'\n${output}${error}")
+  endif()
+  string(FIND "${output}${error}" "${EXPECTED_TEXT}" found)
+  if(found EQUAL -1)
+    message(FATAL_ERROR
+      "${NAME}: expected output to contain '${EXPECTED_TEXT}'\n${output}${error}")
+  endif()
+endfunction()
+
+expect_result(print_config 0 "\"version\": 1"
+  --print-config --config "${FIXTURES}/watcher.json")
+expect_result(map_append 0 "\"slide\": 3"
+  --print-config --config "${FIXTURES}/watcher.json" --map 3=page2.html)
+expect_result(unknown_option 2 "unknown option" --bogus)
+expect_result(invalid_stage_mode 2 "must be file, tree, or direct"
+  --validate --config "${FIXTURES}/watcher.json"
+  --deck-info "${FIXTURES}/deck-info.json" --stage-mode bogus)
+expect_result(invalid_scheduling 2 "must be adaptive, aggressive, balanced, or safe"
+  --validate --config "${FIXTURES}/watcher.json"
+  --deck-info "${FIXTURES}/deck-info.json" --scheduling turbo)
+expect_result(resolve_ok 0 "page2.html"
+  --resolve --config "${FIXTURES}/watcher.json"
+  --deck-info "${FIXTURES}/deck-info.json")
+expect_result(validate_missing_html 1 "HTML file does not exist"
+  --validate --config "${FIXTURES}/watcher-missing-html.json"
+  --deck-info "${FIXTURES}/deck-info.json")
+expect_result(map_duplicate 1 "already mapped by target"
+  --resolve --config "${FIXTURES}/watcher.json"
+  --deck-info "${FIXTURES}/deck-info.json" --map 1=page2.html)
+```
+
 In `native/CMakeLists.txt`, change the executable target to include `cli.cpp`:
 
 ```cmake
@@ -1971,6 +2018,12 @@ Inside the `if (HTMLPPT_BUILD_TESTS)` block, after the existing `cli_help` test,
       "-DDECK_INFO=${HTMLPPT_FIXTURES}/deck-info.json"
       "-DEXPECT=HTML file does not exist"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/expect_validation_failure.cmake")
+
+  add_test(NAME cli_contract
+    COMMAND ${CMAKE_COMMAND}
+      "-DEXE=$<TARGET_FILE:htmlppt-watchdog>"
+      "-DFIXTURES=${HTMLPPT_FIXTURES}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cli_contract.cmake")
 ```
 
 - [ ] **Step 3: Run the tests and verify they fail**
@@ -2003,13 +2056,13 @@ Create `native/src/app/cli.cpp`:
 #include "app/cli.h"
 
 #include <charconv>
-#include <filesystem>
+#include <initializer_list>
 #include <iostream>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "core/config.h"
@@ -2063,7 +2116,7 @@ void PrintUsage(std::ostream& out) {
       << "  --stage-mode MODE      file, tree, or direct\n"
       << "  --state-dir PATH       override the state directory\n"
       << "  --scheduling MODE      adaptive, aggressive, balanced, or safe\n"
-      << "  --map SLIDE=HTML       add or override a target (repeatable)\n"
+      << "  --map SLIDE=HTML       add a target (repeatable; override is deferred)\n"
       << "  --allow-outside-folder allow HTML paths outside the config folder\n";
 }
 
@@ -2076,6 +2129,14 @@ bool TakeValue(int argc, char** argv, int* index, std::string_view option,
   ++*index;
   *value = argv[*index];
   return true;
+}
+
+bool IsOneOf(std::string_view value,
+             std::initializer_list<std::string_view> allowed) {
+  for (const auto candidate : allowed) {
+    if (value == candidate) return true;
+  }
+  return false;
 }
 
 bool SetCommand(CliOptions* options, Command command, std::string* error) {
@@ -2181,6 +2242,11 @@ ParseResult ParseCli(int argc, char** argv) {
         result.ok = false;
         return result;
       }
+      if (!IsOneOf(value, {"file", "tree", "direct"})) {
+        result.ok = false;
+        result.error = "--stage-mode must be file, tree, or direct";
+        return result;
+      }
       result.options.overrides.stage_mode = value;
     } else if (argument == "--state-dir") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
@@ -2191,6 +2257,12 @@ ParseResult ParseCli(int argc, char** argv) {
     } else if (argument == "--scheduling") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
         result.ok = false;
+        return result;
+      }
+      if (!IsOneOf(value, {"adaptive", "aggressive", "balanced", "safe"})) {
+        result.ok = false;
+        result.error =
+            "--scheduling must be adaptive, aggressive, balanced, or safe";
         return result;
       }
       result.options.overrides.scheduling = value;
@@ -2395,7 +2467,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: CTest 7/7 passes, no warnings.
+Expected: CTest 8/8 passes, no warnings.
 
 - [ ] **Step 6: Exercise the commands manually**
 
@@ -2496,7 +2568,7 @@ npm test
 Expected:
 
 - Native unit tests: 97/97 pass.
-- CTest: 7/7 pass (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`).
+- CTest: 8/8 pass (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`, `cli_contract`).
 - `-Werror` build with no warnings.
 - `npm test`: unchanged by this plan. With Chrome installed it stays 3/3. If Chrome is absent, record the single environmental `Chrome did not start` failure; do not modify the root test.
 
@@ -2577,12 +2649,15 @@ items explicitly deferred to later plans.
 - `cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON`:
   configure and generate succeeded.
 - `cmake --build native/build --parallel --clean-first`: exit 0 with `-Werror`
-  and `-Wall -Wextra -Wpedantic`; no warnings were emitted.
+  and `-Wall -Wextra -Wpedantic`; no warnings were emitted. The rebuild used
+  `--clean-first`, which is a stronger gate than the brief
+  `cmake --build native/build --parallel` command.
 - `./native/build/htmlppt_core_tests`: 97/97 cases passed, ending with
   `ALL TESTS PASSED`.
-- `ctest --test-dir native/build --output-on-failure`: 7/7 tests passed
+- `ctest --test-dir native/build --output-on-failure`: 8/8 tests passed
   (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`,
-  `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`).
+  `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`,
+  `cli_contract`).
 - `npm test`: 2 of 3 tests passed. `stepwise demo satisfies the HTML contract`
   fails with `Chrome did not start on port 9334` because Chrome is not
   installed in this WSL environment. This failure predates Plan 2B and is an
@@ -2600,9 +2675,10 @@ items explicitly deferred to later plans.
    draft had `1469598103934665603ULL`, one digit short. The prime is unchanged
    at `1099511628211ULL`.
 3. Query conflicts are cross-source only: a key repeated within one source
-   keeps every occurrence, while a key whose value differs between the HTML
-   query and `htmlQuery` is an error. Covered by
-   `resolve_html_query_duplicate_keys_allowed` and `resolve_html_query_conflict`.
+   keeps distinct values, while exact duplicate parts are deduplicated; a key
+   whose value differs between the HTML query and `htmlQuery` is an error.
+   Covered by `resolve_html_query_duplicate_keys_allowed` and
+   `resolve_html_query_conflict`.
 4. `cli_validate_missing_html` uses the `cmake -P` wrapper
    `native/tests/cmake/expect_validation_failure.cmake` instead of `WILL_FAIL`
    plus `PASS_REGULAR_EXPRESSION`, because CTest on CMake 4.x inverts the
@@ -2611,7 +2687,7 @@ items explicitly deferred to later plans.
 5. The fixture `native/tests/fixtures/deck.pptx` is intentionally tracked
    despite the repository-wide `*.pptx` rule; the `.gitignore` negation
    `!native/tests/fixtures/deck.pptx` keeps it in the index. The fixture is a
-   small valid deck used only for fingerprint and resolution tests.
+   dummy `PK` fixture used only for existence and fingerprint checks.
 
 ### Deferred items
 
@@ -2632,3 +2708,23 @@ Explicitly deferred to later plans:
 - Exit-code assertions for the remaining CTest success cases (`cli_version`,
   `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`), which
   currently rely on `PASS_REGULAR_EXPRESSION` alone.
+
+### Final Review Fixes (2026-11-15)
+
+The final whole-branch review produced a single fix wave, recorded here:
+
+- The `--map` help text now says "add a target (repeatable; override is
+  deferred)" instead of promising an override that is not implemented.
+- The `cli_contract` CTest case covers exit codes 0/1/2 and the option paths:
+  `--print-config`, `--map` append, unknown options, invalid `--stage-mode`
+  and `--scheduling`, resolve success, missing HTML, and duplicate slide
+  mapping.
+- Invalid `--stage-mode` and `--scheduling` values now fail during option
+  parsing with exit code 2 instead of surfacing later as config errors with
+  exit code 1.
+- README documents that relative `--map` HTML paths resolve against the
+  config file directory and that auto Edge profiles use the `nodeck` segment
+  when the deck fingerprint is unavailable.
+- Include hygiene: `native/src/app/cli.cpp` no longer includes unused
+  `<filesystem>` and `<map>`, and now includes `<initializer_list>` and
+  `<utility>`.
