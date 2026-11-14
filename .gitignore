@@ -27,3 +27,6 @@ node_modules/
 # Windows
 ~$*.pptx
 *.pptx:WPSSyncID
+
+# Native build output
+native/build/
