@@ -30,3 +30,10 @@ node_modules/
 
 # Native build output
 native/build/
+
+# Local worktrees and agent workspace
+.worktrees/
+.superpowers/
+
+# Test fixture deck is intentionally tracked
+!native/tests/fixtures/deck.pptx
