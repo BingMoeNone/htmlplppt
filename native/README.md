@@ -86,16 +86,20 @@ safe mode, legacy fallback, helper-thread stop, lock release, journal, and
 diagnostic messages.
 
 States: Boot, Warming, Monitoring, CoverIn, EdgeStarting, ShowExit, Live,
-Returning, ReturnCoverOut, Stopping, Faulted, SafeMode, Exited. Supervisor
-loss is reported as `StateSnapshot.degraded_no_supervisor` while the current
-lifecycle state continues.
+Returning, ReturnCoverOut, Stopping, Faulted, SafeMode, Exited.
+`DegradedNoSupervisor` is reserved in the enum; supervisor loss is reported
+as `StateSnapshot.degraded_no_supervisor` while the current lifecycle state
+continues.
 
 Failure policy:
 
 - Transient failures retry with the configured backoff.
 - COM failures that persist for `comErrorWindow` (2s) become structural.
-- Switch failures hide the cover, kill the owned Edge job, restore WPS, and
-  either self-heal (clear done) or keep done per the target policy.
+- Switch failures hide the cover and kill the owned Edge job. The normal
+  recovery path restores WPS and either self-heals (clear done) or keeps done
+  per the target policy. Safe, legacy, or threshold-exceeded paths enter
+  SafeMode instead and do not emit `RestoreShow`; legacy also emits a
+  legacy-fallback action.
 - Return failures hide the cover and enter Faulted; Edge is left for manual
   close, and `edgeClosed` only journals.
 - Structural failures clean up and enter SafeMode; `legacy` policy emits a

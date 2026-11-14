@@ -1996,16 +1996,20 @@ safe mode, legacy fallback, helper-thread stop, lock release, journal, and
 diagnostic messages.
 
 States: Boot, Warming, Monitoring, CoverIn, EdgeStarting, ShowExit, Live,
-Returning, ReturnCoverOut, Stopping, Faulted, SafeMode, Exited. Supervisor
-loss is reported as `StateSnapshot.degraded_no_supervisor` while the current
-lifecycle state continues.
+Returning, ReturnCoverOut, Stopping, Faulted, SafeMode, Exited.
+`DegradedNoSupervisor` is reserved in the enum; supervisor loss is reported
+as `StateSnapshot.degraded_no_supervisor` while the current lifecycle state
+continues.
 
 Failure policy:
 
 - Transient failures retry with the configured backoff.
 - COM failures that persist for `comErrorWindow` (2s) become structural.
-- Switch failures hide the cover, kill the owned Edge job, restore WPS, and
-  either self-heal (clear done) or keep done per the target policy.
+- Switch failures hide the cover and kill the owned Edge job. The normal
+  recovery path restores WPS and either self-heals (clear done) or keeps done
+  per the target policy. Safe, legacy, or threshold-exceeded paths enter
+  SafeMode instead and do not emit `RestoreShow`; legacy also emits a
+  legacy-fallback action.
 - Return failures hide the cover and enter Faulted; Edge is left for manual
   close, and `edgeClosed` only journals.
 - Structural failures clean up and enter SafeMode; `legacy` policy emits a
@@ -2052,7 +2056,7 @@ Expected:
 
 - [ ] **Step 3: Record as-built amendments**
 
-At the end of this plan file, add an `As-Built Amendments (2026-11-15)` section with the actual unit/CTest counts, any deviations from the code blocks above, and deferred items assigned to Plan 4/5/6. Record the Task 2 review fixes: LaunchEdge retries kill the owned Edge first; the dead retry branches were removed; CoverDone timeout preserves the target slide. Do not leave placeholders.
+At the end of this plan file, add an `As-Built Amendments (2026-11-15)` section with the actual unit/CTest counts, any deviations from the code blocks above, and deferred items assigned to Plan 4-8. Record the Task 2 review fixes: LaunchEdge retries kill the owned Edge first; the dead retry branches were removed; CoverDone timeout preserves the target slide. Do not leave placeholders.
 
 - [ ] **Step 4: Commit**
 
@@ -2086,7 +2090,7 @@ git commit -m "docs: record Plan 3 as-built amendments"
 | Platform neutrality | No Windows headers or COM/Win32 calls |
 | Journal key words | `trigger slide N -> Label`, `return requested by page`, `resumed at slide N`, `edge closed after return; cover fade out`, `COM busy`, `cleanup start`, `cleanup done` |
 
-Deferred to Plan 4/5/6: supervisor/worker and IPC wiring, WPS COM host, overlay/focus/Edge execution, event-driven scheduling and thread priorities, power-resume timer re-arming, config hot reload, and the Windows end-to-end acceptance. `DegradedNoSupervisor` is represented by `StateSnapshot.degraded_no_supervisor` while the lifecycle state continues, because the worker is expected to finish the current flow.
+Deferred to Plan 4-8: Plan 4 covers supervisor/worker lifecycle, Job Object, IPC, heartbeat, crash dump, and black-box wiring; Plan 5 covers the WPS COM host plus overlay/focus/Edge execution, compatibility flags, logs, and the stop entry; Plan 6 covers event-driven scheduling, thread priorities, power policy, power-resume timer re-arming, fault injection, and performance instrumentation; Plan 7 covers config hot reload and the configuration UI; Plan 8 covers Windows end-to-end acceptance and release packaging. `DegradedNoSupervisor` is represented by `StateSnapshot.degraded_no_supervisor` while the lifecycle state continues, because the worker is expected to finish the current flow.
 
 ### Placeholder scan
 
@@ -2113,11 +2117,11 @@ Plan 3 is ready. Execute Tasks 1-3 in order. Each task ends with a green full su
 
 ## As-Built Amendments (2026-11-15)
 
-Plan 3 was executed end to end on branch `worktree-feat-cpp-watchdog-state-machine`. Commits: `cbbf6a4` (Task 1), `24ca3c3` (Task 2), `2da1819` (plan correction for the Task 2 review), `957e5ce` (Task 2 fix round), and the Task 3 documentation commit that contains this section. The worktree was clean after each commit.
+Plan 3 was executed end to end on branch `worktree-feat-cpp-watchdog-state-machine`. Commits: `cbbf6a4` (Task 1), `24ca3c3` (Task 2), `2da1819` (plan correction for the Task 2 review), `957e5ce` (Task 2 fix round), and the Task 3 documentation commits. The worktree was clean after each commit.
 
 ### Final gate (observed)
 
-Commands, run from the repository root:
+Commands, run from this worktree's root:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -2152,6 +2156,7 @@ Observed results:
 4. Dead `RetryOperation` branches removed. `OnFailure` never assigned `ResumeShow`, `FocusEdge`, or `FocusWps`, so those enumerators and their `ExecuteRetry` cases were deleted. `RetryOperation` now contains only `None`, `CoverFadeIn`, `LaunchEdge`, and `ExitShow`; `None` still returns an empty action list.
 5. Unused `#include <algorithm>` removed from `state_machine.cpp`.
 6. `CoverDone` timeout preserves the target slide. The handler captures `current_target_slide_.value_or(0)` before resetting the target and uses that value for the `Journal`, `CoverHide`, and `Diagnostic` actions, which previously hard-coded `0`. `state_machine_cover_done_timeout_hides_cover_and_monitors` now also asserts `CoverHide.slide == 5`.
+7. The Task 3 review corrected the README switch-failure contract: Safe, legacy, and threshold-exceeded paths enter SafeMode without `RestoreShow`. The as-built deferred ownership now follows the Plan 1 roadmap (Plans 4-8).
 
 The Task 2 code blocks in this plan were corrected in commit `2da1819` so the plan text and the implemented behavior agree.
 
@@ -2160,10 +2165,18 @@ The Task 2 code blocks in this plan were corrected in commit `2da1819` so the pl
 - `showStarted` must mean a genuinely new slideshow. The `SlideShowBegin` notification produced by `ResumeShow` must not be forwarded as `showStarted`; forwarding it clears `done`, and the same target can trigger again.
 - `KillEdge` must be idempotent. Because `LaunchEdge` retries are preceded by `KillEdge` (deviation 3), the Windows host can receive a kill request for an Edge job that is already gone.
 
-### Deferred to Plan 4/5/6
+### Deferred to Plan 4-8
 
-- Plan 4: supervisor/worker lifecycle and IPC wiring; the WPS COM host; overlay, focus, and Edge job execution; event-driven scheduling, thread priorities, and power-resume timer re-arming.
-- Plan 5/6: configuration hot reload (including an `EventKind::ConfigReloaded` factory), the configuration UI, and the Windows end-to-end acceptance test.
+- Plan 4: supervisor/worker lifecycle, Job Object, IPC, heartbeat, crash
+  dump, and black-box wiring.
+- Plan 5: WPS COM host; overlay, focus, and Edge job execution; compatibility
+  flags, logs, and the stop entry.
+- Plan 6: event-driven scheduling, thread priorities, power policy,
+  power-resume timer re-arming, fault injection, and performance
+  instrumentation.
+- Plan 7: configuration hot reload (including an `EventKind::ConfigReloaded`
+  factory) and the configuration UI.
+- Plan 8: Windows end-to-end acceptance and release packaging.
 
 Minor coverage gaps recorded by the Task 1 and Task 2 reviews, left open by design:
 
