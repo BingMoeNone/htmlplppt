@@ -37,9 +37,8 @@ void AddError(std::vector<ConfigIssue>& issues, std::string path, std::string me
   AddIssue(issues, IssueSeverity::Error, std::move(path), std::move(message));
 }
 
-// Reserved for legacy-array migration warnings.
-[[maybe_unused]] void AddWarning(std::vector<ConfigIssue>& issues, std::string path,
-                                 std::string message) {
+void AddWarning(std::vector<ConfigIssue>& issues, std::string path,
+                std::string message) {
   AddIssue(issues, IssueSeverity::Warning, std::move(path), std::move(message));
 }
 
@@ -141,10 +140,9 @@ std::vector<std::string> ReadStringArray(const json& object, const char* key,
   return values;
 }
 
-// Reserved for legacy-array migration.
-[[maybe_unused]] std::vector<int> ReadIntArray(const json& object, const char* key,
-                                               const std::string& path,
-                                               std::vector<ConfigIssue>& issues) {
+std::vector<int> ReadIntArray(const json& object, const char* key,
+                              const std::string& path,
+                              std::vector<ConfigIssue>& issues) {
   std::vector<int> values;
   const auto it = object.find(key);
   if (it == object.end()) return values;
@@ -430,6 +428,156 @@ StageConfig ParseStage(const json& value, const std::string& path,
   return result;
 }
 
+ProfileConfig ParseProfile(const json& value, const std::string& path, int priority,
+                           const DefaultsConfig& defaults, std::vector<ConfigIssue>& issues) {
+  ProfileConfig profile;
+  if (!value.is_object()) {
+    AddError(issues, path, "must be an object");
+    return profile;
+  }
+  CheckKnownKeys(value, {"deck", "stateDir", "stage", "targets"}, path, issues);
+  profile.deck = ReadString(value, "deck", path, issues).value_or("");
+  profile.state_dir = ReadString(value, "stateDir", path, issues).value_or("");
+  if (const auto it = value.find("stage"); it != value.end()) {
+    profile.stage = ParseStage(*it, FieldPath(path, "stage"), issues);
+  }
+  if (const auto it = value.find("targets"); it != value.end()) {
+    profile.targets = ParseTargets(*it, FieldPath(path, "targets"), priority, defaults, issues);
+  }
+  return profile;
+}
+
+LegacyConfig ParseLegacy(const json& value, const std::string& path,
+                         std::vector<ConfigIssue>& issues) {
+  LegacyConfig legacy;
+  legacy.present = true;
+  if (!value.is_object()) {
+    AddError(issues, path, "must be an object");
+    return legacy;
+  }
+  CheckKnownKeys(value,
+                 {"deckName", "targetSlides", "srcNames", "targetHtmls",
+                  "targetProfiles", "targetLabels"},
+                 path, issues);
+  legacy.deck_name = ReadString(value, "deckName", path, issues).value_or("");
+  legacy.target_slides = ReadIntArray(value, "targetSlides", path, issues);
+  legacy.src_names = ReadStringArray(value, "srcNames", path, issues);
+  legacy.target_htmls = ReadStringArray(value, "targetHtmls", path, issues);
+  legacy.target_profiles = ReadStringArray(value, "targetProfiles", path, issues);
+  legacy.target_labels = ReadStringArray(value, "targetLabels", path, issues);
+
+  const std::size_t size = legacy.target_slides.size();
+  const bool equal_lengths = legacy.src_names.size() == size &&
+                             legacy.target_htmls.size() == size &&
+                             legacy.target_profiles.size() == size &&
+                             legacy.target_labels.size() == size;
+  if (!equal_lengths) {
+    AddError(issues, path, "legacy arrays must have equal length");
+    return legacy;
+  }
+  if (legacy.deck_name.empty()) AddError(issues, FieldPath(path, "deckName"), "must not be empty");
+  for (std::size_t i = 0; i < size; ++i) {
+    TargetConfig target;
+    target.slide = legacy.target_slides[i];
+    target.html = legacy.src_names[i];
+    target.stage_name = legacy.target_htmls[i];
+    target.edge_profile = legacy.target_profiles[i];
+    target.label = legacy.target_labels[i];
+    target.source_priority = 0;
+    if (target.html.empty()) {
+      AddError(issues, IndexPath(FieldPath(path, "srcNames"), i), "must not be empty");
+    }
+    if (*target.slide < 1) {
+      AddError(issues, IndexPath(FieldPath(path, "targetSlides"), i), "must be >= 1");
+    }
+    legacy.targets.push_back(std::move(target));
+  }
+  return legacy;
+}
+
+nlohmann::ordered_json CoverToJson(const CoverConfig& cover) {
+  return {
+      {"fadeMs", cover.fade_ms},
+      {"holdMs", cover.hold_ms},
+      {"maxHoldMs", cover.max_hold_ms},
+  };
+}
+
+nlohmann::ordered_json EdgeToJson(const EdgeConfig& edge) {
+  nlohmann::ordered_json result{
+      {"maxLiveMs", edge.max_live_ms},
+      {"prewarmProfile", edge.prewarm_profile},
+  };
+  if (!edge.args.empty()) result["args"] = edge.args;
+  return result;
+}
+
+nlohmann::ordered_json DisplayToJson(const DisplayConfig& display) {
+  return {{"monitor", display.monitor}};
+}
+
+nlohmann::ordered_json FocusToJson(const FocusConfig& focus) {
+  return {{"strategy", focus.strategy}, {"require", focus.require}};
+}
+
+nlohmann::ordered_json AssetsToJson(const AssetsConfig& assets) {
+  nlohmann::ordered_json result{
+      {"mode", assets.mode},
+      {"root", assets.root},
+  };
+  if (!assets.include.empty()) result["include"] = assets.include;
+  if (!assets.exclude.empty()) result["exclude"] = assets.exclude;
+  if (assets.max_bytes > 0) result["maxBytes"] = assets.max_bytes;
+  return result;
+}
+
+nlohmann::ordered_json TargetToJson(const TargetConfig& target) {
+  nlohmann::ordered_json result;
+  if (target.slide.has_value()) result["slide"] = *target.slide;
+  if (target.match.has_value()) {
+    nlohmann::ordered_json match;
+    if (!target.match->slide_title.empty()) match["slideTitle"] = target.match->slide_title;
+    if (!target.match->slide_name.empty()) match["slideName"] = target.match->slide_name;
+    match["mode"] = target.match->mode;
+    result["match"] = std::move(match);
+  }
+  result["html"] = target.html;
+  if (!target.label.empty()) result["label"] = target.label;
+  if (!target.edge_profile.empty()) result["edgeProfile"] = target.edge_profile;
+  if (!target.stage_name.empty()) result["stageName"] = target.stage_name;
+  result["assets"] = AssetsToJson(target.assets);
+  if (!target.html_query.empty()) result["htmlQuery"] = target.html_query;
+  result["trigger"] = target.trigger;
+  if (target.cover.has_value()) result["cover"] = CoverToJson(*target.cover);
+  if (target.edge.has_value()) result["edge"] = EdgeToJson(*target.edge);
+  if (target.display.has_value()) result["display"] = DisplayToJson(*target.display);
+  if (target.focus.has_value()) result["focus"] = FocusToJson(*target.focus);
+  if (!target.on_failure.empty()) result["onFailure"] = target.on_failure;
+  if (target.max_consecutive_trigger_failures.has_value()) {
+    result["maxConsecutiveTriggerFailures"] = *target.max_consecutive_trigger_failures;
+  }
+  result["enabled"] = target.enabled;
+  if (!target.tags.empty()) result["tags"] = target.tags;
+  return result;
+}
+
+nlohmann::ordered_json DefaultsToJson(const DefaultsConfig& defaults) {
+  return {
+      {"trigger", defaults.trigger},
+      {"cover", CoverToJson(defaults.cover)},
+      {"edge", EdgeToJson(defaults.edge)},
+      {"display", DisplayToJson(defaults.display)},
+      {"focus", FocusToJson(defaults.focus)},
+      {"scheduling", defaults.scheduling},
+      {"onFailure", defaults.on_failure},
+      {"maxConsecutiveTriggerFailures", defaults.max_consecutive_trigger_failures},
+  };
+}
+
+nlohmann::ordered_json StageToJson(const StageConfig& stage) {
+  return {{"mode", stage.mode}, {"root", stage.root}};
+}
+
 void ApplyOverrides(Config& config, const CliConfigOverrides& overrides,
                     std::vector<ConfigIssue>& issues) {
   if (overrides.stage_mode.has_value()) {
@@ -506,8 +654,66 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
   if (const auto it = root.find("targets"); it != root.end()) {
     config.top_level.targets = ParseTargets(*it, "targets", 1, config.defaults, result.issues);
   }
+  if (const auto it = root.find("profiles"); it != root.end()) {
+    if (!it->is_object()) {
+      AddError(result.issues, "profiles", "must be an object");
+    } else {
+      for (auto profile = it->begin(); profile != it->end(); ++profile) {
+        result.available_profiles.push_back(profile.key());
+        config.profiles[profile.key()] =
+            ParseProfile(*profile, "profiles." + profile.key(), 2, config.defaults,
+                         result.issues);
+      }
+    }
+  }
+  if (const auto it = root.find("legacy"); it != root.end()) {
+    config.legacy = ParseLegacy(*it, "legacy", result.issues);
+  }
 
-  config.active = config.top_level;
+  std::string selected = overrides.profile.empty() ? config.active_profile : overrides.profile;
+  if (config.profiles.empty()) {
+    if (!selected.empty()) {
+      AddWarning(result.issues, "activeProfile",
+                 "no profiles are defined; the active profile was ignored");
+    }
+    config.active = config.top_level;
+  } else {
+    if (selected.empty()) {
+      if (config.profiles.size() == 1) {
+        selected = config.profiles.begin()->first;
+      } else {
+        AddError(result.issues, "activeProfile",
+                 "multiple profiles require --profile or activeProfile");
+      }
+    }
+    if (!selected.empty()) {
+      const auto chosen = config.profiles.find(selected);
+      if (chosen == config.profiles.end()) {
+        AddError(result.issues, "activeProfile", "unknown profile: " + selected);
+      } else {
+        config.active_profile = selected;
+        config.active = chosen->second;
+        if (config.active.deck.empty()) config.active.deck = config.top_level.deck;
+        if (config.active.state_dir.empty()) {
+          config.active.state_dir = config.top_level.state_dir;
+        }
+        if (config.active.stage.root.empty() && !config.top_level.stage.root.empty()) {
+          config.active.stage = config.top_level.stage;
+        }
+        config.active.targets.insert(config.active.targets.end(),
+                                     config.top_level.targets.begin(),
+                                     config.top_level.targets.end());
+      }
+    }
+  }
+
+  if (config.legacy.present) {
+    if (config.active.deck.empty()) config.active.deck = config.legacy.deck_name;
+    config.active.targets.insert(config.active.targets.end(),
+                                 config.legacy.targets.begin(),
+                                 config.legacy.targets.end());
+  }
+
   ApplyOverrides(config, overrides, result.issues);
   result.config = std::move(config);
   return result;
@@ -524,6 +730,21 @@ ConfigLoadResult LoadConfigFile(const std::filesystem::path& path,
   std::ostringstream buffer;
   buffer << input.rdbuf();
   return LoadConfigFromString(buffer.str(), path, overrides);
+}
+
+std::string ConfigToJson(const Config& config) {
+  nlohmann::ordered_json root;
+  root["version"] = config.version;
+  if (!config.active_profile.empty()) root["activeProfile"] = config.active_profile;
+  root["deck"] = config.active.deck;
+  if (!config.active.state_dir.empty()) root["stateDir"] = config.active.state_dir;
+  root["stage"] = StageToJson(config.active.stage);
+  root["defaults"] = DefaultsToJson(config.defaults);
+  root["targets"] = nlohmann::ordered_json::array();
+  for (const auto& target : config.active.targets) {
+    root["targets"].push_back(TargetToJson(target));
+  }
+  return root.dump(2);
 }
 
 } // namespace htmlppt

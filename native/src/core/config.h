@@ -143,6 +143,7 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
                                       const CliConfigOverrides& overrides = {});
 ConfigLoadResult LoadConfigFile(const std::filesystem::path& path,
                                 const CliConfigOverrides& overrides = {});
+std::string ConfigToJson(const Config& config);
 
 inline const ProfileConfig& EffectiveProfile(const Config& config) {
   return config.active;
