@@ -4,6 +4,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -54,6 +55,9 @@ JsonlJournal::JsonlJournal(std::filesystem::path path)
     std::filesystem::create_directories(path_.parent_path());
   }
   output_.open(path_, std::ios::app);
+  if (!output_.is_open()) {
+    throw std::runtime_error("failed to open journal file: " + path_.string());
+  }
 }
 
 void JsonlJournal::append(const JournalRecord& record) {
@@ -90,13 +94,17 @@ std::vector<JournalRecord> JsonlJournal::read_tail(
       continue;
     }
     JournalRecord record;
-    record.run_id = line.value("run_id", std::string{});
-    record.sequence = line.value("sequence", std::uint64_t{0});
-    record.timestamp = line.value("timestamp", std::string{});
-    record.event = line.value("event", std::string{});
-    record.state = line.value("state", std::string{});
-    record.slide = line.value("slide", 0);
-    record.detail = line.value("detail", std::string{});
+    try {
+      record.run_id = line.value("run_id", std::string{});
+      record.sequence = line.value("sequence", std::uint64_t{0});
+      record.timestamp = line.value("timestamp", std::string{});
+      record.event = line.value("event", std::string{});
+      record.state = line.value("state", std::string{});
+      record.slide = line.value("slide", 0);
+      record.detail = line.value("detail", std::string{});
+    } catch (const nlohmann::json::exception&) {
+      continue;
+    }
     records.push_back(std::move(record));
   }
 
