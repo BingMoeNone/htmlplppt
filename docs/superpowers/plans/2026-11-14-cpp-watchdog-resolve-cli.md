@@ -176,6 +176,15 @@ HTMLPPT_TEST_CASE(deck_info_rejects_unknown_fields) {
   HTMLPPT_CHECK(HasIssueAt(result, "slides[0].mystery"));
 }
 
+HTMLPPT_TEST_CASE(deck_info_rejects_unknown_root_field) {
+  const auto result = ParseDeckInfo(R"({
+    "mystery": true,
+    "slides": [{ "index": 1, "title": "One" }]
+  })");
+  HTMLPPT_CHECK(!result.info.has_value());
+  HTMLPPT_CHECK(HasIssueAt(result, "mystery"));
+}
+
 HTMLPPT_TEST_CASE(deck_info_reports_parse_error) {
   const auto result = ParseDeckInfo(R"({ "slides": [)");
   HTMLPPT_CHECK(!result.info.has_value());
@@ -386,6 +395,7 @@ Create `native/src/core/deck_info.cpp`:
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -438,7 +448,7 @@ std::string ComputeDeckFingerprint(const std::filesystem::path& deck_path) {
       canonical.string() + "|" + std::to_string(size) + "|" +
       std::to_string(static_cast<std::int64_t>(
           write_time.time_since_epoch().count()));
-  std::uint64_t hash = 1469598103934665603ULL;
+  std::uint64_t hash = 14695981039346656037ULL;
   for (unsigned char character : seed) {
     hash ^= character;
     hash *= 1099511628211ULL;
@@ -463,9 +473,11 @@ DeckInfoResult LoadDeckInfoFromJson(std::string_view text,
     AddError(result.issues, "$", "root must be an object");
     return result;
   }
+  bool has_error = false;
   for (auto it = root.begin(); it != root.end(); ++it) {
     if (it.key() != "slides") {
       AddError(result.issues, it.key(), "unknown field");
+      has_error = true;
     }
   }
   const auto slides = root.find("slides");
@@ -485,7 +497,6 @@ DeckInfoResult LoadDeckInfoFromJson(std::string_view text,
   DeckInfo info;
   info.path = deck_path;
   std::set<int> seen;
-  bool has_error = false;
   for (std::size_t i = 0; i < slides->size(); ++i) {
     const auto& item = (*slides)[i];
     const std::string path = "slides[" + std::to_string(i) + "]";
@@ -594,7 +605,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 67/67 unit cases pass, CTest 3/3, no warnings.
+Expected: 68/68 unit cases pass, CTest 3/3, no warnings.
 
 - [ ] **Step 6: Commit**
 
@@ -1783,7 +1794,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 95/95 unit cases pass, CTest 3/3, no warnings.
+Expected: 96/96 unit cases pass, CTest 3/3, no warnings.
 
 - [ ] **Step 5: Commit**
 
@@ -2435,7 +2446,7 @@ npm test
 
 Expected:
 
-- Native unit tests: 95/95 pass.
+- Native unit tests: 96/96 pass.
 - CTest: 7/7 pass (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`).
 - `-Werror` build with no warnings.
 - `npm test`: unchanged by this plan. With Chrome installed it stays 3/3. If Chrome is absent, record the single environmental `Chrome did not start` failure; do not modify the root test.
