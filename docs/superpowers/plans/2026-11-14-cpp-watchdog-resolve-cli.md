@@ -986,6 +986,32 @@ HTMLPPT_TEST_CASE(resolve_html_query_merges) {
   HTMLPPT_CHECK_EQ(result.targets[1].fragment, std::string{""});
 }
 
+HTMLPPT_TEST_CASE(resolve_html_query_duplicate_keys_allowed) {
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [
+      {
+        "slide": 1,
+        "html": "page1.html?a=1&a=2",
+        "htmlQuery": "?b=1&b=2"
+      },
+      {
+        "slide": 2,
+        "html": "page2.html",
+        "htmlQuery": "?c=1&c=2"
+      }
+    ]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(result.targets[0].query, std::string{"a=1&a=2&b=1&b=2"});
+  HTMLPPT_CHECK_EQ(result.targets[1].query, std::string{"c=1&c=2"});
+}
+
 HTMLPPT_TEST_CASE(resolve_html_query_conflict) {
   Fixture fixture;
   const Config config = ParseConfig(fixture, R"({
@@ -1346,27 +1372,22 @@ std::string QueryKey(const std::string& part) {
 
 bool MergeQuery(const std::string& first, const std::string& second,
                 std::string* merged, std::string* conflict) {
-  std::vector<std::string> parts;
-  std::map<std::string, std::string> values;
-  const auto add = [&](const std::string& part) {
-    const auto key = QueryKey(part);
-    const auto found = values.find(key);
-    if (found != values.end()) {
-      if (found->second != part) {
-        *conflict = key;
-        return false;
-      }
-      return true;
-    }
-    values.emplace(key, part);
-    parts.push_back(part);
-    return true;
-  };
-  for (const auto& part : SplitQuery(first)) {
-    if (!add(part)) return false;
+  std::vector<std::string> parts = SplitQuery(first);
+  std::map<std::string, std::set<std::string>> values;
+  for (const auto& part : parts) {
+    values[QueryKey(part)].insert(part);
   }
   for (const auto& part : SplitQuery(second)) {
-    if (!add(part)) return false;
+    const auto key = QueryKey(part);
+    const auto found = values.find(key);
+    if (found == values.end()) {
+      values[key].insert(part);
+      parts.push_back(part);
+      continue;
+    }
+    if (found->second.count(part) != 0) continue;
+    *conflict = key;
+    return false;
   }
   std::ostringstream out;
   for (std::size_t i = 0; i < parts.size(); ++i) {
@@ -1794,7 +1815,7 @@ cmake --build native/build --parallel
 ctest --test-dir native/build --output-on-failure
 ```
 
-Expected: 96/96 unit cases pass, CTest 3/3, no warnings.
+Expected: 97/97 unit cases pass, CTest 3/3, no warnings.
 
 - [ ] **Step 5: Commit**
 
@@ -2446,7 +2467,7 @@ npm test
 
 Expected:
 
-- Native unit tests: 96/96 pass.
+- Native unit tests: 97/97 pass.
 - CTest: 7/7 pass (`core_tests`, `cli_version`, `cli_help`, `cli_print_schema`, `cli_validate_ok`, `cli_resolve_ok`, `cli_validate_missing_html`).
 - `-Werror` build with no warnings.
 - `npm test`: unchanged by this plan. With Chrome installed it stays 3/3. If Chrome is absent, record the single environmental `Chrome did not start` failure; do not modify the root test.
