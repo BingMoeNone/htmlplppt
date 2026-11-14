@@ -77,9 +77,11 @@ if (HTMLPPT_BUILD_TESTS)
   set_tests_properties(cli_resolve_ok PROPERTIES
     PASS_REGULAR_EXPRESSION "page2.html")
 
-  add_test(NAME cli_validate_missing_html COMMAND htmlppt-watchdog --validate
-    --config "${HTMLPPT_FIXTURES}/watcher-missing-html.json"
-    --deck-info "${HTMLPPT_FIXTURES}/deck-info.json")
-  set_tests_properties(cli_validate_missing_html PROPERTIES
-    PASS_REGULAR_EXPRESSION "HTML file does not exist")
+  add_test(NAME cli_validate_missing_html
+    COMMAND ${CMAKE_COMMAND}
+      "-DEXE=$<TARGET_FILE:htmlppt-watchdog>"
+      "-DCONFIG=${HTMLPPT_FIXTURES}/watcher-missing-html.json"
+      "-DDECK_INFO=${HTMLPPT_FIXTURES}/deck-info.json"
+      "-DEXPECT=HTML file does not exist"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/expect_validation_failure.cmake")
 endif()
