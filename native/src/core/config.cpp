@@ -413,15 +413,15 @@ DefaultsConfig ParseDefaults(const json& value, const std::string& path,
 }
 
 StageConfig ParseStage(const json& value, const std::string& path,
-                       std::vector<ConfigIssue>& issues) {
-  StageConfig result;
+                       const StageConfig& base, std::vector<ConfigIssue>& issues) {
+  StageConfig result = base;
   if (!value.is_object()) {
     AddError(issues, path, "must be an object");
     return result;
   }
   CheckKnownKeys(value, {"mode", "root"}, path, issues);
-  result.mode = ReadString(value, "mode", path, issues).value_or(result.mode);
-  result.root = ReadString(value, "root", path, issues).value_or("");
+  if (auto mode = ReadString(value, "mode", path, issues)) result.mode = *mode;
+  if (auto root = ReadString(value, "root", path, issues)) result.root = *root;
   if (!IsOneOf(result.mode, {"file", "tree", "direct"})) {
     AddError(issues, FieldPath(path, "mode"), "must be file, tree, or direct");
   }
@@ -429,8 +429,10 @@ StageConfig ParseStage(const json& value, const std::string& path,
 }
 
 ProfileConfig ParseProfile(const json& value, const std::string& path, int priority,
-                           const DefaultsConfig& defaults, std::vector<ConfigIssue>& issues) {
+                           const DefaultsConfig& defaults, const StageConfig& inherited_stage,
+                           std::vector<ConfigIssue>& issues) {
   ProfileConfig profile;
+  profile.stage = inherited_stage;
   if (!value.is_object()) {
     AddError(issues, path, "must be an object");
     return profile;
@@ -439,7 +441,7 @@ ProfileConfig ParseProfile(const json& value, const std::string& path, int prior
   profile.deck = ReadString(value, "deck", path, issues).value_or("");
   profile.state_dir = ReadString(value, "stateDir", path, issues).value_or("");
   if (const auto it = value.find("stage"); it != value.end()) {
-    profile.stage = ParseStage(*it, FieldPath(path, "stage"), issues);
+    profile.stage = ParseStage(*it, FieldPath(path, "stage"), inherited_stage, issues);
   }
   if (const auto it = value.find("targets"); it != value.end()) {
     profile.targets = ParseTargets(*it, FieldPath(path, "targets"), priority, defaults, issues);
@@ -448,7 +450,7 @@ ProfileConfig ParseProfile(const json& value, const std::string& path, int prior
 }
 
 LegacyConfig ParseLegacy(const json& value, const std::string& path,
-                         std::vector<ConfigIssue>& issues) {
+                         const DefaultsConfig& defaults, std::vector<ConfigIssue>& issues) {
   LegacyConfig legacy;
   legacy.present = true;
   if (!value.is_object()) {
@@ -483,9 +485,14 @@ LegacyConfig ParseLegacy(const json& value, const std::string& path,
     target.stage_name = legacy.target_htmls[i];
     target.edge_profile = legacy.target_profiles[i];
     target.label = legacy.target_labels[i];
+    target.trigger = defaults.trigger;
+    target.on_failure = defaults.on_failure;
     target.source_priority = 0;
     if (target.html.empty()) {
       AddError(issues, IndexPath(FieldPath(path, "srcNames"), i), "must not be empty");
+    }
+    if (!target.stage_name.empty() && !IsAscii(target.stage_name)) {
+      AddError(issues, IndexPath(FieldPath(path, "targetHtmls"), i), "must be ASCII");
     }
     if (*target.slide < 1) {
       AddError(issues, IndexPath(FieldPath(path, "targetSlides"), i), "must be >= 1");
@@ -646,7 +653,7 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
   config.top_level.deck = ReadString(root, "deck", "", result.issues).value_or("");
   config.top_level.state_dir = ReadString(root, "stateDir", "", result.issues).value_or("");
   if (const auto it = root.find("stage"); it != root.end()) {
-    config.top_level.stage = ParseStage(*it, "stage", result.issues);
+    config.top_level.stage = ParseStage(*it, "stage", StageConfig{}, result.issues);
   }
   if (const auto it = root.find("defaults"); it != root.end()) {
     config.defaults = ParseDefaults(*it, "defaults", config.defaults, result.issues);
@@ -662,12 +669,12 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
         result.available_profiles.push_back(profile.key());
         config.profiles[profile.key()] =
             ParseProfile(*profile, "profiles." + profile.key(), 2, config.defaults,
-                         result.issues);
+                         config.top_level.stage, result.issues);
       }
     }
   }
   if (const auto it = root.find("legacy"); it != root.end()) {
-    config.legacy = ParseLegacy(*it, "legacy", result.issues);
+    config.legacy = ParseLegacy(*it, "legacy", config.defaults, result.issues);
   }
 
   std::string selected = overrides.profile.empty() ? config.active_profile : overrides.profile;
@@ -696,9 +703,6 @@ ConfigLoadResult LoadConfigFromString(std::string_view text,
         if (config.active.deck.empty()) config.active.deck = config.top_level.deck;
         if (config.active.state_dir.empty()) {
           config.active.state_dir = config.top_level.state_dir;
-        }
-        if (config.active.stage.root.empty() && !config.top_level.stage.root.empty()) {
-          config.active.stage = config.top_level.stage;
         }
         config.active.targets.insert(config.active.targets.end(),
                                      config.top_level.targets.begin(),
@@ -732,10 +736,14 @@ ConfigLoadResult LoadConfigFile(const std::filesystem::path& path,
   return LoadConfigFromString(buffer.str(), path, overrides);
 }
 
+// Serializes the effective configuration as a self-consistent, one-way
+// snapshot: profiles are expanded into the active profile, and raw profile or
+// legacy definitions are not emitted. This is not a lossless, profile-preserving
+// serializer. source_priority is intentionally omitted; precedence is resolved
+// by downstream consumers, not by reparsing the snapshot.
 std::string ConfigToJson(const Config& config) {
   nlohmann::ordered_json root;
   root["version"] = config.version;
-  if (!config.active_profile.empty()) root["activeProfile"] = config.active_profile;
   root["deck"] = config.active.deck;
   if (!config.active.state_dir.empty()) root["stateDir"] = config.active.state_dir;
   root["stage"] = StageToJson(config.active.stage);

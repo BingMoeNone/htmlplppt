@@ -333,3 +333,156 @@ HTMLPPT_TEST_CASE(config_print_round_trips) {
   HTMLPPT_CHECK_EQ(second.config->active.targets[0].edge_profile,
                    std::string{"tef-live-page1"});
 }
+
+HTMLPPT_TEST_CASE(config_legacy_inherits_defaults) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "defaults": { "trigger": "arrive", "onFailure": "strict" },
+    "legacy": {
+      "deckName": "deck-live.pptx",
+      "targetSlides": [5],
+      "srcNames": ["page1.html"],
+      "targetHtmls": ["page1.html"],
+      "targetProfiles": ["tef-live-page1"],
+      "targetLabels": ["Page1"]
+    }
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  const auto& target = result.config->active.targets[0];
+  HTMLPPT_CHECK_EQ(target.trigger, std::string{"arrive"});
+  HTMLPPT_CHECK_EQ(target.on_failure, std::string{"strict"});
+}
+
+HTMLPPT_TEST_CASE(config_profile_stage_inherits_top_level_root) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "activeProfile": "p",
+    "stage": { "root": "top-root" },
+    "profiles": {
+      "p": { "stage": { "mode": "direct" }, "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.config->active.stage.mode, std::string{"direct"});
+  HTMLPPT_CHECK_EQ(result.config->active.stage.root, std::string{"top-root"});
+}
+
+HTMLPPT_TEST_CASE(config_profile_stage_inherits_top_level_mode) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "activeProfile": "p",
+    "stage": { "mode": "direct" },
+    "profiles": {
+      "p": { "stage": { "root": "profile-root" }, "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.config->active.stage.mode, std::string{"direct"});
+  HTMLPPT_CHECK_EQ(result.config->active.stage.root, std::string{"profile-root"});
+}
+
+HTMLPPT_TEST_CASE(config_profile_omitting_stage_inherits_top_level) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "activeProfile": "p",
+    "stage": { "mode": "direct" },
+    "profiles": {
+      "p": { "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.config->active.stage.mode, std::string{"direct"});
+  HTMLPPT_CHECK_EQ(result.config->active.stage.root, std::string{""});
+}
+
+HTMLPPT_TEST_CASE(config_print_config_snapshot_reloads_without_issues) {
+  const auto first = Parse(R"({
+    "version": 1,
+    "activeProfile": "a",
+    "deck": "top.pptx",
+    "stage": { "root": "top-root" },
+    "defaults": { "trigger": "arrive" },
+    "targets": [{ "slide": 5, "html": "top.html" }],
+    "profiles": {
+      "a": {
+        "deck": "profile.pptx",
+        "stage": { "mode": "direct" },
+        "targets": [
+          { "slide": 5, "html": "profile.html" },
+          { "slide": 6, "html": "profile6.html" }
+        ]
+      }
+    },
+    "legacy": {
+      "deckName": "legacy.pptx",
+      "targetSlides": [5],
+      "srcNames": ["legacy.html"],
+      "targetHtmls": ["legacy.html"],
+      "targetProfiles": ["tef-live-legacy"],
+      "targetLabels": ["Legacy"]
+    }
+  })");
+  HTMLPPT_CHECK(first.config.has_value());
+  HTMLPPT_CHECK(!HasError(first));
+  const std::string snapshot = htmlppt::ConfigToJson(*first.config);
+  const auto second = LoadConfigFromString(
+      snapshot, std::filesystem::path{"watcher.json"}, {});
+  HTMLPPT_CHECK(second.config.has_value());
+  HTMLPPT_CHECK(second.issues.empty());
+  const auto& targets = second.config->active.targets;
+  HTMLPPT_CHECK_EQ(targets.size(), std::size_t{4});
+  HTMLPPT_CHECK_EQ(*targets[0].slide, 5);
+  HTMLPPT_CHECK_EQ(targets[0].html, std::string{"profile.html"});
+  HTMLPPT_CHECK_EQ(*targets[1].slide, 6);
+  HTMLPPT_CHECK_EQ(targets[1].html, std::string{"profile6.html"});
+  HTMLPPT_CHECK_EQ(*targets[2].slide, 5);
+  HTMLPPT_CHECK_EQ(targets[2].html, std::string{"top.html"});
+  HTMLPPT_CHECK_EQ(*targets[3].slide, 5);
+  HTMLPPT_CHECK_EQ(targets[3].html, std::string{"legacy.html"});
+  HTMLPPT_CHECK_EQ(targets[0].trigger, std::string{"arrive"});
+  HTMLPPT_CHECK_EQ(targets[1].trigger, std::string{"arrive"});
+  HTMLPPT_CHECK_EQ(targets[2].trigger, std::string{"arrive"});
+  HTMLPPT_CHECK_EQ(targets[3].trigger, std::string{"arrive"});
+}
+
+HTMLPPT_TEST_CASE(config_rejects_non_ascii_legacy_stage_name) {
+  const std::string text = std::string(R"({
+    "version": 1,
+    "legacy": {
+      "deckName": "deck-live.pptx",
+      "targetSlides": [5],
+      "srcNames": ["page1.html"],
+      "targetHtmls": [")") + '\\' + R"(u5ba1.html"],
+      "targetProfiles": ["tef-live-page1"],
+      "targetLabels": ["Page1"]
+    }
+  })";
+  const auto result = Parse(text);
+  HTMLPPT_CHECK(HasError(result));
+  bool found = false;
+  for (const auto& issue : result.issues) {
+    if (issue.path == "legacy.targetHtmls[0]") found = true;
+  }
+  HTMLPPT_CHECK(found);
+}
+
+HTMLPPT_TEST_CASE(config_rejects_unknown_profile) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "activeProfile": "missing",
+    "profiles": {
+      "a": { "deck": "a.pptx", "targets": [] },
+      "b": { "deck": "b.pptx", "targets": [] }
+    }
+  })");
+  HTMLPPT_CHECK(HasError(result));
+  bool found = false;
+  for (const auto& issue : result.issues) {
+    if (issue.path == "activeProfile") found = true;
+  }
+  HTMLPPT_CHECK(found);
+}
