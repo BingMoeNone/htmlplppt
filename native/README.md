@@ -167,3 +167,38 @@ set `resume_wps`; the empty-journal path has no facts to apply.
 Plan 4B maps these cores onto Windows Job Objects, named pipes, shared memory,
 MiniDump, process launch/termination, and CLI mode dispatch. No Windows API is
 used in Plan 4A.
+
+## Windows platform primitives (Plan 4B-1)
+
+`platform/win32/process_job` creates a Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, launches the worker suspended, assigns it
+to the job, resumes it, terminates the job, and reports process liveness.
+
+`platform/win32/named_pipe` implements an overlapped duplex pipe transport for
+Plan 4A frames. `Receive` reads a 30-byte header, validates the payload length,
+reads the payload, and decodes it with `DecodeFrame`.
+
+`platform/win32/shared_blackbox` maps an 8 MB-capable file mapping with a
+fixed header and `BlackboxRecord` array. `Append` is single-writer and
+lock-free; `Snapshot` reads in chronological order and reports dropped
+records.
+
+`platform/win32/crash_dump` writes a MiniDump for a live process through
+`MiniDumpWriteDump`.
+
+Windows gate (MSVC 19.51 / Visual Studio 18 Build Tools):
+
+```bash
+WIN_SRC=/mnt/c/Temp/htmlplppt-win
+rm -rf "$WIN_SRC" && mkdir -p "$WIN_SRC"
+cp -r native "$WIN_SRC/native"
+WIN_CMAKE="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe"
+"$WIN_CMAKE" -S C:/Temp/htmlplppt-win/native -B C:/Temp/htmlplppt-win/build -G "Visual Studio 18 2026" -A x64 -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+"$WIN_CMAKE" --build C:/Temp/htmlplppt-win/build --config Release --parallel
+"$WIN_CTEST" --test-dir C:/Temp/htmlplppt-win/build -C Release --output-on-failure
+```
+
+Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
+excluded on Windows), `htmlppt_win32_tests` 14/14, Windows CTest 9/9,
+MSVC `/WX` clean.

@@ -1547,3 +1547,51 @@ Deferred to Plan 4B-2: supervisor/worker hosts, CLI `--supervisor` / `--worker` 
 ## Execution Handoff
 
 Plan 4B-1 is ready. Execute Tasks 1-4 in order. Each task ends with both the Linux gate and the Windows gate green, plus a commit. Task 4 records the final gates and as-built amendments.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 4B-1 is implemented and both final gates passed.
+
+### Observed final-gate counts
+
+Linux (GCC, `-Wall -Wextra -Wpedantic -Werror`):
+
+- `htmlppt_core_tests`: 191/191 cases passed.
+- CTest: 8/8 passed.
+- `npm test`: 3/3 passed (`CHROME_BIN` pointed at the Playwright Chromium).
+
+Windows (MSVC 19.51 / Visual Studio 18 Build Tools, Release x64):
+
+- `htmlppt_core_tests`: 189/189 passed (the two pre-existing journal cases
+  remain excluded on Windows).
+- `htmlppt_win32_tests`: 14/14 passed: 4 Job, 5 named-pipe, 3 shared-blackbox,
+  and 2 crash-dump cases.
+- CTest: 9/9 passed.
+- MSVC `/W4 /permissive- /utf-8 /WX` clean.
+
+TDD red was observed before implementation: the Windows build failed with
+`crash_dump_test.cpp(11,10): error C1083: cannot open include file:
+platform/win32/crash_dump.h`. Adding `crash_dump.h` and `crash_dump.cpp`
+turned the build and both dump tests green.
+
+### Deviations
+
+- None in product code. The brief's source, test, and README text were applied
+  verbatim.
+- Operational only: the sandbox rejected quoted executable paths containing
+  spaces, so the Windows CMake/CTest binaries were invoked through the
+  space-free symlinks in `/tmp/wintools/`. The commands and arguments are the
+  ones documented in the README gate block.
+
+### Deferred
+
+- Plan 4B-2: supervisor/worker host integration and CLI modes
+  (`--supervisor`, `--worker`, `--stop`, `--status`, `--dump-helper`),
+  named-pipe frame routing, shared-memory consumer wiring, single-instance
+  mutex creation, journal I/O, Edge Job handle duplication, and the Windows
+  end-to-end smoke test.
+- Plan 4B-2/5: 15-second legacy lock reclaim.
+- Plan 5: WPS COM host, overlay, focus, and Edge execution.
+- Plan 8: Windows end-to-end acceptance and release.
