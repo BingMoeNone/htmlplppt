@@ -887,10 +887,16 @@ std::unique_ptr<NamedPipeChannel> NamedPipeServer::Accept(Duration timeout) {
     ok = true;
   } else if (!ok) {
     ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-    if (ok) {
-      DWORD transferred = 0;
-      ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
+    if (!ok) {
+      CancelIoEx(pipe_, &overlapped);
+      DWORD ignored = 0;
+      GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+      CloseHandle(overlapped.hEvent);
+      Close();
+      return nullptr;
     }
+    DWORD transferred = 0;
+    ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
   }
   CloseHandle(overlapped.hEvent);
   if (!ok) {
