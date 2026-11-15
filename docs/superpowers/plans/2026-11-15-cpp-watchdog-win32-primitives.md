@@ -20,7 +20,7 @@
 - Named-pipe payloads use the Plan 4A frame format and CRC32. The shared black box uses the Plan 4A 96-byte `BlackboxRecord`.
 - Job Objects must use `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; named pipes and file mappings must be closed by RAII.
 - Existing Linux suite: 191 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN`.
-- Windows gate after this plan: `htmlppt_core_tests` 189/189 (two pre-existing `journal_test.cpp` cases are excluded on Windows by `#ifndef _WIN32`), `htmlppt_win32_tests` 13/13, CTest 9/9, MSVC `/WX` clean.
+- Windows gate after this plan: `htmlppt_core_tests` 189/189 (two pre-existing `journal_test.cpp` cases are excluded on Windows by `#ifndef _WIN32`), `htmlppt_win32_tests` 14/14, CTest 9/9, MSVC `/WX` clean.
 
 ## Windows Build Toolchain (available in this WSL environment)
 
@@ -476,6 +476,7 @@ Create `native/tests/integration/win32/named_pipe_test.cpp`:
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -583,6 +584,32 @@ HTMLPPT_TEST_CASE(win32_named_pipe_connect_timeout) {
   NamedPipeClient client;
   HTMLPPT_CHECK(!client.Connect(L"\\\\.\\pipe\\htmlppt-missing-pipe",
                                 Duration{100}));
+}
+
+HTMLPPT_TEST_CASE(win32_named_pipe_receive_timeout_is_safe) {
+  NamedPipeServer server;
+  const std::wstring name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(name));
+  std::atomic<bool> close_client{false};
+  std::atomic<bool> client_ok{false};
+  std::thread client_thread([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(name, Duration{3000});
+    while (!close_client.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    client.Close();
+  });
+  auto channel = server.Accept(Duration{3000});
+  const auto frame =
+      channel ? channel->Receive(Duration{100}) : std::nullopt;
+  close_client = true;
+  client_thread.join();
+  HTMLPPT_CHECK(channel != nullptr);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(!frame.has_value());
+  channel->Close();
+  server.Close();
 }
 
 #endif // _WIN32
@@ -723,9 +750,14 @@ bool ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
     }
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-      if (ok) {
-        ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
+      if (!ok) {
+        CancelIoEx(pipe, &overlapped);
+        DWORD ignored = 0;
+        GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+        CloseHandle(overlapped.hEvent);
+        return false;
       }
+      ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     } else {
       ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     }
@@ -754,9 +786,14 @@ bool WritePipeExact(HANDLE pipe, const std::uint8_t* buffer, std::size_t size,
     }
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-      if (ok) {
-        ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
+      if (!ok) {
+        CancelIoEx(pipe, &overlapped);
+        DWORD ignored = 0;
+        GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+        CloseHandle(overlapped.hEvent);
+        return false;
       }
+      ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
     } else {
       ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
     }
@@ -769,13 +806,13 @@ bool WritePipeExact(HANDLE pipe, const std::uint8_t* buffer, std::size_t size,
 
 std::optional<Frame> ReceiveFrame(HANDLE pipe, Duration timeout) {
   std::uint8_t header[kFrameHeaderSize] = {};
-  if (!ReadExact(pipe, header, sizeof(header), timeout)) return std::nullopt;
+  if (!ReadPipeExact(pipe, header, sizeof(header), timeout)) return std::nullopt;
   const std::uint32_t length = ReadPayloadLength(header);
   if (length > kMaxFramePayload) return std::nullopt;
   std::vector<std::uint8_t> bytes(kFrameHeaderSize + length, 0);
   std::copy(header, header + kFrameHeaderSize, bytes.begin());
   if (length > 0 &&
-      !ReadExact(pipe, bytes.data() + kFrameHeaderSize, length, timeout)) {
+      !ReadPipeExact(pipe, bytes.data() + kFrameHeaderSize, length, timeout)) {
     return std::nullopt;
   }
   const auto decoded = DecodeFrame(bytes);
@@ -919,7 +956,7 @@ std::optional<Frame> NamedPipeClient::Receive(Duration timeout) {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 8/8 (4 Job + 4 pipe); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 9/9 (4 Job + 5 pipe); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1243,7 +1280,7 @@ std::uint64_t SharedBlackbox::dropped() const {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 11/11; `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 12/12; `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1430,7 +1467,7 @@ WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Comm
 ```
 
 Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
-excluded on Windows), `htmlppt_win32_tests` 13/13, Windows CTest 9/9,
+excluded on Windows), `htmlppt_win32_tests` 14/14, Windows CTest 9/9,
 MSVC `/WX` clean.
 ````
 
@@ -1449,7 +1486,7 @@ Expected: 191/191 unit cases, CTest 8/8, npm 3/3.
 
 Windows gate: run the block above. Expected: `htmlppt_core_tests` 189/189
 (two pre-existing journal cases are excluded on Windows), `htmlppt_win32_tests`
-13/13, CTest 9/9, MSVC `/WX` clean.
+14/14, CTest 9/9, MSVC `/WX` clean.
 
 - [ ] **Step 5: Record as-built amendments and commit**
 
@@ -1496,7 +1533,7 @@ Deferred to Plan 4B-2: supervisor/worker hosts, CLI `--supervisor` / `--worker` 
 - `NamedPipeChannel` uses the Plan 4A `Frame`/`EncodeFrame`/`DecodeFrame`.
 - `SharedBlackbox` uses the Plan 4A `BlackboxRecord` and preserves the 96-byte layout.
 - `WriteMiniDump` is a free function used by the future `--dump-helper` mode.
-- Windows test count: 4 Job + 4 pipe + 3 blackbox + 2 dump = 13.
+- Windows test count: 4 Job + 5 pipe + 3 blackbox + 2 dump = 14.
 - Windows CTest count: 8 existing + `win32_tests` = 9.
 
 ---
