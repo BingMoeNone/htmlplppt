@@ -2120,3 +2120,105 @@ git commit -m "feat: use wps deck info in cli diagnostics"
 
 Plan 5A is ready. Execute Tasks 1-3 in order; each task ends with both gates
 green and a commit. Task 3 records the final gates and as-built.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 5A was executed on branch `feat-cpp-watchdog-wps-com-host`. Plan 5 is
+split into 5A (this plan: WPS COM host), 5B (overlay and focus), 5C (Edge
+execution, staging, compatibility flags/logs, stop entry), and 5D (worker
+business-loop integration and end-to-end acceptance).
+
+### Commits
+
+- `05c10b5` `docs: add Plan 5A WPS COM host implementation plan`
+- `2f1203a` `feat: add win32 com dispatch plumbing`
+- `7f019cb` `docs: align Plan 5A code blocks with as-built`
+- `9f32c97` `feat: add wps com presentation host`
+- the Task 3 commit that contains this section
+
+### Final gate (observed)
+
+Linux, from the repository root:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+cmake --build native/build --parallel
+ctest --test-dir native/build --output-on-failure
+CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
+```
+
+Observed: `htmlppt_core_tests` 191/191, CTest 8/8, `npm test` 3/3, exit 0.
+
+Windows, using the Plan 4B-2 loop:
+
+- Configure and `/W4 /permissive- /utf-8 /WX` Release build: success, no
+  warnings.
+- `htmlppt_core_tests`: 189/189.
+- `htmlppt_win32_tests`: 28/28. This is 22 pre-existing cases, 2 COM helper
+  cases, 3 WPS host cases, and the unavailable-path case added during Task 3.
+- CTest: 9/9, `win32_tests` in 6.6 s.
+
+### Manual acceptance (observed)
+
+A real three-slide deck was generated with WPS COM
+(`Cover`, `Contract Engine`, `Audit`) because the repository fixture
+`native/tests/fixtures/deck.pptx` is a 3-byte placeholder used only for path
+existence checks.
+
+1. `--resolve` without `--deck-info`: passed. Slide 2 resolved by number and
+   `slideTitle=Audit` resolved to slide 3 through WPS. Elapsed 1 s, no
+   warnings.
+2. `--validate` with slide 99: passed. Output was
+   `slide 99 is out of range (deck has 3 slides)`, exit 1, with no
+   `--deck-info`.
+3. `--resolve --deck-info`: passed. Identical mapping table in under 1 s and
+   no WPS automation process existed before or after.
+4. WPS closed: a cold start with the real deck succeeded in about 1 s. WPS
+   unavailable is covered deterministically by
+   `win32_wps_host_unavailable_warning`, which asserts a single warning that
+   names `--deck-info`. No real WPS uninstall was attempted.
+
+Opening the 3-byte fixture through WPS blocks on a hidden modal error dialog;
+`CoCreateInstance` and `Presentations.Open` have no built-in timeout. This
+does not affect the automated gate (fake dispatch only) and does not affect a
+real deck, but it means a corrupt deck can hang the diagnostic CLI. A COM
+call timeout/cancellation watchdog is deferred to Plan 5D/6, where the worker
+COM thread owns the thread-stall monitor required by design spec 4.3 and 6.1.
+
+### Deviations
+
+1. The `PresentationHost` interface lives in `core/presentation_host.h`
+   instead of `platform/win32/presentation_host.h`. The interface has no
+   Windows types; `core/` remains platform-neutral, and the WPS
+   implementation remains under `platform/win32/`.
+2. `fake_dispatch.h` cannot mark `~FakeDispatch()` as `override` because
+   `IUnknown` has no virtual destructor. The plan code block was corrected.
+3. `wps_host_test.cpp` needs `using htmlppt::DispatchPtr;`, and
+   `fake_wps.h` needs `#include "platform/win32/com_dispatch.h"` for
+   `DispatchPtr`. Both plan code blocks were corrected before the Task 2
+   commit.
+4. `std::string(name)` cannot be constructed from `const wchar_t*`; the
+   diagnostics use `Narrow` (COM helper) or `NarrowWide` (WPS helper). Three
+   occurrences in `com_dispatch.cpp` and one in `wps_host.cpp` were corrected.
+5. Task 3 added `win32_wps_host_unavailable_warning`, raising the Windows
+   `htmlppt_win32_tests` count from the planned 27 to 28. The final counts in
+   this section supersede the earlier 27/27 statements.
+6. The CLI WPS path uses `launch_attempts = 1` so a machine without WPS does
+   not pay the watcher's three-attempt startup delay. A real cold start with
+   WPS installed was observed at about 1 s.
+
+### Deferred items
+
+- Plan 5B: overlay window, fade/hold/cover handshake, focus thread, window
+  enumeration, foreground unlock, Edge profile window matching.
+- Plan 5C: Edge execution, staging `file`/`tree`/`direct`, compatibility flag
+  mirror, human-readable log words, legacy launcher, `stop-live.vbs` shim.
+- Plan 5D: worker business loop, config-to-`RunPlan` mapping, state-machine
+  event/action wiring, trigger generation filtering, COM call cancellation,
+  full Windows end-to-end acceptance.
+- Plan 6: scheduling, priorities, power policy, fault injection.
+- Plan 7: config hot reload and native configuration UI.
+- Plan 8: diagnostics packaging and release.

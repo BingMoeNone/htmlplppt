@@ -217,3 +217,51 @@ The same EXE runs as supervisor and worker.
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
 
 Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.
+
+## WPS COM host (Plan 5A)
+
+`platform/win32/com_dispatch` provides the STA COM apartment, RAII
+`IDispatch` pointers, variant conversion, named late-bound calls, and HRESULT
+classification. `HostStatus::Busy` covers transient failures including WPS
+error 462; `HostStatus::Unavailable` covers missing or disconnected COM
+servers; `HostStatus::Failed` is structural.
+
+`platform/win32/wps_host` implements the platform-neutral
+`core/presentation_host.h` contract and the existing `DeckInfoProvider`
+interface through late-bound `Kwpp.Application` calls:
+
+- `Launch` creates WPS, makes it visible, and opens the deck read-only with
+  three attempts.
+- `StartShow` sets `StartingSlide=1`, `ShowWithAnimation=True`, calls
+  `SlideShowSettings.Run`, and waits up to 2.5 s for a slideshow window.
+- `QueryShow` reads `SlideShowWindows.Count` and
+  `SlideShowWindow.View.CurrentShowPosition`.
+- `ExitShow`, `ResumeShow`, `JumpTo`, and `FocusShow` use the same retry
+  timings as the legacy watcher (300 ms between attempts).
+- `Load` reads `Slides.Count`, `Slide.Name`, and
+  `Shapes.Title.TextFrame.TextRange.Text` and closes a deck opened only for
+  diagnostics.
+
+On Windows, `--validate` and `--resolve` use WPS automatically when
+`--deck-info` is omitted. `--deck-info` remains the deterministic path for
+CI, Linux/WSL, and machines without WPS; if WPS is unavailable the CLI emits
+a warning and falls back to the previous limited-resolution behavior.
+
+Manual acceptance on a Windows machine with WPS 12.1:
+
+1. Run `htmlppt-watchdog.exe --resolve --config watcher.json` with a real
+   deck and both a numeric and a title-based target. Expected: the table
+   resolves every target and prints no deck-info warnings. WPS may open
+   briefly; it must not start a slideshow.
+2. Run `--validate` with an out-of-range numeric target. Expected: a slide
+   range error even without `--deck-info`.
+3. Re-run `--resolve --deck-info deck-info.json`. Expected: identical output
+   and no WPS process is created.
+4. Run `--resolve` with WPS closed and then with WPS unavailable. Expected: a
+   warning that names `--deck-info`, not a crash or hang.
+
+`htmlppt_win32_tests` covers the COM helpers and the WPS host with an
+in-process fake `IDispatch` tree, so the automated gate does not require WPS.
+
+Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 28/28,
+CTest 9/9, `/WX` clean.

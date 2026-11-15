@@ -16,6 +16,7 @@ using htmlppt::DispatchPtr;
 using htmlppt::FakeClock;
 using htmlppt::HasErrorIssue;
 using htmlppt::HostStatus;
+using htmlppt::IssueSeverity;
 using htmlppt::WpsHost;
 using htmlppt::WpsHostConfig;
 using htmlppt::test::FakeWps;
@@ -95,6 +96,29 @@ HTMLPPT_TEST_CASE(win32_wps_host_reports_busy) {
   HTMLPPT_CHECK_EQ(static_cast<int>(state.status),
                    static_cast<int>(HostStatus::Ok));
   HTMLPPT_CHECK(state.active);
+  host.Release();
+}
+
+HTMLPPT_TEST_CASE(win32_wps_host_unavailable_warning) {
+  FakeClock clock;
+  WpsHostConfig config;
+  config.launch_attempts = 1;
+  WpsHost host(
+      clock,
+      [](long* error) {
+        *error = static_cast<long>(REGDB_E_CLASSNOTREG);
+        return DispatchPtr{};
+      },
+      config);
+  const auto loaded =
+      host.Load(std::filesystem::path(L"C:\\demo\\deck.pptx"));
+  HTMLPPT_CHECK(!loaded.info.has_value());
+  HTMLPPT_CHECK(!HasErrorIssue(loaded.issues));
+  HTMLPPT_CHECK_EQ(loaded.issues.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(static_cast<int>(loaded.issues[0].severity),
+                   static_cast<int>(IssueSeverity::Warning));
+  HTMLPPT_CHECK(loaded.issues[0].message.find("--deck-info") !=
+                std::string::npos);
   host.Release();
 }
 

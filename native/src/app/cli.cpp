@@ -18,6 +18,9 @@
 #include "core/deck_info.h"
 #include "core/resolve.h"
 #include "core/version.h"
+#ifdef _WIN32
+#include "platform/win32/wps_host.h"
+#endif
 
 namespace htmlppt {
 namespace {
@@ -384,11 +387,23 @@ struct DeckInfoLoad {
 DeckInfoLoad LoadDeckInfoForCommand(const CliOptions& options,
                                     const Config& config) {
   DeckInfoLoad result;
-  if (options.deck_info_path.empty()) return result;
-  JsonDeckInfoProvider provider(options.deck_info_path);
-  auto loaded = provider.Load(ResolveDeckPath(config));
+  if (!options.deck_info_path.empty()) {
+    JsonDeckInfoProvider provider(options.deck_info_path);
+    auto loaded = provider.Load(ResolveDeckPath(config));
+    result.issues = std::move(loaded.issues);
+    result.info = std::move(loaded.info);
+    return result;
+  }
+#ifdef _WIN32
+  SteadyClock clock;
+  WpsHostConfig host_config;
+  host_config.launch_attempts = 1;
+  WpsHost host(clock, host_config);
+  auto loaded = host.Load(ResolveDeckPath(config));
+  host.Release();
   result.issues = std::move(loaded.issues);
   result.info = std::move(loaded.info);
+#endif
   return result;
 }
 
