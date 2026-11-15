@@ -1004,6 +1004,7 @@ Create `native/tests/integration/win32/wps_host_test.cpp`:
 #include "fake_wps.h"
 #include "platform/win32/wps_host.h"
 
+using htmlppt::DispatchPtr;
 using htmlppt::FakeClock;
 using htmlppt::HasErrorIssue;
 using htmlppt::HostStatus;
@@ -1217,7 +1218,7 @@ bool GetIntProperty(IDispatch* target, const wchar_t* name, int* value,
   if (!VariantToInt(result.get(), value)) {
     *call = Failure(HostStatus::Failed,
                     static_cast<long>(DISP_E_TYPEMISMATCH),
-                    std::string(name) + " is not an integer");
+                    NarrowWide(name) + " is not an integer");
     return false;
   }
   return true;
@@ -1683,6 +1684,7 @@ Create `native/tests/integration/win32/fake_wps.h`:
 #include <vector>
 
 #include "fake_dispatch.h"
+#include "platform/win32/com_dispatch.h"
 
 namespace htmlppt::test {
 
