@@ -981,3 +981,95 @@ Deferred to Plan 5: WPS COM host, overlay, focus, Edge execution, Edge Job handl
 ## Execution Handoff
 
 Plan 4B-2 is ready. Execute Tasks 1-2 in order. Each task ends with both gates green and a commit. Task 2 records the final gates and as-built.
+
+---
+
+## As-Built Amendments (2026-11-15)
+
+Plan 4B-2 was executed end to end on branch
+`worktree-feat-cpp-watchdog-supervisor-host`. Commits: `8abf1d3` (Task 1,
+supervisor and worker host) and the Task 2 commit
+(`docs: record Plan 4B-2 as-built amendments`) that contains this section.
+The worktree was clean after each commit.
+
+### Final gate (observed)
+
+Commands, run from this worktree's root:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+cmake -S native -B native/build -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+cmake --build native/build --parallel
+ctest --test-dir native/build --output-on-failure
+CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome npm test
+```
+
+Linux observed results:
+
+- Configure and `-Werror` build: success, exit 0.
+- Unit suite: 191 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`, exit 0.
+- CTest: 8/8 passed, 100%, exit 0.
+- `npm test` with `CHROME_BIN`: 3/3 pass, 0 fail, exit 0.
+
+Windows commands, run from this worktree's root with
+`/tmp/wintools/cmake` and `/tmp/wintools/ctest`:
+
+```bash
+WIN_SRC=/mnt/c/Temp/htmlplppt-win
+rm -rf "$WIN_SRC" && mkdir -p "$WIN_SRC"
+cp -r native "$WIN_SRC/native"
+/tmp/wintools/cmake -S C:/Temp/htmlplppt-win/native -B C:/Temp/htmlplppt-win/build -G "Visual Studio 18 2026" -A x64 -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+/tmp/wintools/cmake --build C:/Temp/htmlplppt-win/build --config Release --parallel
+/tmp/wintools/ctest --test-dir C:/Temp/htmlplppt-win/build -C Release --output-on-failure
+```
+
+Windows observed results:
+
+- Configure and `/W4 /permissive- /utf-8 /WX` Release build: success, exit 0,
+  no warnings.
+- `htmlppt_core_tests`: 189/189 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`. The
+  two pre-existing journal cases remain excluded on Windows.
+- `htmlppt_win32_tests`: 21/21 `[PASS]`, 0 `[FAIL]`, `ALL TESTS PASSED`,
+  observed twice with the suite run directly. The 21 cases are 16 pre-existing
+  cases, `win32_supervisor_starts_and_stops` from Task 1, and the four Task 2
+  cases `win32_supervisor_single_instance`, `win32_cli_stop`,
+  `win32_cli_status`, and `win32_cli_dump_helper`.
+- CTest: 9/9 passed, 0 failed, `win32_tests` in 3.91 s.
+
+### Source as built
+
+- Task 1 created `native/src/app/supervisor.h` and
+  `native/src/app/supervisor.cpp`, extended `native/src/app/cli.cpp` and
+  `native/CMakeLists.txt` with the host modes, added the writable shared
+  black-box view, and added `win32_supervisor_starts_and_stops` to
+  `native/tests/integration/win32/supervisor_host_test.cpp`.
+- Task 2 modified only
+  `native/tests/integration/win32/supervisor_host_test.cpp` (the `RunCli`
+  helper and four integration tests), appended the host section to
+  `native/README.md`, and appended this section to the plan. No host source,
+  Linux code, or existing test case was changed.
+
+### Deviations and notes
+
+1. Task 2 Step 1 says "three tests" but supplies four code blocks
+   (`single_instance`, `cli_stop`, `cli_status`, `cli_dump_helper`). All four
+   were added, giving the planned total of 21 Windows integration cases.
+2. No host defect was exposed. The four new tests passed unmodified on the
+   first Windows build and on both repeat runs, so the host behavior was not
+   changed.
+3. `--status` reporting is deliberately minimal: header counts, the last ten
+   black-box records, and the journal path. Richer status and journal
+   formatting are deferred.
+4. The Plan 4B-1 README gate line still records its historical
+   `htmlppt_win32_tests` 14/14 expectation; the Plan 4B-2 section above it
+   records the current 21/21. This pre-existing documentation drift was noted
+   during self-review but left untouched because Task 2 only appends the host
+   section.
+
+### Deferred items
+
+- Plan 5: WPS COM host, overlay, focus, Edge execution, and Edge Job handle
+  duplication.
+- Plan 6: scheduling, priorities, power handling, and fault injection.
+- Plan 8: full Windows end-to-end acceptance, diagnostics packaging, and
+  release.

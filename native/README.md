@@ -202,3 +202,17 @@ WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Comm
 Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
 excluded on Windows), `htmlppt_win32_tests` 14/14, Windows CTest 9/9,
 MSVC `/WX` clean.
+
+## Supervisor and worker host (Plan 4B-2)
+
+The same EXE runs as supervisor and worker.
+
+- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job; it monitors 200 ms heartbeats, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`.
+- `--worker --run-id <id>` connects to the pipe, sends a heartbeat every 200 ms, appends a black-box record every five heartbeats, and exits on a Stop frame.
+- `--stop --run-id <id>` sets the named stop event.
+- `--status --run-id <id> --state-dir <dir>` prints the last black-box records and the journal path.
+- `--dump-helper <pid> <path>` writes a MiniDump.
+
+The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
+
+Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 21/21, CTest 9/9, `/WX` clean.
