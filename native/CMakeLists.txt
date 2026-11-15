@@ -37,6 +37,14 @@ target_include_directories(htmlppt_core PUBLIC
 target_compile_features(htmlppt_core PUBLIC cxx_std_20)
 htmlppt_enable_warnings(htmlppt_core)
 
+if (WIN32)
+  file(GLOB HTMLPPT_WIN32_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win32/*.cpp")
+  add_library(htmlppt_win32 STATIC ${HTMLPPT_WIN32_SOURCES})
+  target_link_libraries(htmlppt_win32 PUBLIC htmlppt_core dbghelp)
+  htmlppt_enable_warnings(htmlppt_win32)
+endif()
+
 add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp)
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
 htmlppt_enable_warnings(htmlppt-watchdog)
@@ -90,4 +98,18 @@ if (HTMLPPT_BUILD_TESTS)
       "-DEXE=$<TARGET_FILE:htmlppt-watchdog>"
       "-DFIXTURES=${HTMLPPT_FIXTURES}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cli_contract.cmake")
+
+  if (WIN32)
+    file(GLOB HTMLPPT_WIN32_TEST_SOURCES CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/win32/*.cpp")
+    add_executable(htmlppt_win32_tests
+      ${HTMLPPT_WIN32_TEST_SOURCES}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp")
+    target_include_directories(htmlppt_win32_tests PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(htmlppt_win32_tests PRIVATE htmlppt_win32)
+    htmlppt_enable_warnings(htmlppt_win32_tests)
+    add_test(NAME win32_tests COMMAND htmlppt_win32_tests)
+    set_tests_properties(win32_tests PROPERTIES TIMEOUT 120)
+  endif()
 endif()
