@@ -35,7 +35,6 @@ HTMLPPT_TEST_CASE(win32_crash_dump_writes_file) {
   ProcessHandle process;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(process.LaunchSuspended(CmdExe(), SleepArgs(), job));
-  HTMLPPT_CHECK(job.Assign(process.process()));
   HTMLPPT_CHECK(process.Resume());
   const auto path = std::filesystem::temp_directory_path() /
                     (L"htmlppt-dump-" + std::to_wstring(process.pid()) + L".dmp");

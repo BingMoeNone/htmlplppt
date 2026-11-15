@@ -31,9 +31,6 @@ std::vector<std::wstring> SleepArgs() {
 void LaunchChild(JobHandle& job, ProcessHandle& process) {
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(process.LaunchSuspended(CmdExe(), SleepArgs(), job));
-  const bool assigned = job.Assign(process.process());
-  if (!assigned) process.Terminate();
-  HTMLPPT_CHECK(assigned);
   HTMLPPT_CHECK(process.Resume());
 }
 
@@ -59,6 +56,16 @@ HTMLPPT_TEST_CASE(win32_process_resume_and_terminate) {
   HTMLPPT_CHECK(!IsProcessAlive(process.pid()));
 }
 
+HTMLPPT_TEST_CASE(win32_process_resume_runs_child) {
+  JobHandle job;
+  ProcessHandle process;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(process.LaunchSuspended(
+      CmdExe(), {L"/c", L"exit", L"0"}, job));
+  HTMLPPT_CHECK(process.Resume());
+  HTMLPPT_CHECK(process.WaitForExit(5000));
+}
+
 HTMLPPT_TEST_CASE(win32_job_kill_on_close) {
   ProcessHandle process;
   std::uint32_t pid = 0;
@@ -67,6 +74,7 @@ HTMLPPT_TEST_CASE(win32_job_kill_on_close) {
     LaunchChild(job, process);
     pid = process.pid();
     HTMLPPT_CHECK(job.valid());
+    HTMLPPT_CHECK(IsProcessAlive(pid));
   }
   HTMLPPT_CHECK(process.WaitForExit(5000));
   HTMLPPT_CHECK(!IsProcessAlive(pid));

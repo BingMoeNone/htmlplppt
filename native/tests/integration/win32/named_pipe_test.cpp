@@ -140,4 +140,19 @@ HTMLPPT_TEST_CASE(win32_named_pipe_receive_timeout_is_safe) {
   server.Close();
 }
 
+HTMLPPT_TEST_CASE(win32_named_pipe_accept_failure_does_not_wait) {
+  NamedPipeServer server;
+  const std::wstring name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(name));
+  NamedPipeClient client;
+  HTMLPPT_CHECK(client.Connect(name, Duration{3000}));
+  client.Close();
+  const auto start = std::chrono::steady_clock::now();
+  auto channel = server.Accept(Duration{2000});
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  HTMLPPT_CHECK(elapsed < std::chrono::milliseconds(1500));
+  if (channel != nullptr) channel->Close();
+  server.Close();
+}
+
 #endif // _WIN32

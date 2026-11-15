@@ -43,6 +43,10 @@ class ProcessHandle {
   ProcessHandle(ProcessHandle&& other) noexcept;
   ProcessHandle& operator=(ProcessHandle&& other) noexcept;
 
+  // Launches the executable suspended and adds it to `job`. If the job
+  // assignment fails, the process is terminated and the function returns
+  // false. The caller must keep `job` alive until the process ends; closing
+  // the job kills every process it owns.
   bool LaunchSuspended(const std::filesystem::path& exe,
                        const std::vector<std::wstring>& args,
                        JobHandle& job);

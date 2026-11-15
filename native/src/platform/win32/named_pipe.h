@@ -28,6 +28,8 @@ class NamedPipeChannel {
   NamedPipeChannel(const NamedPipeChannel&) = delete;
   NamedPipeChannel& operator=(const NamedPipeChannel&) = delete;
 
+  // Uses a fixed 3-second timeout. On failure the stream may contain a partial
+  // frame, so the channel must be closed.
   bool Send(const Frame& frame);
   std::optional<Frame> Receive(Duration timeout);
   void Close();
@@ -49,6 +51,8 @@ class NamedPipeServer {
   NamedPipeServer& operator=(const NamedPipeServer&) = delete;
 
   bool Create(const std::wstring& name);
+  // On failure or timeout the server handle is closed; the caller must call
+  // Create again before another Accept.
   std::unique_ptr<NamedPipeChannel> Accept(Duration timeout);
   void Close();
 
@@ -65,6 +69,8 @@ class NamedPipeClient {
   NamedPipeClient& operator=(const NamedPipeClient&) = delete;
 
   bool Connect(const std::wstring& name, Duration timeout);
+  // Same fixed 3-second timeout and partial-frame contract as
+  // NamedPipeChannel::Send.
   bool Send(const Frame& frame);
   // Same timeout and nullopt contract as NamedPipeChannel::Receive.
   std::optional<Frame> Receive(Duration timeout);

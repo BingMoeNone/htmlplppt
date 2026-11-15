@@ -46,6 +46,8 @@ HTMLPPT_TEST_CASE(win32_shared_blackbox_round_trip) {
   HTMLPPT_CHECK_EQ(snapshot.size(), std::size_t{3});
   HTMLPPT_CHECK_EQ(snapshot[0].timestamp_ms, std::int64_t{10});
   HTMLPPT_CHECK_EQ(snapshot[2].sequence, std::uint64_t{3});
+  reader->Append(MakeRecord(99));
+  HTMLPPT_CHECK_EQ(reader->Snapshot().size(), std::size_t{3});
 }
 
 HTMLPPT_TEST_CASE(win32_shared_blackbox_wraps_and_counts_dropped) {

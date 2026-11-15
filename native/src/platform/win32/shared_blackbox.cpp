@@ -9,7 +9,8 @@
 namespace htmlppt {
 namespace {
 
-constexpr std::uint32_t kBlackboxMagic = 0x424C4B42u;  // "BLKB"
+constexpr std::uint32_t kBlackboxMagic =
+    0x424B4C42u;  // "BLKB" in little-endian memory
 constexpr std::uint16_t kBlackboxVersion = 1;
 
 static_assert(sizeof(BlackboxRecord) == 96, "shared blackbox record layout");
@@ -19,8 +20,12 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
 } // namespace
 
 SharedBlackbox::SharedBlackbox(HANDLE mapping, void* view,
-                               std::size_t capacity)
-    : mapping_(mapping), view_(view), capacity_(capacity) {
+                               std::size_t capacity, bool writable)
+    : mapping_(mapping),
+      view_(view),
+      capacity_(capacity),
+      writable_(writable) {
+  static_assert(sizeof(Header) == 32, "shared blackbox header layout");
   Attach(capacity);
 }
 
@@ -62,7 +67,7 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
     return nullptr;
   }
   auto box = std::unique_ptr<SharedBlackbox>(
-      new SharedBlackbox(mapping, view, capacity));
+      new SharedBlackbox(mapping, view, capacity, true));
   new (box->header_) Header{};
   box->header_->magic = kBlackboxMagic;
   box->header_->version = kBlackboxVersion;
@@ -74,9 +79,9 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
 }
 
 std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
-  HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
   if (mapping == nullptr) return nullptr;
-  void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+  void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
   if (view == nullptr) {
     CloseHandle(mapping);
     return nullptr;
@@ -91,11 +96,14 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
     return nullptr;
   }
   return std::unique_ptr<SharedBlackbox>(
-      new SharedBlackbox(mapping, view, header->capacity));
+      new SharedBlackbox(mapping, view, header->capacity, false));
 }
 
 void SharedBlackbox::Append(const BlackboxRecord& record) {
-  if (header_ == nullptr || records_ == nullptr || capacity_ == 0) return;
+  if (!writable_ || header_ == nullptr || records_ == nullptr ||
+      capacity_ == 0) {
+    return;
+  }
   const std::uint64_t index =
       header_->appended.load(std::memory_order_relaxed);
   BlackboxRecord copy = record;

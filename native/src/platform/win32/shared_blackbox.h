@@ -17,6 +17,12 @@ namespace htmlppt {
 
 #ifdef _WIN32
 
+// Shared-memory black-box ring. Append is single-writer: the caller must
+// serialize all writes (Plan 4B-2 will use one writer thread or an MPSC
+// queue). Snapshot stays within the mapping during a concurrent wrap, but the
+// returned records may be torn or out of order and are diagnostic only. Create
+// returns a writable mapping; Open returns a read-only mapping whose Append is
+// a no-op.
 class SharedBlackbox {
  public:
   static std::unique_ptr<SharedBlackbox> Create(const std::wstring& name,
@@ -45,7 +51,8 @@ class SharedBlackbox {
     std::atomic<std::uint64_t> dropped;
   };
 
-  SharedBlackbox(HANDLE mapping, void* view, std::size_t capacity);
+  SharedBlackbox(HANDLE mapping, void* view, std::size_t capacity,
+                 bool writable);
   void Attach(std::size_t capacity);
 
   HANDLE mapping_ = nullptr;
@@ -53,6 +60,7 @@ class SharedBlackbox {
   Header* header_ = nullptr;
   BlackboxRecord* records_ = nullptr;
   std::size_t capacity_ = 0;
+  bool writable_ = false;
 };
 
 #endif // _WIN32

@@ -20,7 +20,7 @@
 - Named-pipe payloads use the Plan 4A frame format and CRC32. The shared black box uses the Plan 4A 96-byte `BlackboxRecord`.
 - Job Objects must use `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; named pipes and file mappings must be closed by RAII.
 - Existing Linux suite: 191 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN`.
-- Windows gate after this plan: `htmlppt_core_tests` 189/189 (two pre-existing `journal_test.cpp` cases are excluded on Windows by `#ifndef _WIN32`), `htmlppt_win32_tests` 14/14, CTest 9/9, MSVC `/WX` clean.
+- Windows gate after this plan: `htmlppt_core_tests` 189/189 (two pre-existing `journal_test.cpp` cases are excluded on Windows by `#ifndef _WIN32`), `htmlppt_win32_tests` 16/16, CTest 9/9, MSVC `/WX` clean.
 
 ## Windows Build Toolchain (available in this WSL environment)
 
@@ -126,9 +126,6 @@ std::vector<std::wstring> SleepArgs() {
 void LaunchChild(JobHandle& job, ProcessHandle& process) {
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(process.LaunchSuspended(CmdExe(), SleepArgs(), job));
-  const bool assigned = job.Assign(process.process());
-  if (!assigned) process.Terminate();
-  HTMLPPT_CHECK(assigned);
   HTMLPPT_CHECK(process.Resume());
 }
 
@@ -154,6 +151,16 @@ HTMLPPT_TEST_CASE(win32_process_resume_and_terminate) {
   HTMLPPT_CHECK(!IsProcessAlive(process.pid()));
 }
 
+HTMLPPT_TEST_CASE(win32_process_resume_runs_child) {
+  JobHandle job;
+  ProcessHandle process;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(process.LaunchSuspended(
+      CmdExe(), {L"/c", L"exit", L"0"}, job));
+  HTMLPPT_CHECK(process.Resume());
+  HTMLPPT_CHECK(process.WaitForExit(5000));
+}
+
 HTMLPPT_TEST_CASE(win32_job_kill_on_close) {
   ProcessHandle process;
   std::uint32_t pid = 0;
@@ -162,6 +169,7 @@ HTMLPPT_TEST_CASE(win32_job_kill_on_close) {
     LaunchChild(job, process);
     pid = process.pid();
     HTMLPPT_CHECK(job.valid());
+    HTMLPPT_CHECK(IsProcessAlive(pid));
   }
   HTMLPPT_CHECK(process.WaitForExit(5000));
   HTMLPPT_CHECK(!IsProcessAlive(pid));
@@ -259,6 +267,10 @@ class ProcessHandle {
   ProcessHandle(ProcessHandle&& other) noexcept;
   ProcessHandle& operator=(ProcessHandle&& other) noexcept;
 
+  // Launches the executable suspended and adds it to `job`. If the job
+  // assignment fails, the process is terminated and the function returns
+  // false. The caller must keep `job` alive until the process ends; closing
+  // the job kills every process it owns.
   bool LaunchSuspended(const std::filesystem::path& exe,
                        const std::vector<std::wstring>& args,
                        JobHandle& job);
@@ -392,6 +404,11 @@ bool ProcessHandle::LaunchSuspended(
   process_ = information.hProcess;
   thread_ = information.hThread;
   pid_ = static_cast<std::uint32_t>(information.dwProcessId);
+  if (!job.Assign(process_)) {
+    TerminateProcess(process_, 1);
+    Close();
+    return false;
+  }
   return true;
 }
 
@@ -429,7 +446,7 @@ bool IsProcessAlive(std::uint32_t pid) {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` builds; `win32_tests` passes 4/4; `htmlppt_core_tests` 189/189 (two pre-existing journal cases are excluded on Windows); Windows CTest 9/9. Also run the Linux gate:
+Run the Windows build block. Expected: `htmlppt_win32_tests` builds; `win32_tests` passes 5/5 (5 Job cases); `htmlppt_core_tests` 189/189 (two pre-existing journal cases are excluded on Windows); Windows CTest 9/9. Also run the Linux gate:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -612,6 +629,21 @@ HTMLPPT_TEST_CASE(win32_named_pipe_receive_timeout_is_safe) {
   server.Close();
 }
 
+HTMLPPT_TEST_CASE(win32_named_pipe_accept_failure_does_not_wait) {
+  NamedPipeServer server;
+  const std::wstring name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(name));
+  NamedPipeClient client;
+  HTMLPPT_CHECK(client.Connect(name, Duration{3000}));
+  client.Close();
+  const auto start = std::chrono::steady_clock::now();
+  auto channel = server.Accept(Duration{2000});
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  HTMLPPT_CHECK(elapsed < std::chrono::milliseconds(1500));
+  if (channel != nullptr) channel->Close();
+  server.Close();
+}
+
 #endif // _WIN32
 ```
 
@@ -648,6 +680,8 @@ class NamedPipeChannel {
   NamedPipeChannel(const NamedPipeChannel&) = delete;
   NamedPipeChannel& operator=(const NamedPipeChannel&) = delete;
 
+  // Uses a fixed 3-second timeout. On failure the stream may contain a partial
+  // frame, so the channel must be closed.
   bool Send(const Frame& frame);
   std::optional<Frame> Receive(Duration timeout);
   void Close();
@@ -669,6 +703,8 @@ class NamedPipeServer {
   NamedPipeServer& operator=(const NamedPipeServer&) = delete;
 
   bool Create(const std::wstring& name);
+  // On failure or timeout the server handle is closed; the caller must call
+  // Create again before another Accept.
   std::unique_ptr<NamedPipeChannel> Accept(Duration timeout);
   void Close();
 
@@ -685,7 +721,10 @@ class NamedPipeClient {
   NamedPipeClient& operator=(const NamedPipeClient&) = delete;
 
   bool Connect(const std::wstring& name, Duration timeout);
+  // Same fixed 3-second timeout and partial-frame contract as
+  // NamedPipeChannel::Send.
   bool Send(const Frame& frame);
+  // Same timeout and nullopt contract as NamedPipeChannel::Receive.
   std::optional<Frame> Receive(Duration timeout);
   void Close();
 
@@ -883,20 +922,27 @@ std::unique_ptr<NamedPipeChannel> NamedPipeServer::Accept(Duration timeout) {
   if (overlapped.hEvent == nullptr) return nullptr;
   BOOL connected = ConnectNamedPipe(pipe_, &overlapped);
   bool ok = connected != FALSE;
-  if (!ok && GetLastError() == ERROR_PIPE_CONNECTED) {
-    ok = true;
-  } else if (!ok) {
-    ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-    if (!ok) {
-      CancelIoEx(pipe_, &overlapped);
-      DWORD ignored = 0;
-      GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+  if (!ok) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_PIPE_CONNECTED) {
+      ok = true;
+    } else if (error == ERROR_IO_PENDING) {
+      ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
+      if (!ok) {
+        CancelIoEx(pipe_, &overlapped);
+        DWORD ignored = 0;
+        GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+        CloseHandle(overlapped.hEvent);
+        Close();
+        return nullptr;
+      }
+      DWORD transferred = 0;
+      ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
+    } else {
       CloseHandle(overlapped.hEvent);
       Close();
       return nullptr;
     }
-    DWORD transferred = 0;
-    ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
   }
   CloseHandle(overlapped.hEvent);
   if (!ok) {
@@ -925,9 +971,10 @@ bool NamedPipeClient::Connect(const std::wstring& name, Duration timeout) {
     pipe_ = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                         OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     if (pipe_ != INVALID_HANDLE_VALUE) return true;
+    const DWORD error = GetLastError();
     pipe_ = nullptr;
     if (std::chrono::steady_clock::now() >= deadline) return false;
-    if (GetLastError() == ERROR_PIPE_BUSY) {
+    if (error == ERROR_PIPE_BUSY) {
       WaitNamedPipeW(name.c_str(), 50);
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -962,7 +1009,7 @@ std::optional<Frame> NamedPipeClient::Receive(Duration timeout) {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 9/9 (4 Job + 5 pipe); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 11/11 (5 Job + 6 pipe); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1040,6 +1087,8 @@ HTMLPPT_TEST_CASE(win32_shared_blackbox_round_trip) {
   HTMLPPT_CHECK_EQ(snapshot.size(), std::size_t{3});
   HTMLPPT_CHECK_EQ(snapshot[0].timestamp_ms, std::int64_t{10});
   HTMLPPT_CHECK_EQ(snapshot[2].sequence, std::uint64_t{3});
+  reader->Append(MakeRecord(99));
+  HTMLPPT_CHECK_EQ(reader->Snapshot().size(), std::size_t{3});
 }
 
 HTMLPPT_TEST_CASE(win32_shared_blackbox_wraps_and_counts_dropped) {
@@ -1093,6 +1142,12 @@ namespace htmlppt {
 
 #ifdef _WIN32
 
+// Shared-memory black-box ring. Append is single-writer: the caller must
+// serialize all writes (Plan 4B-2 will use one writer thread or an MPSC
+// queue). Snapshot stays within the mapping during a concurrent wrap, but the
+// returned records may be torn or out of order and are diagnostic only. Create
+// returns a writable mapping; Open returns a read-only mapping whose Append is
+// a no-op.
 class SharedBlackbox {
  public:
   static std::unique_ptr<SharedBlackbox> Create(const std::wstring& name,
@@ -1121,7 +1176,8 @@ class SharedBlackbox {
     std::atomic<std::uint64_t> dropped;
   };
 
-  SharedBlackbox(HANDLE mapping, void* view, std::size_t capacity);
+  SharedBlackbox(HANDLE mapping, void* view, std::size_t capacity,
+                 bool writable);
   void Attach(std::size_t capacity);
 
   HANDLE mapping_ = nullptr;
@@ -1129,6 +1185,7 @@ class SharedBlackbox {
   Header* header_ = nullptr;
   BlackboxRecord* records_ = nullptr;
   std::size_t capacity_ = 0;
+  bool writable_ = false;
 };
 
 #endif // _WIN32
@@ -1150,7 +1207,8 @@ Create `native/src/platform/win32/shared_blackbox.cpp`:
 namespace htmlppt {
 namespace {
 
-constexpr std::uint32_t kBlackboxMagic = 0x424C4B42u;  // "BLKB"
+constexpr std::uint32_t kBlackboxMagic =
+    0x424B4C42u;  // "BLKB" in little-endian memory
 constexpr std::uint16_t kBlackboxVersion = 1;
 
 static_assert(sizeof(BlackboxRecord) == 96, "shared blackbox record layout");
@@ -1160,8 +1218,12 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
 } // namespace
 
 SharedBlackbox::SharedBlackbox(HANDLE mapping, void* view,
-                               std::size_t capacity)
-    : mapping_(mapping), view_(view), capacity_(capacity) {
+                               std::size_t capacity, bool writable)
+    : mapping_(mapping),
+      view_(view),
+      capacity_(capacity),
+      writable_(writable) {
+  static_assert(sizeof(Header) == 32, "shared blackbox header layout");
   Attach(capacity);
 }
 
@@ -1203,7 +1265,7 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
     return nullptr;
   }
   auto box = std::unique_ptr<SharedBlackbox>(
-      new SharedBlackbox(mapping, view, capacity));
+      new SharedBlackbox(mapping, view, capacity, true));
   new (box->header_) Header{};
   box->header_->magic = kBlackboxMagic;
   box->header_->version = kBlackboxVersion;
@@ -1215,9 +1277,9 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
 }
 
 std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
-  HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
+  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
   if (mapping == nullptr) return nullptr;
-  void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+  void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
   if (view == nullptr) {
     CloseHandle(mapping);
     return nullptr;
@@ -1232,11 +1294,14 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
     return nullptr;
   }
   return std::unique_ptr<SharedBlackbox>(
-      new SharedBlackbox(mapping, view, header->capacity));
+      new SharedBlackbox(mapping, view, header->capacity, false));
 }
 
 void SharedBlackbox::Append(const BlackboxRecord& record) {
-  if (header_ == nullptr || records_ == nullptr || capacity_ == 0) return;
+  if (!writable_ || header_ == nullptr || records_ == nullptr ||
+      capacity_ == 0) {
+    return;
+  }
   const std::uint64_t index =
       header_->appended.load(std::memory_order_relaxed);
   BlackboxRecord copy = record;
@@ -1286,7 +1351,7 @@ std::uint64_t SharedBlackbox::dropped() const {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 12/12; `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 14/14 (5 Job + 6 pipe + 3 blackbox); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1355,7 +1420,6 @@ HTMLPPT_TEST_CASE(win32_crash_dump_writes_file) {
   ProcessHandle process;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(process.LaunchSuspended(CmdExe(), SleepArgs(), job));
-  HTMLPPT_CHECK(job.Assign(process.process()));
   HTMLPPT_CHECK(process.Resume());
   const auto path = std::filesystem::temp_directory_path() /
                     (L"htmlppt-dump-" + std::to_wstring(process.pid()) + L".dmp");
@@ -1473,7 +1537,7 @@ WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Comm
 ```
 
 Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
-excluded on Windows), `htmlppt_win32_tests` 14/14, Windows CTest 9/9,
+excluded on Windows), `htmlppt_win32_tests` 16/16, Windows CTest 9/9,
 MSVC `/WX` clean.
 ````
 
@@ -1492,7 +1556,7 @@ Expected: 191/191 unit cases, CTest 8/8, npm 3/3.
 
 Windows gate: run the block above. Expected: `htmlppt_core_tests` 189/189
 (two pre-existing journal cases are excluded on Windows), `htmlppt_win32_tests`
-14/14, CTest 9/9, MSVC `/WX` clean.
+16/16, CTest 9/9, MSVC `/WX` clean.
 
 - [ ] **Step 5: Record as-built amendments and commit**
 
@@ -1539,7 +1603,7 @@ Deferred to Plan 4B-2: supervisor/worker hosts, CLI `--supervisor` / `--worker` 
 - `NamedPipeChannel` uses the Plan 4A `Frame`/`EncodeFrame`/`DecodeFrame`.
 - `SharedBlackbox` uses the Plan 4A `BlackboxRecord` and preserves the 96-byte layout.
 - `WriteMiniDump` is a free function used by the future `--dump-helper` mode.
-- Windows test count: 4 Job + 5 pipe + 3 blackbox + 2 dump = 14.
+- Windows test count: 5 Job + 6 pipe + 3 blackbox + 2 dump = 16.
 - Windows CTest count: 8 existing + `win32_tests` = 9.
 
 ---
@@ -1566,10 +1630,16 @@ Windows (MSVC 19.51 / Visual Studio 18 Build Tools, Release x64):
 
 - `htmlppt_core_tests`: 189/189 passed (the two pre-existing journal cases
   remain excluded on Windows).
-- `htmlppt_win32_tests`: 14/14 passed: 4 Job, 5 named-pipe, 3 shared-blackbox,
+- `htmlppt_win32_tests`: 16/16 passed: 5 Job, 6 named-pipe, 3 shared-blackbox,
   and 2 crash-dump cases.
 - CTest: 9/9 passed.
 - MSVC `/W4 /permissive- /utf-8 /WX` clean.
+
+The final-review dispatch predicted 17/17 with "4 blackbox" cases, but the
+suite contains three shared-blackbox cases (`round_trip`,
+`wraps_and_counts_dropped`, `open_missing_returns_null`), so the observed
+total is 16/16. The timing-sensitive named-pipe accept test was run twice and
+passed both times.
 
 TDD red was observed before implementation: the Windows build failed with
 `crash_dump_test.cpp(11,10): error C1083: cannot open include file:
@@ -1578,12 +1648,62 @@ turned the build and both dump tests green.
 
 ### Deviations
 
-- None in product code. The brief's source, test, and README text were applied
-  verbatim.
+- Spec 10.1 file layout: the implementation uses
+  `platform/win32/named_pipe.*` plus `platform/win32/shared_blackbox.*`
+  instead of a single `platform/win32/ipc.*` module. The split keeps the pipe
+  transport and the shared-memory ring independently testable.
+- The Task 2 brief was not applied verbatim: commit `b814ae6`
+  (`fix: cancel overlapped pipe I/O on timeout`) added `CancelIoEx` plus a
+  drain of the overlapped result on `Read`, `Write`, and `Accept` timeout, a
+  fifth pipe timeout test, immediate `GetLastError()` capture in
+  `NamedPipeClient::Connect`, and the timeout/`nullopt` contract comments.
+- The final whole-branch review produced one fix wave of product and test
+  changes (I1-I6 below), so the implementation is not a verbatim transcription
+  of the plan blocks.
 - Operational only: the sandbox rejected quoted executable paths containing
   spaces, so the Windows CMake/CTest binaries were invoked through the
   space-free symlinks in `/tmp/wintools/`. The commands and arguments are the
   ones documented in the README gate block.
+
+### Final-review fixes (I1-I6)
+
+1. I1 - `NamedPipeServer::Accept` now treats only `ERROR_IO_PENDING` as
+   pending overlapped I/O; `ERROR_PIPE_CONNECTED` is success, and any other
+   synchronous error closes the event and server and returns `nullptr`
+   without waiting for the full timeout.
+2. I2 - `ProcessHandle::LaunchSuspended` now assigns the process to the
+   supplied `JobHandle` before returning and terminates it if the assignment
+   fails; callers no longer call `JobHandle::Assign` separately.
+3. I3 - `SharedBlackbox::Open` maps read-only and `Append` is a no-op on that
+   mapping; the class comment records the single-writer serialization
+   requirement and that `Snapshot` may return torn or out-of-order diagnostic
+   records during a concurrent wrap.
+4. I4 - The shared-black-box header has a `sizeof(Header) == 32`
+   `static_assert` (inside the constructor, where the private nested type is
+   accessible) and the magic is `0x424B4C42u` so the bytes read `BLKB` in
+   little-endian memory.
+5. I5 - `named_pipe.h` documents the `Accept` re-create requirement and the
+   fixed 3-second partial-frame send contract.
+6. I6 - New tests: `win32_named_pipe_accept_failure_does_not_wait`,
+   `win32_process_resume_runs_child`, the pre-close `IsProcessAlive` check in
+   `win32_job_kill_on_close`, and the read-only `Append` no-op check in
+   `win32_shared_blackbox_round_trip`.
+
+### Plan 4B-2 obligations
+
+- Serialize shared-black-box writes through one writer thread or an MPSC
+  queue. If multi-writer becomes required, replace the single-writer
+  contract with a seqlock or an equivalent reader-consistent protocol.
+- Validate the mapping size with `VirtualQuery` before taking live snapshots;
+  `Open` currently trusts the header capacity.
+- Map the supervisor's black-box view read-only; use `Create` only in the
+  worker host.
+- Define framed-transport state (`Timeout` / `Disconnected` / `BadFrame`) or
+  keep the close-on-`nullopt` rule explicit in the supervisor loop.
+- Escape embedded quotes and trailing backslashes in `CreateProcessW`
+  command-line paths.
+- Create pipe instances with `FIRST_PIPE_INSTANCE` and derive pipe names from
+  a run id to avoid stale-instance and collision hazards.
 
 ### Deferred
 

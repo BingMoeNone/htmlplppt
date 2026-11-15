@@ -105,6 +105,11 @@ bool ProcessHandle::LaunchSuspended(
   process_ = information.hProcess;
   thread_ = information.hThread;
   pid_ = static_cast<std::uint32_t>(information.dwProcessId);
+  if (!job.Assign(process_)) {
+    TerminateProcess(process_, 1);
+    Close();
+    return false;
+  }
   return true;
 }
 
