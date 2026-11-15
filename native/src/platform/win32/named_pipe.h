@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,6 +17,10 @@ namespace htmlppt {
 
 #ifdef _WIN32
 
+// Frame transport over a duplex byte-mode named pipe. Receive(timeout) applies
+// the timeout to each underlying read, so a full frame may take longer than
+// the requested timeout. A nullopt result leaves the byte stream potentially
+// misaligned; the caller must close the channel after any nullopt.
 class NamedPipeChannel {
  public:
   NamedPipeChannel() = default;
@@ -60,6 +66,7 @@ class NamedPipeClient {
 
   bool Connect(const std::wstring& name, Duration timeout);
   bool Send(const Frame& frame);
+  // Same timeout and nullopt contract as NamedPipeChannel::Receive.
   std::optional<Frame> Receive(Duration timeout);
   void Close();
 

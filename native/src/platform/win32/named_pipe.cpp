@@ -44,9 +44,14 @@ bool ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
     }
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-      if (ok) {
-        ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
+      if (!ok) {
+        CancelIoEx(pipe, &overlapped);
+        DWORD ignored = 0;
+        GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+        CloseHandle(overlapped.hEvent);
+        return false;
       }
+      ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     } else {
       ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     }
@@ -75,9 +80,14 @@ bool WritePipeExact(HANDLE pipe, const std::uint8_t* buffer, std::size_t size,
     }
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-      if (ok) {
-        ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
+      if (!ok) {
+        CancelIoEx(pipe, &overlapped);
+        DWORD ignored = 0;
+        GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+        CloseHandle(overlapped.hEvent);
+        return false;
       }
+      ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
     } else {
       ok = GetOverlappedResult(pipe, &overlapped, &written, FALSE) != FALSE;
     }
@@ -173,10 +183,16 @@ std::unique_ptr<NamedPipeChannel> NamedPipeServer::Accept(Duration timeout) {
     ok = true;
   } else if (!ok) {
     ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
-    if (ok) {
-      DWORD transferred = 0;
-      ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
+    if (!ok) {
+      CancelIoEx(pipe_, &overlapped);
+      DWORD ignored = 0;
+      GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+      CloseHandle(overlapped.hEvent);
+      Close();
+      return nullptr;
     }
+    DWORD transferred = 0;
+    ok = GetOverlappedResult(pipe_, &overlapped, &transferred, FALSE) != FALSE;
   }
   CloseHandle(overlapped.hEvent);
   if (!ok) {
@@ -205,9 +221,10 @@ bool NamedPipeClient::Connect(const std::wstring& name, Duration timeout) {
     pipe_ = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                         OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     if (pipe_ != INVALID_HANDLE_VALUE) return true;
+    const DWORD error = GetLastError();
     pipe_ = nullptr;
     if (std::chrono::steady_clock::now() >= deadline) return false;
-    if (GetLastError() == ERROR_PIPE_BUSY) {
+    if (error == ERROR_PIPE_BUSY) {
       WaitNamedPipeW(name.c_str(), 50);
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));

@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -111,6 +112,32 @@ HTMLPPT_TEST_CASE(win32_named_pipe_connect_timeout) {
   NamedPipeClient client;
   HTMLPPT_CHECK(!client.Connect(L"\\\\.\\pipe\\htmlppt-missing-pipe",
                                 Duration{100}));
+}
+
+HTMLPPT_TEST_CASE(win32_named_pipe_receive_timeout_is_safe) {
+  NamedPipeServer server;
+  const std::wstring name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(name));
+  std::atomic<bool> close_client{false};
+  std::atomic<bool> client_ok{false};
+  std::thread client_thread([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(name, Duration{3000});
+    while (!close_client.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    client.Close();
+  });
+  auto channel = server.Accept(Duration{3000});
+  const auto frame =
+      channel ? channel->Receive(Duration{100}) : std::nullopt;
+  close_client = true;
+  client_thread.join();
+  HTMLPPT_CHECK(channel != nullptr);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(!frame.has_value());
+  channel->Close();
+  server.Close();
 }
 
 #endif // _WIN32
