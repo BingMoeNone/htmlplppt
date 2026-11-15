@@ -45,8 +45,12 @@ if (WIN32)
   htmlppt_enable_warnings(htmlppt_win32)
 endif()
 
-add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp)
+add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp
+  src/app/supervisor.cpp)
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
+if (WIN32)
+  target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_win32)
+endif()
 htmlppt_enable_warnings(htmlppt-watchdog)
 
 if (HTMLPPT_BUILD_TESTS)
@@ -108,6 +112,9 @@ if (HTMLPPT_BUILD_TESTS)
     target_include_directories(htmlppt_win32_tests PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(htmlppt_win32_tests PRIVATE htmlppt_win32)
+    target_compile_definitions(htmlppt_win32_tests PRIVATE
+      "HTMLPPT_EXE_PATH=\"$<TARGET_FILE:htmlppt-watchdog>\"")
+    add_dependencies(htmlppt_win32_tests htmlppt-watchdog)
     htmlppt_enable_warnings(htmlppt_win32_tests)
     add_test(NAME win32_tests COMMAND htmlppt_win32_tests)
     set_tests_properties(win32_tests PROPERTIES TIMEOUT 120)

@@ -79,9 +79,19 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
 }
 
 std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
-  HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+  return OpenWithAccess(name, FILE_MAP_READ, false);
+}
+
+std::unique_ptr<SharedBlackbox> SharedBlackbox::OpenWritable(
+    const std::wstring& name) {
+  return OpenWithAccess(name, FILE_MAP_ALL_ACCESS, true);
+}
+
+std::unique_ptr<SharedBlackbox> SharedBlackbox::OpenWithAccess(
+    const std::wstring& name, DWORD access, bool writable) {
+  HANDLE mapping = OpenFileMappingW(access, FALSE, name.c_str());
   if (mapping == nullptr) return nullptr;
-  void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+  void* view = MapViewOfFile(mapping, access, 0, 0, 0);
   if (view == nullptr) {
     CloseHandle(mapping);
     return nullptr;
@@ -96,7 +106,7 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Open(const std::wstring& name) {
     return nullptr;
   }
   return std::unique_ptr<SharedBlackbox>(
-      new SharedBlackbox(mapping, view, header->capacity, false));
+      new SharedBlackbox(mapping, view, header->capacity, writable));
 }
 
 void SharedBlackbox::Append(const BlackboxRecord& record) {

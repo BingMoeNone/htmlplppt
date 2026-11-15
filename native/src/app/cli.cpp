@@ -1,6 +1,7 @@
 #include "app/cli.h"
 
 #include <charconv>
+#include <cstdint>
 #include <initializer_list>
 #include <iostream>
 #include <optional>
@@ -10,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/supervisor.h"
 #include "core/config.h"
 #include "core/config_issue.h"
 #include "core/config_schema.h"
@@ -27,6 +29,11 @@ enum class Command {
   Resolve,
   PrintConfig,
   PrintSchema,
+  Supervisor,
+  Worker,
+  Stop,
+  Status,
+  DumpHelper,
 };
 
 struct CliOptions {
@@ -34,6 +41,9 @@ struct CliOptions {
   bool command_set = false;
   std::string config_path;
   std::string deck_info_path;
+  std::string run_id;
+  std::uint32_t dump_pid = 0;
+  std::string dump_path;
   CliConfigOverrides overrides;
 };
 
@@ -53,6 +63,12 @@ void PrintUsage(std::ostream& out) {
       << "  --resolve              print the resolved slide-to-HTML mapping\n"
       << "  --print-config         print the effective config as JSON\n"
       << "  --print-schema         print the embedded config JSON Schema\n"
+      << "  --supervisor           run the supervisor host (Windows only)\n"
+      << "  --worker               run the worker host (Windows only)\n"
+      << "  --stop                 stop a running supervisor (Windows only)\n"
+      << "  --status               print the run black box (Windows only)\n"
+      << "  --dump-helper PID PATH write a MiniDump for a process (Windows "
+         "only)\n"
       << "\n"
       << "options:\n"
       << "  --config PATH          watcher JSON config file\n"
@@ -60,6 +76,7 @@ void PrintUsage(std::ostream& out) {
       << "  --deck-info PATH       diagnostic JSON deck info (slides/titles)\n"
       << "  --stage-mode MODE      file, tree, or direct\n"
       << "  --state-dir PATH       override the state directory\n"
+      << "  --run-id ID            supervisor run identifier\n"
       << "  --scheduling MODE      adaptive, aggressive, balanced, or safe\n"
       << "  --map SLIDE=HTML       add a target (repeatable; override is deferred)\n"
       << "  --allow-outside-folder allow HTML paths outside the config folder\n";
@@ -162,6 +179,57 @@ ParseResult ParseCli(int argc, char** argv) {
         result.ok = false;
         return result;
       }
+    } else if (argument == "--supervisor") {
+      if (!SetCommand(&result.options, Command::Supervisor, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--worker") {
+      if (!SetCommand(&result.options, Command::Worker, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--stop") {
+      if (!SetCommand(&result.options, Command::Stop, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--status") {
+      if (!SetCommand(&result.options, Command::Status, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--dump-helper") {
+      if (!SetCommand(&result.options, Command::DumpHelper, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      std::string pid_text;
+      if (!TakeValue(argc, argv, &i, argument, &pid_text, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      std::uint32_t pid = 0;
+      const auto parsed = std::from_chars(
+          pid_text.data(), pid_text.data() + pid_text.size(), pid);
+      if (pid_text.empty() || parsed.ec != std::errc{} ||
+          parsed.ptr != pid_text.data() + pid_text.size() || pid < 1) {
+        result.ok = false;
+        result.error = "--dump-helper PID must be an integer >= 1";
+        return result;
+      }
+      result.options.dump_pid = pid;
+      if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      result.options.dump_path = value;
+    } else if (argument == "--run-id") {
+      if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      result.options.run_id = value;
     } else if (argument == "--allow-outside-folder") {
       result.options.overrides.allow_outside_folder = true;
     } else if (argument == "--config") {
@@ -253,6 +321,29 @@ ParseResult ParseCli(int argc, char** argv) {
       command != Command::Resolve) {
     result.ok = false;
     result.error = "--deck-info is only valid with --validate or --resolve";
+    return result;
+  }
+  const bool host_command =
+      command == Command::Supervisor || command == Command::Worker ||
+      command == Command::Stop || command == Command::Status;
+  if (!result.options.run_id.empty() && !host_command) {
+    result.ok = false;
+    result.error =
+        "--run-id is only valid with --supervisor, --worker, --stop, or "
+        "--status";
+    return result;
+  }
+  if ((command == Command::Stop || command == Command::Status) &&
+      result.options.run_id.empty()) {
+    result.ok = false;
+    result.error = "--run-id is required for --stop or --status";
+    return result;
+  }
+  if (command == Command::DumpHelper &&
+      (result.options.dump_pid == 0 || result.options.dump_path.empty())) {
+    result.ok = false;
+    result.error = "--dump-helper requires PID and PATH";
+    return result;
   }
   return result;
 }
@@ -373,6 +464,8 @@ int RunCli(int argc, char** argv) {
     PrintUsage(std::cerr);
     return 2;
   }
+  const std::string state_dir =
+      parsed.options.overrides.state_dir.value_or("");
   switch (parsed.options.command) {
     case Command::Version:
       std::cout << "htmlppt-watchdog " << version() << "\n";
@@ -389,6 +482,16 @@ int RunCli(int argc, char** argv) {
     case Command::PrintSchema:
       std::cout << ConfigSchema() << "\n";
       return 0;
+    case Command::Supervisor:
+      return RunSupervisor({state_dir, parsed.options.run_id});
+    case Command::Worker:
+      return RunWorker({state_dir, parsed.options.run_id});
+    case Command::Stop:
+      return RunStop(parsed.options.run_id);
+    case Command::Status:
+      return RunStatus(parsed.options.run_id, state_dir);
+    case Command::DumpHelper:
+      return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
   }
   return 2;
 }
