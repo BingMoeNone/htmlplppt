@@ -26,13 +26,21 @@ std::uint32_t ReadPayloadLength(const std::uint8_t* header) {
          (static_cast<std::uint32_t>(header[25]) << 24);
 }
 
-bool ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
-                   Duration timeout) {
+enum class IoStatus { Ok, Timeout, Error };
+
+// A timeout is clean only when no bytes of this read were completed. A timeout
+// after a partial read, a Win32 error, or a zero-byte read after data started
+// leaves the stream misaligned.
+IoStatus ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
+                       Duration timeout, std::size_t* transferred) {
   std::size_t offset = 0;
   while (offset < size) {
     OVERLAPPED overlapped{};
     overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (overlapped.hEvent == nullptr) return false;
+    if (overlapped.hEvent == nullptr) {
+      *transferred = offset;
+      return IoStatus::Error;
+    }
     DWORD read = 0;
     const BOOL started =
         ReadFile(pipe, buffer + offset, static_cast<DWORD>(size - offset),
@@ -40,7 +48,8 @@ bool ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
     bool ok = started != FALSE;
     if (!ok && GetLastError() != ERROR_IO_PENDING) {
       CloseHandle(overlapped.hEvent);
-      return false;
+      *transferred = offset;
+      return IoStatus::Error;
     }
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
@@ -49,17 +58,26 @@ bool ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
         DWORD ignored = 0;
         GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
         CloseHandle(overlapped.hEvent);
-        return false;
+        *transferred = offset;
+        return offset == 0 ? IoStatus::Timeout : IoStatus::Error;
       }
       ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     } else {
       ok = GetOverlappedResult(pipe, &overlapped, &read, FALSE) != FALSE;
     }
     CloseHandle(overlapped.hEvent);
-    if (!ok || read == 0) return false;
+    if (!ok) {
+      *transferred = offset;
+      return IoStatus::Error;
+    }
+    if (read == 0) {
+      *transferred = offset;
+      return offset == 0 ? IoStatus::Timeout : IoStatus::Error;
+    }
     offset += read;
   }
-  return true;
+  *transferred = offset;
+  return IoStatus::Ok;
 }
 
 bool WritePipeExact(HANDLE pipe, const std::uint8_t* buffer, std::size_t size,
@@ -98,22 +116,30 @@ bool WritePipeExact(HANDLE pipe, const std::uint8_t* buffer, std::size_t size,
   return true;
 }
 
-std::optional<Frame> ReceiveFrame(HANDLE pipe, Duration timeout) {
+enum class ReadStatus { Frame, Timeout, Error };
+
+ReadStatus ReceiveFrame(HANDLE pipe, Duration timeout, Frame* frame) {
   std::uint8_t header[kFrameHeaderSize] = {};
-  if (!ReadPipeExact(pipe, header, sizeof(header), timeout)) {
-    return std::nullopt;
-  }
+  std::size_t transferred = 0;
+  const auto header_status =
+      ReadPipeExact(pipe, header, sizeof(header), timeout, &transferred);
+  if (header_status == IoStatus::Timeout) return ReadStatus::Timeout;
+  if (header_status == IoStatus::Error) return ReadStatus::Error;
   const std::uint32_t length = ReadPayloadLength(header);
-  if (length > kMaxFramePayload) return std::nullopt;
+  if (length > kMaxFramePayload) return ReadStatus::Error;
   std::vector<std::uint8_t> bytes(kFrameHeaderSize + length, 0);
   std::copy(header, header + kFrameHeaderSize, bytes.begin());
-  if (length > 0 &&
-      !ReadPipeExact(pipe, bytes.data() + kFrameHeaderSize, length, timeout)) {
-    return std::nullopt;
+  if (length > 0) {
+    const auto payload_status = ReadPipeExact(
+        pipe, bytes.data() + kFrameHeaderSize, length, timeout, &transferred);
+    // A failed payload read, including a timeout after a partial read, leaves
+    // the byte stream misaligned.
+    if (payload_status != IoStatus::Ok) return ReadStatus::Error;
   }
   const auto decoded = DecodeFrame(bytes);
-  if (decoded.status != DecodeStatus::Ok) return std::nullopt;
-  return decoded.frame;
+  if (decoded.status != DecodeStatus::Ok) return ReadStatus::Error;
+  *frame = decoded.frame;
+  return ReadStatus::Frame;
 }
 
 } // namespace
@@ -130,7 +156,9 @@ void NamedPipeChannel::Close() {
 
 bool NamedPipeChannel::ReadExact(std::uint8_t* buffer, std::size_t size,
                                  Duration timeout) {
-  return ReadPipeExact(pipe_, buffer, size, timeout);
+  std::size_t transferred = 0;
+  return ReadPipeExact(pipe_, buffer, size, timeout, &transferred) ==
+         IoStatus::Ok;
 }
 
 bool NamedPipeChannel::WriteExact(const std::uint8_t* buffer, std::size_t size,
@@ -140,12 +168,27 @@ bool NamedPipeChannel::WriteExact(const std::uint8_t* buffer, std::size_t size,
 
 bool NamedPipeChannel::Send(const Frame& frame) {
   const auto bytes = EncodeFrame(frame);
-  if (bytes.empty()) return false;
-  return WriteExact(bytes.data(), bytes.size(), Duration{3000});
+  if (bytes.empty()) {
+    broken_ = true;
+    return false;
+  }
+  if (!WriteExact(bytes.data(), bytes.size(), Duration{3000})) {
+    broken_ = true;
+    return false;
+  }
+  return true;
 }
 
 std::optional<Frame> NamedPipeChannel::Receive(Duration timeout) {
-  return ReceiveFrame(pipe_, timeout);
+  if (pipe_ == nullptr) {
+    broken_ = true;
+    return std::nullopt;
+  }
+  Frame frame;
+  const auto status = ReceiveFrame(pipe_, timeout, &frame);
+  if (status == ReadStatus::Frame) return frame;
+  if (status == ReadStatus::Error) broken_ = true;
+  return std::nullopt;
 }
 
 NamedPipeServer::~NamedPipeServer() { Close(); }
@@ -222,6 +265,7 @@ void NamedPipeClient::Close() {
 
 bool NamedPipeClient::Connect(const std::wstring& name, Duration timeout) {
   Close();
+  broken_ = false;
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeout.count());
   for (;;) {
@@ -241,7 +285,9 @@ bool NamedPipeClient::Connect(const std::wstring& name, Duration timeout) {
 
 bool NamedPipeClient::ReadExact(std::uint8_t* buffer, std::size_t size,
                                 Duration timeout) {
-  return ReadPipeExact(pipe_, buffer, size, timeout);
+  std::size_t transferred = 0;
+  return ReadPipeExact(pipe_, buffer, size, timeout, &transferred) ==
+         IoStatus::Ok;
 }
 
 bool NamedPipeClient::WriteExact(const std::uint8_t* buffer, std::size_t size,
@@ -251,12 +297,27 @@ bool NamedPipeClient::WriteExact(const std::uint8_t* buffer, std::size_t size,
 
 bool NamedPipeClient::Send(const Frame& frame) {
   const auto bytes = EncodeFrame(frame);
-  if (bytes.empty()) return false;
-  return WriteExact(bytes.data(), bytes.size(), Duration{3000});
+  if (bytes.empty()) {
+    broken_ = true;
+    return false;
+  }
+  if (!WriteExact(bytes.data(), bytes.size(), Duration{3000})) {
+    broken_ = true;
+    return false;
+  }
+  return true;
 }
 
 std::optional<Frame> NamedPipeClient::Receive(Duration timeout) {
-  return ReceiveFrame(pipe_, timeout);
+  if (pipe_ == nullptr) {
+    broken_ = true;
+    return std::nullopt;
+  }
+  Frame frame;
+  const auto status = ReceiveFrame(pipe_, timeout, &frame);
+  if (status == ReadStatus::Frame) return frame;
+  if (status == ReadStatus::Error) broken_ = true;
+  return std::nullopt;
 }
 
 } // namespace htmlppt

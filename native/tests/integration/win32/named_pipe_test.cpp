@@ -55,6 +55,7 @@ HTMLPPT_TEST_CASE(win32_named_pipe_round_trip) {
   HTMLPPT_CHECK(client_ok.load());
   const auto frame = channel->Receive(Duration{3000});
   HTMLPPT_CHECK(frame.has_value());
+  HTMLPPT_CHECK(!channel->broken());
   HTMLPPT_CHECK_EQ(frame->header.sequence, std::uint32_t{7});
   HTMLPPT_CHECK_EQ(std::string(frame->payload.begin(), frame->payload.end()),
                    std::string{"hello"});
@@ -82,6 +83,7 @@ HTMLPPT_TEST_CASE(win32_named_pipe_multiple_frames) {
   for (std::uint32_t i = 1; i <= 3; ++i) {
     const auto frame = channel->Receive(Duration{3000});
     HTMLPPT_CHECK(frame.has_value());
+    HTMLPPT_CHECK(!channel->broken());
     HTMLPPT_CHECK_EQ(frame->header.sequence, i);
   }
   channel->Close();
@@ -136,6 +138,7 @@ HTMLPPT_TEST_CASE(win32_named_pipe_receive_timeout_is_safe) {
   HTMLPPT_CHECK(channel != nullptr);
   HTMLPPT_CHECK(client_ok.load());
   HTMLPPT_CHECK(!frame.has_value());
+  HTMLPPT_CHECK(!channel->broken());
   channel->Close();
   server.Close();
 }

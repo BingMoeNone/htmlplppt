@@ -19,8 +19,9 @@ namespace htmlppt {
 
 // Frame transport over a duplex byte-mode named pipe. Receive(timeout) applies
 // the timeout to each underlying read, so a full frame may take longer than
-// the requested timeout. A nullopt result leaves the byte stream potentially
-// misaligned; the caller must close the channel after any nullopt.
+// the requested timeout. A nullopt with broken()==false is a clean timeout;
+// a nullopt with broken()==true means the stream is misaligned or closed and
+// the caller must close the channel.
 class NamedPipeChannel {
  public:
   NamedPipeChannel() = default;
@@ -29,10 +30,12 @@ class NamedPipeChannel {
   NamedPipeChannel& operator=(const NamedPipeChannel&) = delete;
 
   // Uses a fixed 3-second timeout. On failure the stream may contain a partial
-  // frame, so the channel must be closed.
+  // frame and broken() is set, so the channel must be closed.
   bool Send(const Frame& frame);
+  // See the class comment for the timeout/broken() contract.
   std::optional<Frame> Receive(Duration timeout);
   void Close();
+  bool broken() const { return broken_; }
 
  private:
   friend class NamedPipeServer;
@@ -41,6 +44,7 @@ class NamedPipeChannel {
   bool WriteExact(const std::uint8_t* buffer, std::size_t size,
                   Duration timeout);
   HANDLE pipe_ = nullptr;
+  bool broken_ = false;
 };
 
 class NamedPipeServer {
@@ -72,15 +76,17 @@ class NamedPipeClient {
   // Same fixed 3-second timeout and partial-frame contract as
   // NamedPipeChannel::Send.
   bool Send(const Frame& frame);
-  // Same timeout and nullopt contract as NamedPipeChannel::Receive.
+  // Same timeout and broken() contract as NamedPipeChannel::Receive.
   std::optional<Frame> Receive(Duration timeout);
   void Close();
+  bool broken() const { return broken_; }
 
  private:
   bool ReadExact(std::uint8_t* buffer, std::size_t size, Duration timeout);
   bool WriteExact(const std::uint8_t* buffer, std::size_t size,
                   Duration timeout);
   HANDLE pipe_ = nullptr;
+  bool broken_ = false;
 };
 
 #endif // _WIN32

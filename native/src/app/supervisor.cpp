@@ -95,7 +95,21 @@ int RunStop(std::string_view run_id) {
   }
   SetEvent(event);
   CloseHandle(event);
-  return 0;
+  // The supervisor closes the event as its last cleanup step; wait for that
+  // so --stop returns only after worker termination and journal flush.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(10);
+  for (;;) {
+    HANDLE probe = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
+    if (probe == nullptr) return 0;
+    CloseHandle(probe);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      std::cerr << "error: supervisor cleanup timed out for run " << run_id
+                << "\n";
+      return 1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 
 int RunStatus(std::string_view run_id,
@@ -207,8 +221,9 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     cleanup();
     return 1;
   }
+  AppendJournal(journal, run_id, "Worker", "start", "worker started");
 
-  const auto create_dump = [&](std::uint32_t pid) {
+  const auto create_dump = [&](std::uint32_t pid) -> bool {
     const auto crash_dir = state_dir / "crash";
     std::filesystem::create_directories(crash_dir, error);
     const auto path = crash_dir / (std::to_wstring(pid) + L".dmp");
@@ -220,10 +235,13 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     PROCESS_INFORMATION information{};
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
-    CreateProcessW(exe.c_str(), buffer.data(), nullptr, nullptr, FALSE,
-                   CREATE_NO_WINDOW, nullptr, nullptr, &startup, &information);
+    const BOOL created =
+        CreateProcessW(exe.c_str(), buffer.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                       &information);
     if (information.hProcess != nullptr) CloseHandle(information.hProcess);
     if (information.hThread != nullptr) CloseHandle(information.hThread);
+    return created != FALSE;
   };
 
   const auto apply = [&](const std::vector<SupervisorAction>& actions)
@@ -233,7 +251,15 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         case SupervisorActionKind::StartWorker:
           break;
         case SupervisorActionKind::RequestDump:
-          if (worker.pid() != 0) create_dump(worker.pid());
+          if (worker.pid() != 0) {
+            if (create_dump(worker.pid())) {
+              AppendJournal(journal, run_id, "Worker", "dump",
+                            "dump requested");
+            } else {
+              AppendJournal(journal, run_id, "Worker", "dump",
+                            "dump request failed");
+            }
+          }
           break;
         case SupervisorActionKind::TerminateWorker:
           job.Terminate();
@@ -241,12 +267,21 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             channel->Close();
             channel.reset();
           }
+          server.Close();
+          AppendJournal(journal, run_id, "Worker", "terminate",
+                        "worker terminated");
           break;
         case SupervisorActionKind::RestartWorker:
           channel.reset();
           server.Close();
-          server.Create(SupervisorPipeName(run_id));
-          if (!launch_worker()) return 1;
+          if (!server.Create(SupervisorPipeName(run_id)) || !launch_worker()) {
+            AppendJournal(journal, run_id, "Worker", "restart",
+                          "worker restart failed");
+            cleanup();
+            return 1;
+          }
+          AppendJournal(journal, run_id, "Worker", "restart",
+                        "worker restarted");
           break;
         case SupervisorActionKind::EnterSafeMode:
           AppendJournal(journal, run_id, "SafeMode", "action", action.detail);
@@ -278,58 +313,83 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       return 0;
     }
 
+    bool worker_exited = false;
+
     if (channel == nullptr) {
-      channel = server.Accept(Duration{500});
-      if (channel == nullptr) {
-        if (worker.WaitForExit(0)) {
-          if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
-              code.has_value()) {
-            return *code;
-          }
-        } else if (auto code = apply(core.Tick()); code.has_value()) {
-          return *code;
+      if (!core.worker_running()) {
+        // Waiting for the restart deadline (or for the core to stop); avoid a
+        // busy loop while no worker can connect.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      } else {
+        channel = server.Accept(Duration{500});
+        if (channel == nullptr && worker.WaitForExit(0)) {
+          worker_exited = true;
+        } else if (channel == nullptr) {
+          // Accept failure or timeout closes the server handle; restore a
+          // listening instance so a still-connecting worker can attach.
+          server.Create(SupervisorPipeName(run_id));
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        // Accept failure or timeout closes the server handle; restore a
-        // listening instance so a still-connecting worker can attach.
-        server.Create(SupervisorPipeName(run_id));
-        continue;
       }
     }
 
-    const auto frame = channel->Receive(Duration{100});
-    if (frame.has_value()) {
-      switch (frame->header.type) {
-        case FrameType::Heartbeat:
-          if (auto code = apply(core.Handle(
-                  MakeEvent(WorkerEventKind::Heartbeat,
-                            frame->header.sequence)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        case FrameType::Stop:
-          if (auto code =
-                  apply(core.Handle(MakeEvent(WorkerEventKind::StopRequested)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        case FrameType::Cleanup:
-          if (auto code =
-                  apply(core.Handle(MakeEvent(WorkerEventKind::CleanupDone)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        default:
-          break;
+    if (channel != nullptr) {
+      const auto frame = channel->Receive(Duration{100});
+      if (frame.has_value()) {
+        switch (frame->header.type) {
+          case FrameType::Heartbeat:
+            if (auto code = apply(core.Handle(
+                    MakeEvent(WorkerEventKind::Heartbeat,
+                              frame->header.sequence)));
+                code.has_value()) {
+              return *code;
+            }
+            break;
+          case FrameType::Stop:
+            // Worker-initiated stop: the core StopRequested path expects a
+            // CleanupDone that this worker never sends, so terminate and exit
+            // directly instead of waiting for StopComplete.
+            job.Terminate();
+            channel->Close();
+            channel.reset();
+            server.Close();
+            cleanup();
+            return 0;
+          case FrameType::Cleanup:
+            if (auto code =
+                    apply(core.Handle(MakeEvent(WorkerEventKind::CleanupDone)));
+                code.has_value()) {
+              return *code;
+            }
+            break;
+          default:
+            break;
+        }
+      } else if (channel->broken()) {
+        // The stream is misaligned or the peer is gone; kill the worker and
+        // let Exited drive the restart schedule.
+        job.Terminate();
+        channel->Close();
+        channel.reset();
+        server.Close();
+        worker_exited = true;
+      } else if (worker.WaitForExit(0)) {
+        channel->Close();
+        channel.reset();
+        server.Close();
+        worker_exited = true;
       }
-    } else if (worker.WaitForExit(0)) {
+    }
+
+    if (worker_exited) {
+      AppendJournal(journal, run_id, "Worker", "exit", "worker exited");
       if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
           code.has_value()) {
         return *code;
       }
-    } else if (auto code = apply(core.Tick()); code.has_value()) {
+    }
+
+    if (auto code = apply(core.Tick()); code.has_value()) {
       return *code;
     }
   }
@@ -351,6 +411,7 @@ int RunWorker(const SupervisorRunOptions& options) {
   std::uint32_t sequence = 0;
   for (;;) {
     const auto command = client.Receive(Duration{10});
+    if (!command.has_value() && client.broken()) return 1;
     if (command.has_value() && command->header.type == FrameType::Stop) {
       Frame cleanup;
       cleanup.header.type = FrameType::Cleanup;
@@ -368,6 +429,7 @@ int RunWorker(const SupervisorRunOptions& options) {
       BlackboxRecord record;
       record.timestamp_ms = NowMs();
       record.event = BlackboxEvent::Heartbeat;
+      record.pid = GetCurrentProcessId();
       record.state = 0;
       record.value = sequence;
       std::snprintf(record.detail, sizeof(record.detail), "worker heartbeat");

@@ -199,20 +199,21 @@ WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Comm
 "$WIN_CTEST" --test-dir C:/Temp/htmlplppt-win/build -C Release --output-on-failure
 ```
 
-Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
-excluded on Windows), `htmlppt_win32_tests` 14/14, Windows CTest 9/9,
+Expected for the Plan 4B-1 primitives in isolation: `htmlppt_core_tests`
+189/189 (two pre-existing journal cases are excluded on Windows). The current
+Plan 4B-2 gate runs `htmlppt_win32_tests` 22/22, Windows CTest 9/9, and
 MSVC `/WX` clean.
 
 ## Supervisor and worker host (Plan 4B-2)
 
 The same EXE runs as supervisor and worker.
 
-- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job; it monitors 200 ms heartbeats, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`.
-- `--worker --run-id <id>` connects to the pipe, sends a heartbeat every 200 ms, appends a black-box record every five heartbeats, and exits on a Stop frame.
-- `--stop --run-id <id>` sets the named stop event.
+- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job; it expects heartbeats every 200 ms with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
+- `--worker --run-id <id>` connects to the pipe, sends a heartbeat every 200 ms, appends a black-box record every five heartbeats, and exits on a Stop frame or when the pipe breaks.
+- `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
 - `--status --run-id <id> --state-dir <dir>` prints the last black-box records and the journal path.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
 
-Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 21/21, CTest 9/9, `/WX` clean.
+Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.

@@ -20,7 +20,7 @@
 - The shared black box is single-writer: the worker is the only writer; the supervisor reads a read-only view.
 - Named-pipe server accept failure/timeout closes the server; the host must recreate it before accepting again.
 - Existing Linux gate: 191/191 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN`.
-- Windows gate after this plan: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 21/21, CTest 9/9, `/WX` clean.
+- Windows gate after this plan: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.
 
 ## Windows Build Toolchain
 
@@ -269,7 +269,21 @@ int RunStop(std::string_view run_id) {
   }
   SetEvent(event);
   CloseHandle(event);
-  return 0;
+  // The supervisor closes the event as its last cleanup step; wait for that
+  // so --stop returns only after worker termination and journal flush.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(10);
+  for (;;) {
+    HANDLE probe = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
+    if (probe == nullptr) return 0;
+    CloseHandle(probe);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      std::cerr << "error: supervisor cleanup timed out for run " << run_id
+                << "\n";
+      return 1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 
 int RunStatus(std::string_view run_id,
@@ -381,8 +395,9 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     cleanup();
     return 1;
   }
+  AppendJournal(journal, run_id, "Worker", "start", "worker started");
 
-  const auto create_dump = [&](std::uint32_t pid) {
+  const auto create_dump = [&](std::uint32_t pid) -> bool {
     const auto crash_dir = state_dir / "crash";
     std::filesystem::create_directories(crash_dir, error);
     const auto path = crash_dir / (std::to_wstring(pid) + L".dmp");
@@ -394,10 +409,13 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     PROCESS_INFORMATION information{};
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
-    CreateProcessW(exe.c_str(), buffer.data(), nullptr, nullptr, FALSE,
-                   CREATE_NO_WINDOW, nullptr, nullptr, &startup, &information);
+    const BOOL created =
+        CreateProcessW(exe.c_str(), buffer.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                       &information);
     if (information.hProcess != nullptr) CloseHandle(information.hProcess);
     if (information.hThread != nullptr) CloseHandle(information.hThread);
+    return created != FALSE;
   };
 
   const auto apply = [&](const std::vector<SupervisorAction>& actions)
@@ -407,7 +425,15 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         case SupervisorActionKind::StartWorker:
           break;
         case SupervisorActionKind::RequestDump:
-          if (worker.pid() != 0) create_dump(worker.pid());
+          if (worker.pid() != 0) {
+            if (create_dump(worker.pid())) {
+              AppendJournal(journal, run_id, "Worker", "dump",
+                            "dump requested");
+            } else {
+              AppendJournal(journal, run_id, "Worker", "dump",
+                            "dump request failed");
+            }
+          }
           break;
         case SupervisorActionKind::TerminateWorker:
           job.Terminate();
@@ -415,12 +441,21 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             channel->Close();
             channel.reset();
           }
+          server.Close();
+          AppendJournal(journal, run_id, "Worker", "terminate",
+                        "worker terminated");
           break;
         case SupervisorActionKind::RestartWorker:
           channel.reset();
           server.Close();
-          server.Create(SupervisorPipeName(run_id));
-          if (!launch_worker()) return 1;
+          if (!server.Create(SupervisorPipeName(run_id)) || !launch_worker()) {
+            AppendJournal(journal, run_id, "Worker", "restart",
+                          "worker restart failed");
+            cleanup();
+            return 1;
+          }
+          AppendJournal(journal, run_id, "Worker", "restart",
+                        "worker restarted");
           break;
         case SupervisorActionKind::EnterSafeMode:
           AppendJournal(journal, run_id, "SafeMode", "action", action.detail);
@@ -452,55 +487,83 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       return 0;
     }
 
+    bool worker_exited = false;
+
     if (channel == nullptr) {
-      channel = server.Accept(Duration{500});
-      if (channel == nullptr) {
-        if (worker.WaitForExit(0)) {
-          if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
-              code.has_value()) {
-            return *code;
-          }
-        } else if (auto code = apply(core.Tick()); code.has_value()) {
-          return *code;
+      if (!core.worker_running()) {
+        // Waiting for the restart deadline (or for the core to stop); avoid a
+        // busy loop while no worker can connect.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      } else {
+        channel = server.Accept(Duration{500});
+        if (channel == nullptr && worker.WaitForExit(0)) {
+          worker_exited = true;
+        } else if (channel == nullptr) {
+          // Accept failure or timeout closes the server handle; restore a
+          // listening instance so a still-connecting worker can attach.
+          server.Create(SupervisorPipeName(run_id));
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        continue;
       }
     }
 
-    const auto frame = channel->Receive(Duration{100});
-    if (frame.has_value()) {
-      switch (frame->header.type) {
-        case FrameType::Heartbeat:
-          if (auto code = apply(core.Handle(
-                  MakeEvent(WorkerEventKind::Heartbeat,
-                            frame->header.sequence)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        case FrameType::Stop:
-          if (auto code =
-                  apply(core.Handle(MakeEvent(WorkerEventKind::StopRequested)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        case FrameType::Cleanup:
-          if (auto code =
-                  apply(core.Handle(MakeEvent(WorkerEventKind::CleanupDone)));
-              code.has_value()) {
-            return *code;
-          }
-          break;
-        default:
-          break;
+    if (channel != nullptr) {
+      const auto frame = channel->Receive(Duration{100});
+      if (frame.has_value()) {
+        switch (frame->header.type) {
+          case FrameType::Heartbeat:
+            if (auto code = apply(core.Handle(
+                    MakeEvent(WorkerEventKind::Heartbeat,
+                              frame->header.sequence)));
+                code.has_value()) {
+              return *code;
+            }
+            break;
+          case FrameType::Stop:
+            // Worker-initiated stop: the core StopRequested path expects a
+            // CleanupDone that this worker never sends, so terminate and exit
+            // directly instead of waiting for StopComplete.
+            job.Terminate();
+            channel->Close();
+            channel.reset();
+            server.Close();
+            cleanup();
+            return 0;
+          case FrameType::Cleanup:
+            if (auto code =
+                    apply(core.Handle(MakeEvent(WorkerEventKind::CleanupDone)));
+                code.has_value()) {
+              return *code;
+            }
+            break;
+          default:
+            break;
+        }
+      } else if (channel->broken()) {
+        // The stream is misaligned or the peer is gone; kill the worker and
+        // let Exited drive the restart schedule.
+        job.Terminate();
+        channel->Close();
+        channel.reset();
+        server.Close();
+        worker_exited = true;
+      } else if (worker.WaitForExit(0)) {
+        channel->Close();
+        channel.reset();
+        server.Close();
+        worker_exited = true;
       }
-    } else if (worker.WaitForExit(0)) {
+    }
+
+    if (worker_exited) {
+      AppendJournal(journal, run_id, "Worker", "exit", "worker exited");
       if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
           code.has_value()) {
         return *code;
       }
-    } else if (auto code = apply(core.Tick()); code.has_value()) {
+    }
+
+    if (auto code = apply(core.Tick()); code.has_value()) {
       return *code;
     }
   }
@@ -524,6 +587,7 @@ int RunWorker(const SupervisorRunOptions& options) {
   std::uint32_t sequence = 0;
   for (;;) {
     const auto command = client.Receive(Duration{10});
+    if (!command.has_value() && client.broken()) return 1;
     if (command.has_value() && command->header.type == FrameType::Stop) {
       Frame cleanup;
       cleanup.header.type = FrameType::Cleanup;
@@ -541,6 +605,7 @@ int RunWorker(const SupervisorRunOptions& options) {
       BlackboxRecord record;
       record.timestamp_ms = NowMs();
       record.event = BlackboxEvent::Heartbeat;
+      record.pid = GetCurrentProcessId();
       record.state = 0;
       record.value = sequence;
       std::snprintf(record.detail, sizeof(record.detail), "worker heartbeat");
@@ -1073,3 +1138,55 @@ Windows observed results:
 - Plan 6: scheduling, priorities, power handling, and fault injection.
 - Plan 8: full Windows end-to-end acceptance, diagnostics packaging, and
   release.
+
+### Final-review fixes (2026-11-15, after `95e8be1`)
+
+A final whole-branch review produced one fix wave. This section supersedes
+the pre-fix Windows `htmlppt_win32_tests` count of 21/21 recorded above.
+
+1. C1 (critical) - the supervisor main loop now calls `apply(core.Tick())`
+   exactly once per iteration, unconditionally after frame and exit handling.
+   Previously `Tick()` ran only while `worker.WaitForExit(0)` was false, so
+   after a worker exit the restart deadline was never serviced and the dead
+   channel spun. Worker exit (`WaitForExit(0)`), a broken channel
+   (`channel->broken()`), and an accept-time exit now close and reset the
+   channel, close the pipe server, and drive `Handle(Exited)`; the restart
+   path recreates the server and relaunches the worker. While the core has no
+   running worker and a restart is pending, the loop sleeps 10 ms per
+   iteration.
+2. Restart coverage - `win32_supervisor_restarts_crashed_worker` reads the
+   worker PID from the shared black box, terminates that process, waits for a
+   record with a different PID, then stops the supervisor and asserts exit
+   code 0. The worker black-box record now sets `record.pid`. Windows
+   `htmlppt_win32_tests` grows from 21 to 22 cases.
+3. `--stop` waiting - `RunStop` polls the stop event after `SetEvent` until
+   the supervisor closes it (10 s deadline) and returns 1 on timeout;
+   `win32_cli_stop` now also asserts the supervisor exit code is 0.
+4. Receive contract - `NamedPipeChannel`/`NamedPipeClient` expose
+   `broken()`. `nullopt` with `broken()==false` is a clean timeout;
+   `nullopt` with `broken()==true` means a timeout after a partial read, a
+   Win32 error, or a malformed frame, and the caller must close.
+   `ReadPipeExact` returns `Ok`/`Timeout`/`Error`; `ReceiveFrame` returns
+   `Frame`/`Timeout`/`Error`; `Send` sets `broken_` on failure. The
+   supervisor terminates the job and resets the channel/server on
+   `broken()`; the worker exits 1. Named-pipe tests assert `!broken()` after
+   successful receives and clean timeouts; the disconnect test only requires
+   `nullopt`.
+5. Lifecycle journal - entries for `worker started`, `worker exited`,
+   `worker terminated`, `worker restarted`, `dump requested`, and
+   `dump request failed`. `RequestDump` checks `CreateProcessW` and journals
+   the outcome; `TerminateWorker` closes the server; `RestartWorker` checks
+   `server.Create` and the launch and fails through `cleanup()`; a
+   worker-initiated Stop terminates the worker, cleans up, and returns 0.
+
+Observed final gate after the fix wave:
+
+- Linux: unit suite 191/191, CTest 8/8, `npm test` 3/3 with `CHROME_BIN`.
+- Windows: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22
+  (four suite runs, including three direct `htmlppt_win32_tests.exe` runs),
+  CTest 9/9, MSVC `/W4 /permissive- /utf-8 /WX` clean.
+
+Deviations: none substantive. The Task 1 code block above was updated to the
+corrected main loop, dump journaling, `--stop` polling, and worker
+black-box/heartbeat behavior so it matches the as-built host. No historical
+task report was rewritten.

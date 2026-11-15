@@ -47,6 +47,24 @@ HANDLE WaitForStopEvent(const std::wstring& name, int timeout_ms) {
   }
 }
 
+std::uint32_t WaitForWorkerPid(const std::string& run_id,
+                               std::uint32_t ignore_pid, int timeout_ms) {
+  const auto deadline = GetTickCount64() + timeout_ms;
+  for (;;) {
+    auto blackbox = SharedBlackbox::Open(
+        htmlppt::SupervisorBlackboxName(run_id));
+    if (blackbox != nullptr) {
+      for (const auto& record : blackbox->Snapshot()) {
+        if (record.pid != 0 && record.pid != ignore_pid) {
+          return record.pid;
+        }
+      }
+    }
+    if (GetTickCount64() >= deadline) return 0;
+    Sleep(100);
+  }
+}
+
 struct CliResult {
   bool completed = false;
   DWORD exit_code = 0;
@@ -111,6 +129,42 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   std::filesystem::remove_all(state_dir, error);
 }
 
+HTMLPPT_TEST_CASE(win32_supervisor_restarts_crashed_worker) {
+  const auto state_dir = TempStateDir();
+  const std::string run_id = RunId();
+  JobHandle job;
+  ProcessHandle supervisor;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(supervisor.LaunchSuspended(
+      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
+                  L"--run-id", std::wstring(run_id.begin(), run_id.end())},
+      job));
+  HTMLPPT_CHECK(supervisor.Resume());
+  HANDLE stop = WaitForStopEvent(
+      htmlppt::SupervisorStopEventName(run_id), 5000);
+  HTMLPPT_CHECK(stop != nullptr);
+
+  const std::uint32_t first_pid = WaitForWorkerPid(run_id, 0, 5000);
+  HTMLPPT_CHECK(first_pid != 0);
+  HANDLE worker = OpenProcess(PROCESS_TERMINATE, FALSE, first_pid);
+  HTMLPPT_CHECK(worker != nullptr);
+  HTMLPPT_CHECK(TerminateProcess(worker, 1));
+  CloseHandle(worker);
+
+  const std::uint32_t second_pid = WaitForWorkerPid(run_id, first_pid, 15000);
+  HTMLPPT_CHECK(second_pid != 0);
+  HTMLPPT_CHECK(second_pid != first_pid);
+
+  SetEvent(stop);
+  CloseHandle(stop);
+  HTMLPPT_CHECK(supervisor.WaitForExit(10000));
+  DWORD exit_code = 0;
+  GetExitCodeProcess(supervisor.process(), &exit_code);
+  HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
   const auto state_dir = TempStateDir();
   const std::string first_id = RunId();
@@ -163,6 +217,9 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
   HTMLPPT_CHECK(stop_result.completed);
   HTMLPPT_CHECK_EQ(stop_result.exit_code, DWORD{0});
   HTMLPPT_CHECK(supervisor.WaitForExit(10000));
+  DWORD exit_code = 0;
+  GetExitCodeProcess(supervisor.process(), &exit_code);
+  HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }
