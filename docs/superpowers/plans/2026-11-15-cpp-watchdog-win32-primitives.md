@@ -20,7 +20,7 @@
 - Named-pipe payloads use the Plan 4A frame format and CRC32. The shared black box uses the Plan 4A 96-byte `BlackboxRecord`.
 - Job Objects must use `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; named pipes and file mappings must be closed by RAII.
 - Existing Linux suite: 191 unit cases, CTest 8/8, `npm test` 3/3 with `CHROME_BIN`.
-- Windows gate after this plan: `htmlppt_core_tests` 191/191, `htmlppt_win32_tests` 13/13, CTest 9/9, MSVC `/WX` clean.
+- Windows gate after this plan: `htmlppt_core_tests` 189/189 (two pre-existing `journal_test.cpp` cases are excluded on Windows by `#ifndef _WIN32`), `htmlppt_win32_tests` 13/13, CTest 9/9, MSVC `/WX` clean.
 
 ## Windows Build Toolchain (available in this WSL environment)
 
@@ -429,7 +429,7 @@ bool IsProcessAlive(std::uint32_t pid) {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` builds; `win32_tests` passes 4/4; `htmlppt_core_tests` 191/191; Windows CTest 9/9. Also run the Linux gate:
+Run the Windows build block. Expected: `htmlppt_win32_tests` builds; `win32_tests` passes 4/4; `htmlppt_core_tests` 189/189 (two pre-existing journal cases are excluded on Windows); Windows CTest 9/9. Also run the Linux gate:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -919,7 +919,7 @@ std::optional<Frame> NamedPipeClient::Receive(Duration timeout) {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 8/8 (4 Job + 4 pipe); `htmlppt_core_tests` 191/191; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 8/8 (4 Job + 4 pipe); `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1243,7 +1243,7 @@ std::uint64_t SharedBlackbox::dropped() const {
 
 - [ ] **Step 4: Build and run the Windows tests**
 
-Run the Windows build block. Expected: `htmlppt_win32_tests` 11/11; `htmlppt_core_tests` 191/191; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
+Run the Windows build block. Expected: `htmlppt_win32_tests` 11/11; `htmlppt_core_tests` 189/189; Windows CTest 9/9. Run the Linux gate; expected 191/191, CTest 8/8.
 
 - [ ] **Step 5: Commit**
 
@@ -1429,8 +1429,9 @@ WIN_CTEST="/mnt/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Comm
 "$WIN_CTEST" --test-dir C:/Temp/htmlplppt-win/build -C Release --output-on-failure
 ```
 
-Expected: `htmlppt_core_tests` 191/191, `htmlppt_win32_tests` 13/13,
-Windows CTest 9/9, MSVC `/WX` clean.
+Expected: `htmlppt_core_tests` 189/189 (two pre-existing journal cases are
+excluded on Windows), `htmlppt_win32_tests` 13/13, Windows CTest 9/9,
+MSVC `/WX` clean.
 ````
 
 Run the Linux gate:
@@ -1446,8 +1447,9 @@ CHROME_BIN=/home/bingmoe/.cache/ms-playwright/chromium-1248/chrome-linux64/chrom
 
 Expected: 191/191 unit cases, CTest 8/8, npm 3/3.
 
-Windows gate: run the block above. Expected: `htmlppt_core_tests` 191/191,
-`htmlppt_win32_tests` 13/13, CTest 9/9, MSVC `/WX` clean.
+Windows gate: run the block above. Expected: `htmlppt_core_tests` 189/189
+(two pre-existing journal cases are excluded on Windows), `htmlppt_win32_tests`
+13/13, CTest 9/9, MSVC `/WX` clean.
 
 - [ ] **Step 5: Record as-built amendments and commit**
 
