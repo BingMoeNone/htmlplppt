@@ -1,15 +1,20 @@
 #include "core/edge_spec.h"
 
 #include <algorithm>
-#include <cctype>
 
 #include "core/utf8_path.h"
 
 namespace htmlppt {
 namespace {
 
+bool IsAsciiAlnum(unsigned char value) {
+  return (value >= 'A' && value <= 'Z') ||
+         (value >= 'a' && value <= 'z') ||
+         (value >= '0' && value <= '9');
+}
+
 bool IsSafePathByte(unsigned char value) {
-  return std::isalnum(value) != 0 || value == '/' || value == ':' ||
+  return IsAsciiAlnum(value) || value == '/' || value == ':' ||
          value == '-' || value == '.' || value == '_' || value == '~';
 }
 

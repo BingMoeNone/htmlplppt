@@ -246,12 +246,16 @@ legacy payload content; ownership is stored in a sibling `.owner` file.
 `DeleteOwned` keeps the owner when payload removal fails, `WriteFlag` writes
 the owner first and rolls it back if the payload fails, and `DeleteAllOwned`
 returns the number of owned flags that could not be deleted.
-`core/legacy_log` appends timestamped `watch-log.txt`, `bring-log.txt`, and
-`cover-log.txt` lines.
+`LegacyLog` in `core/compat_flags.h` appends timestamped `watch-log.txt`,
+`bring-log.txt`, and `cover-log.txt` lines.
 
 These units are platform-neutral and tested on Linux. Plan 5B-2 maps them onto
 Win32 layered windows, `EnumWindows`, foreground unlocking, and
 `CreateProcessW`/Job Objects.
+
+Linux gate for these units: 244/244 unit cases, CTest 8/8, `npm test` 3/3.
+The Windows gate (MSVC `/WX`, real `EnumWindows`, layered window, Edge) is
+part of Plan 5B-2.
 
 ## WPS COM host (Plan 5A)
 

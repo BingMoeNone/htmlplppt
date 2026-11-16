@@ -101,8 +101,8 @@ HTMLPPT_TEST_CASE(resolve_slide_target_with_deck_info) {
   HTMLPPT_CHECK_EQ(result.targets[0].edge_profile,
                    std::string{"htmlppt-0123456789abcdef-t01"});
   HTMLPPT_CHECK_EQ(result.targets[0].html_path,
-                   std::filesystem::weakly_canonical(
-                       fixture.dir.path() / "page1.html").string());
+                   htmlppt::Utf8Path(std::filesystem::weakly_canonical(
+                       fixture.dir.path() / "page1.html")));
   HTMLPPT_CHECK(result.targets[0].state == ResolveState::Resolved);
 }
 
