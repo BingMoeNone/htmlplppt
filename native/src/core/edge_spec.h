@@ -10,6 +10,9 @@
 
 namespace htmlppt {
 
+// Config strings are UTF-8. Convert them with PathFromUtf8 before using
+// them as filesystem paths. Edge profile names are ASCII; executable and
+// temp directories are already native paths.
 struct EdgeLaunchSpec {
   // Native path. Plan 5B-2 converts it to UTF-16 for CreateProcessW.
   std::filesystem::path executable;
@@ -25,6 +28,8 @@ struct EdgeLaunchSpec {
 
 std::string BuildEdgeUrl(const ResolvedTarget& target);
 std::vector<std::string> DefaultEdgeFlags();
+// target.edge_profile is an ASCII config string. edge_exe and temp_dir are
+// native paths, so the profile directory needs no UTF-8 conversion.
 EdgeLaunchSpec MakeEdgeLaunchSpec(const std::filesystem::path& edge_exe,
                                   const std::filesystem::path& temp_dir,
                                   const ResolvedTarget& target,

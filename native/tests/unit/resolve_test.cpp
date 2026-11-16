@@ -147,6 +147,37 @@ HTMLPPT_TEST_CASE(resolve_utf8_missing_file_message) {
   HTMLPPT_CHECK(found);
 }
 
+HTMLPPT_TEST_CASE(resolve_utf8_deck_path) {
+  Fixture fixture;
+  const std::string deck_name = "\xE6\xBC\x94\xE7\xA4\xBA deck.pptx";
+  fixture.Write(deck_name, "PK");
+  std::string json =
+      R"({"version": 1, "deck": ")";
+  json += deck_name;
+  json += R"(", "targets": [{"slide": 1, "html": "page1.html"}]})";
+  const Config config = ParseConfig(fixture, json);
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasErrorAt(result, "deck"));
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
+}
+
+HTMLPPT_TEST_CASE(resolve_utf8_assets_root) {
+  Fixture fixture;
+  const std::string root_name = "\xE6\xBC\x94\xE7\xA4\xBA assets";
+  fixture.Write(root_name + "/asset.txt", "asset");
+  std::string json =
+      R"({"version": 1, "deck": "deck.pptx", "targets": [{"slide": 1, "html": "page1.html", "assets": {"mode": "tree", "root": ")";
+  json += root_name;
+  json += R"("}}]})";
+  const Config config = ParseConfig(fixture, json);
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
+}
+
 HTMLPPT_TEST_CASE(resolve_slide_out_of_range) {
   Fixture fixture;
   const Config config = ParseConfig(fixture, R"({

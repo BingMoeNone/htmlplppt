@@ -139,7 +139,7 @@ std::string AsciiSlug(const std::string& text) {
 }
 
 std::string AutoStageName(int ordinal, const std::string& html_path) {
-  const std::string stem = Utf8Path(std::filesystem::path(html_path).stem());
+  const std::string stem = Utf8Path(PathFromUtf8(html_path).stem());
   std::ostringstream out;
   out << "target-" << std::setw(2) << std::setfill('0') << ordinal << "-"
       << AsciiSlug(stem) << ".html";
@@ -283,7 +283,7 @@ bool ResolveHtml(const TargetConfig& target, const std::filesystem::path& base_d
     AddError(issues, target_path + ".html", "HTML path must not be empty");
     return false;
   }
-  std::filesystem::path html_path(html.path);
+  std::filesystem::path html_path = PathFromUtf8(html.path);
   if (html_path.is_relative()) html_path = base_dir / html_path;
   html_path = NormalizePath(html_path);
   if (!allow_outside_folder && !IsWithin(base_dir, html_path)) {
@@ -328,7 +328,7 @@ bool ResolveAssets(const TargetConfig& target,
   const std::string target_path = "targets[" + std::to_string(index) + "]";
   std::filesystem::path root = target.assets.root.empty()
                                    ? html_path.parent_path()
-                                   : std::filesystem::path(target.assets.root);
+                                   : PathFromUtf8(target.assets.root);
   if (root.is_relative()) root = base_dir / root;
   root = NormalizePath(root);
   if (!allow_outside_folder && !IsWithin(base_dir, root)) {
@@ -370,7 +370,7 @@ std::filesystem::path ConfigBaseDir(const Config& config) {
 
 std::filesystem::path ResolveDeckPath(const Config& config) {
   if (config.active.deck.empty()) return {};
-  std::filesystem::path deck = config.active.deck;
+  std::filesystem::path deck = PathFromUtf8(config.active.deck);
   if (deck.is_relative()) deck = ConfigBaseDir(config) / deck;
   return NormalizePath(deck);
 }
@@ -434,7 +434,7 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                      &resolved, result.issues)) {
       continue;
     }
-    if (!ResolveAssets(target, base_dir, resolved.html_path, i,
+    if (!ResolveAssets(target, base_dir, PathFromUtf8(resolved.html_path), i,
                        options.allow_outside_folder, result.issues)) {
       continue;
     }

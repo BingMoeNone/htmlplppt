@@ -12,4 +12,13 @@ std::string Utf8Path(const std::filesystem::path& path) {
   return result;
 }
 
+std::filesystem::path PathFromUtf8(std::string_view text) {
+  std::u8string utf8;
+  utf8.reserve(text.size());
+  for (const unsigned char value : text) {
+    utf8.push_back(static_cast<char8_t>(value));
+  }
+  return std::filesystem::path(utf8);
+}
+
 } // namespace htmlppt

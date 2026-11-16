@@ -5,6 +5,7 @@
 
 #include "core/utf8_path.h"
 
+using htmlppt::PathFromUtf8;
 using htmlppt::Utf8Path;
 
 namespace {
@@ -30,5 +31,16 @@ HTMLPPT_TEST_CASE(utf8_path_preserves_utf8_bytes) {
 
 HTMLPPT_TEST_CASE(utf8_path_preserves_ascii) {
   const std::filesystem::path path("/tmp/page1.html");
+  HTMLPPT_CHECK_EQ(Utf8Path(path), std::string{"/tmp/page1.html"});
+}
+
+HTMLPPT_TEST_CASE(utf8_path_round_trips_utf8_bytes) {
+  const std::string bytes = "\xE6\xBC\x94\xE7\xA4\xBA";
+  const std::filesystem::path path = PathFromUtf8(bytes);
+  HTMLPPT_CHECK_EQ(Utf8Path(path), bytes);
+}
+
+HTMLPPT_TEST_CASE(utf8_path_builds_ascii_path) {
+  const std::filesystem::path path = PathFromUtf8("/tmp/page1.html");
   HTMLPPT_CHECK_EQ(Utf8Path(path), std::string{"/tmp/page1.html"});
 }
