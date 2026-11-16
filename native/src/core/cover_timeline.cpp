@@ -25,12 +25,9 @@ void CoverTimeline::FadeIn(ClockPoint now) {
 }
 
 void CoverTimeline::FadeOut(ClockPoint now) {
+  (void)now;
   if (phase_ == CoverPhase::Idle) return;
   fade_out_pending_ = true;
-  if (phase_ == CoverPhase::Hold) {
-    // Tick will start the fade once the minimum hold has elapsed.
-    (void)now;
-  }
 }
 
 void CoverTimeline::Hide() {
@@ -95,9 +92,10 @@ std::optional<ClockPoint> CoverTimeline::NextDeadline() const {
     case CoverPhase::FadeIn:
       return phase_start_ + timing_.fade;
     case CoverPhase::Hold: {
-      const auto hold_deadline = hold_start_ + timing_.hold;
       const auto max_deadline = hold_start_ + timing_.max_hold;
-      if (fade_out_pending_) return hold_deadline;
+      if (fade_out_pending_) {
+        return std::min(hold_start_ + timing_.hold, max_deadline);
+      }
       return max_deadline;
     }
     case CoverPhase::FadeOut:

@@ -1,7 +1,5 @@
 #include "test_main.h"
 
-#include <vector>
-
 #include "core/clock.h"
 #include "core/cover_controller.h"
 #include "core/cover_overlay.h"

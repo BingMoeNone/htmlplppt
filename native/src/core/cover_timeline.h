@@ -40,8 +40,6 @@ class CoverTimeline {
   std::optional<ClockPoint> NextDeadline() const;
 
  private:
-  double OpacityFor(ClockPoint now, Duration duration) const;
-
   CoverTiming timing_;
   CoverPhase phase_ = CoverPhase::Idle;
   ClockPoint phase_start_{};
