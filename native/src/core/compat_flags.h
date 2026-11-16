@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -38,7 +39,7 @@ class CompatFlags {
   std::string ReadFlag(std::string_view name) const;
   bool IsOwned(std::string_view name) const;
   bool DeleteOwned(std::string_view name);
-  void DeleteAllOwned();
+  std::size_t DeleteAllOwned();
 
  private:
   std::filesystem::path Path(std::string_view name) const;

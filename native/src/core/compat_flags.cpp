@@ -4,7 +4,6 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
-#include <sstream>
 
 #include <nlohmann/json.hpp>
 
@@ -29,6 +28,7 @@ bool CompatFlags::WriteText(const std::filesystem::path& path,
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   if (!output) return false;
   output.write(text.data(), static_cast<std::streamsize>(text.size()));
+  output.close();
   return output.good();
 }
 
@@ -40,8 +40,13 @@ std::string CompatFlags::ReadText(const std::filesystem::path& path) const {
 }
 
 bool CompatFlags::WriteFlag(std::string_view name, std::string_view payload) {
-  if (!WriteText(Path(name), payload)) return false;
-  return WriteText(OwnerPath(name), identity_.run_id);
+  if (!WriteText(OwnerPath(name), identity_.run_id)) return false;
+  if (!WriteText(Path(name), payload)) {
+    std::error_code error;
+    std::filesystem::remove(OwnerPath(name), error);
+    return false;
+  }
+  return true;
 }
 
 std::string CompatFlags::ReadFlag(std::string_view name) const {
@@ -49,28 +54,32 @@ std::string CompatFlags::ReadFlag(std::string_view name) const {
 }
 
 bool CompatFlags::IsOwned(std::string_view name) const {
+  if (identity_.run_id.empty()) return false;
   return ReadText(OwnerPath(name)) == identity_.run_id;
 }
 
 bool CompatFlags::DeleteOwned(std::string_view name) {
   if (!IsOwned(name)) return false;
-  std::error_code error;
-  std::filesystem::remove(Path(name), error);
-  std::filesystem::remove(OwnerPath(name), error);
-  return !error;
+  std::error_code payload_error;
+  std::filesystem::remove(Path(name), payload_error);
+  if (payload_error) return false;
+  std::error_code owner_error;
+  std::filesystem::remove(OwnerPath(name), owner_error);
+  return !owner_error;
 }
 
-void CompatFlags::DeleteAllOwned() {
-  DeleteOwned(kLockFile);
-  DeleteOwned(kCoverFadeFlag);
-  DeleteOwned(kCoverReadyFlag);
-  DeleteOwned(kCoverDoneFlag);
-  DeleteOwned(kCoverStopFlag);
-  DeleteOwned(kCoverHideFlag);
-  DeleteOwned(kAgentArmFlag);
-  DeleteOwned(kAgentStopFlag);
-  DeleteOwned(kReturnRequestFlag);
-  DeleteOwned(kEdgeClosedFlag);
+std::size_t CompatFlags::DeleteAllOwned() {
+  constexpr std::string_view kNames[] = {
+      kLockFile,     kCoverFadeFlag,  kCoverReadyFlag, kCoverDoneFlag,
+      kCoverStopFlag, kCoverHideFlag, kAgentArmFlag,   kAgentStopFlag,
+      kReturnRequestFlag, kEdgeClosedFlag,
+  };
+  std::size_t failures = 0;
+  for (const std::string_view name : kNames) {
+    if (!IsOwned(name)) continue;
+    if (!DeleteOwned(name)) ++failures;
+  }
+  return failures;
 }
 
 bool CompatFlags::WriteLock(std::string_view timestamp) {
@@ -93,6 +102,7 @@ bool LegacyLog::Append(std::string_view file, std::string_view line) const {
                        std::ios::binary | std::ios::app);
   if (!output) return false;
   output << UtcTimestamp() << ' ' << line << '\n';
+  output.close();
   return output.good();
 }
 
