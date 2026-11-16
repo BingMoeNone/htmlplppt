@@ -61,6 +61,7 @@ std::optional<WindowId> SelectWpsShowWindow(
     const std::vector<std::uint32_t>& wps_pids, ScreenMetrics screen) {
   std::optional<WindowId> best;
   int best_score = 0;
+  long long best_area = -1;
   for (const auto& window : windows) {
     if (!window.visible) continue;
     bool pid_match = false;
@@ -72,9 +73,16 @@ std::optional<WindowId> SelectWpsShowWindow(
     }
     if (!pid_match) continue;
     const int score = ScoreWpsWindow(window, screen);
-    // Require at least one show trait; a maximized editor scores 3.
-    if (score >= 4 && score > best_score) {
+    // Require at least 4 points; a maximized editor scores 3.
+    if (score < 4) continue;
+    const long long area = window.rect.area();
+    const bool better =
+        !best.has_value() || score > best_score ||
+        (score == best_score &&
+         (area > best_area || (area == best_area && window.id < *best)));
+    if (better) {
       best_score = score;
+      best_area = area;
       best = window.id;
     }
   }

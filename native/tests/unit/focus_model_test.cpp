@@ -74,3 +74,25 @@ HTMLPPT_TEST_CASE(focus_recognizes_return_title) {
   HTMLPPT_CHECK(IsReturnTitle("TEF-LIVE-RETURN - demo"));
   HTMLPPT_CHECK(!IsReturnTitle("TEF live"));
 }
+
+HTMLPPT_TEST_CASE(focus_ranks_wps_show_window_independent_of_order) {
+  const ScreenMetrics screen{1920, 1080};
+  std::vector<WindowInfo> windows{
+      MakeWindow(3, 300, "Widget", "Slide Show", 1900, 1040, true, false, false),
+      MakeWindow(2, 300, "screenClass", WpsShowTitle(), 1920, 1080, true, false, false),
+      MakeWindow(1, 300, "Widget", "Document", 1600, 900, false, true, true),
+  };
+  const auto selected = SelectWpsShowWindow(windows, {300}, screen);
+  HTMLPPT_CHECK(selected.has_value());
+  HTMLPPT_CHECK_EQ(*selected, htmlppt::WindowId{2});
+}
+
+HTMLPPT_TEST_CASE(focus_accepts_exactly_four_points) {
+  const ScreenMetrics screen{1920, 1080};
+  std::vector<WindowInfo> windows{
+      MakeWindow(1, 300, "Other", "Slide Show", 1920, 1080, false, true, true),
+  };
+  const auto selected = SelectWpsShowWindow(windows, {300}, screen);
+  HTMLPPT_CHECK(selected.has_value());
+  HTMLPPT_CHECK_EQ(*selected, htmlppt::WindowId{1});
+}
