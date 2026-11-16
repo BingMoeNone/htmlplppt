@@ -218,6 +218,41 @@ The shared black box is written only by the worker; the supervisor reads a read-
 
 Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.
 
+## Cover, focus, Edge, and compatibility core (Plan 5B-1)
+
+`core/cover_timeline` owns fade-in, minimum hold, maximum hold safety, and
+fade-out. `core/cover_controller` drives a `CoverOverlay` implementation and
+re-asserts topmost when the hold edge is reached.
+
+`core/window_system` is the platform-neutral window descriptor/control
+interface. `core/focus_model` ranks WPS slideshow windows by class, title,
+popup style, and fullscreen traits, selects the largest visible Edge window
+for a PID, and recognizes `TEF-LIVE-RETURN`. `core/focus_controller` polls
+`Activate` until the window is foreground or the timeout expires. The polling
+interval is clamped to at least 1 ms, sleeps no later than the deadline, and
+WPS score ties are broken by larger area, then smaller window id.
+
+`core/edge_spec` builds a `file://` URL, percent-encodes UTF-8 paths, applies
+the default or configured Chromium flags, and assigns a per-target profile
+directory. `core/edge_controller` owns launch/active/kill over an
+`EdgeLauncher` interface. `ResolvedTarget::html_path` and all Edge arguments
+are UTF-8 strings; use `PathFromUtf8` before filesystem work and `Utf8Path`
+when producing strings. Plan 5B-2 must convert argv with UTF-8-to-UTF-16, not
+the Windows ANSI code page.
+
+`core/compat_flags` writes owner-tracked legacy flags (`watcher.lock`,
+`cover-*`, `agent-*`, `return-request`, `edge-closed`) without altering the
+legacy payload content; ownership is stored in a sibling `.owner` file.
+`DeleteOwned` keeps the owner when payload removal fails, `WriteFlag` writes
+the owner first and rolls it back if the payload fails, and `DeleteAllOwned`
+returns the number of owned flags that could not be deleted.
+`core/legacy_log` appends timestamped `watch-log.txt`, `bring-log.txt`, and
+`cover-log.txt` lines.
+
+These units are platform-neutral and tested on Linux. Plan 5B-2 maps them onto
+Win32 layered windows, `EnumWindows`, foreground unlocking, and
+`CreateProcessW`/Job Objects.
+
 ## WPS COM host (Plan 5A)
 
 `platform/win32/com_dispatch` provides the STA COM apartment, RAII

@@ -1836,3 +1836,21 @@ git commit -m "docs: record Plan 5B-1 cover/focus/edge core"
 ## Execution Handoff
 
 Plan 5B-1 is ready. Continue with subagent-driven development: create a fresh worktree from `main`, commit this plan, execute Tasks 1-5 with task-level reviews, then run the final whole-branch review. Plan 5B-2 (Win32 implementations) will be authored after 5B-1 lands.
+
+---
+
+## As-Built Amendments (2026-11-16)
+
+Plan 5B-1 was executed on branch `worktree-feat-cpp-watchdog-cover-focus-edge-core`. The following approved amendments differ from the Task 1-5 code blocks above and are the source of truth for the implemented core.
+
+1. **Cover deadline**: `CoverTimeline::NextDeadline()` returns `min(hold_start + hold, hold_start + max_hold)` while a fade-out is pending, and `hold_start + max_hold` otherwise. Five tests cover FadeIn, Hold non-pending, Hold pending, Hold capped by max_hold, and FadeOut. The unused `OpacityFor` declaration was removed.
+
+2. **Focus polling and ranking**: `FocusController` clamps the poll interval to at least 1 ms and sleeps until `min(now + interval, deadline)`. `SelectWpsShowWindow` breaks equal scores by larger area, then smaller `WindowId`, and requires at least 4 points. Tests cover zero interval, retry until success, PID-scoped return signals, reversed enumeration order, and the exact 4-point boundary.
+
+3. **UTF-8 path contract**: `core/utf8_path` provides `Utf8Path(path)` and `PathFromUtf8(text)`. `ResolvedTarget::html_path` is UTF-8; `resolve` uses `Utf8Path`/`PathFromUtf8` for html paths, stems, asset roots, deck paths, and error messages. `--user-data-dir` is UTF-8. Edge tests cover Windows drive, UNC, reserved characters, and escaped UTF-8 paths. Plan 5B-2 must convert argv to UTF-16 from UTF-8, not the ANSI code page.
+
+4. **Compatibility flags**: `WriteFlag` is owner-first and rolls back the owner if the payload write fails. `DeleteOwned` uses independent error codes and keeps the owner when payload removal fails. `IsOwned` returns false for an empty run-id. `DeleteAllOwned` returns the number of owned flags that could not be deleted. `WriteText` and `LegacyLog::Append` close the stream before reporting success.
+
+5. **Final gate**: 244/244 unit cases, CTest 8/8, `npm test` 3/3, `-Werror` clean, working tree clean.
+
+Deferred to Plan 5B-2/5C: raw query/fragment encoding if real Edge rejects configured values, UNC/real Edge validation, CreateProcess argv quoting and UTF-8-to-UTF-16 conversion, dead-process reset, EdgeController destructor/Job ownership, empty-run-id `WriteFlag` guard, atomic flag replacement, path-traversal hardening for public flag names, and a fixed-list consistency check for `DeleteAllOwned`.
