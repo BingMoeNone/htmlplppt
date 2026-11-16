@@ -109,7 +109,7 @@ HTMLPPT_TEST_CASE(resolve_slide_target_with_deck_info) {
 HTMLPPT_TEST_CASE(resolve_reports_utf8_paths) {
   Fixture fixture;
   const std::string name = "\xE6\xBC\x94\xE7\xA4\xBA page.html";
-  fixture.Write(name, "<html>utf8</html>");
+  fixture.Write(htmlppt::PathFromUtf8(name), "<html>utf8</html>");
   std::string json =
       R"({"version": 1, "deck": "deck.pptx", "targets": [{"slide": 1, "html": ")";
   json += name;
@@ -120,7 +120,8 @@ HTMLPPT_TEST_CASE(resolve_reports_utf8_paths) {
   HTMLPPT_CHECK(!HasError(result));
   HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
   const auto expected_path = htmlppt::Utf8Path(
-      std::filesystem::weakly_canonical(fixture.dir.path() / name));
+      std::filesystem::weakly_canonical(fixture.dir.path() /
+                                        htmlppt::PathFromUtf8(name)));
   HTMLPPT_CHECK_EQ(result.targets[0].html_path, expected_path);
   HTMLPPT_CHECK(result.targets[0].html_path.find(name) != std::string::npos);
   HTMLPPT_CHECK_EQ(result.targets[0].stage_name,
@@ -150,7 +151,7 @@ HTMLPPT_TEST_CASE(resolve_utf8_missing_file_message) {
 HTMLPPT_TEST_CASE(resolve_utf8_deck_path) {
   Fixture fixture;
   const std::string deck_name = "\xE6\xBC\x94\xE7\xA4\xBA deck.pptx";
-  fixture.Write(deck_name, "PK");
+  fixture.Write(htmlppt::PathFromUtf8(deck_name), "PK");
   std::string json =
       R"({"version": 1, "deck": ")";
   json += deck_name;
@@ -166,7 +167,7 @@ HTMLPPT_TEST_CASE(resolve_utf8_deck_path) {
 HTMLPPT_TEST_CASE(resolve_utf8_assets_root) {
   Fixture fixture;
   const std::string root_name = "\xE6\xBC\x94\xE7\xA4\xBA assets";
-  fixture.Write(root_name + "/asset.txt", "asset");
+  fixture.Write(htmlppt::PathFromUtf8(root_name + "/asset.txt"), "asset");
   std::string json =
       R"({"version": 1, "deck": "deck.pptx", "targets": [{"slide": 1, "html": "page1.html", "assets": {"mode": "tree", "root": ")";
   json += root_name;

@@ -13,6 +13,7 @@ using htmlppt::DefaultEdgeFlags;
 using htmlppt::EdgeConfig;
 using htmlppt::EdgeLaunchSpec;
 using htmlppt::MakeEdgeLaunchSpec;
+using htmlppt::PathFromUtf8;
 using htmlppt::ResolvedTarget;
 using htmlppt::Utf8Path;
 
@@ -90,11 +91,24 @@ HTMLPPT_TEST_CASE(edge_spec_uses_profile_and_default_flags) {
   HTMLPPT_CHECK(Contains(spec.arguments,
                          "--user-data-dir=" + Utf8Path(spec.profile_dir)));
   HTMLPPT_CHECK(Contains(spec.arguments, "--start-fullscreen"));
-  const std::vector<std::string> flags = DefaultEdgeFlags();
-  HTMLPPT_CHECK(Contains(flags, "--no-first-run"));
-  HTMLPPT_CHECK(Contains(flags, "--disable-sync"));
-  HTMLPPT_CHECK(Contains(flags, "--disable-breakpad"));
-  HTMLPPT_CHECK(!flags.empty());
+  HTMLPPT_CHECK(Contains(spec.arguments, "--no-first-run"));
+  HTMLPPT_CHECK(Contains(spec.arguments, "--disable-sync"));
+  HTMLPPT_CHECK(Contains(spec.arguments, "--disable-breakpad"));
+  HTMLPPT_CHECK(!DefaultEdgeFlags().empty());
+}
+
+HTMLPPT_TEST_CASE(edge_spec_uses_utf8_profile_directory) {
+  ResolvedTarget target;
+  target.html_path = "/tmp/page1.html";
+  target.edge_profile = "profile-\xE6\xBC\x94";
+  const EdgeLaunchSpec spec = MakeEdgeLaunchSpec(
+      "/usr/bin/msedge", "/tmp", target, EdgeConfig{});
+  const std::string expected_profile = "/tmp/profile-\xE6\xBC\x94";
+  HTMLPPT_CHECK_EQ(spec.profile_dir,
+                   PathFromUtf8(expected_profile));
+  HTMLPPT_CHECK_EQ(Utf8Path(spec.profile_dir), expected_profile);
+  HTMLPPT_CHECK(Contains(spec.arguments,
+                         "--user-data-dir=" + expected_profile));
 }
 
 HTMLPPT_TEST_CASE(edge_spec_uses_configured_flags_when_present) {

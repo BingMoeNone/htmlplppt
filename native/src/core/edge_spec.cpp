@@ -75,7 +75,7 @@ EdgeLaunchSpec MakeEdgeLaunchSpec(const std::filesystem::path& edge_exe,
   EdgeLaunchSpec spec;
   spec.executable = edge_exe;
   spec.url = BuildEdgeUrl(target);
-  spec.profile_dir = temp_dir / target.edge_profile;
+  spec.profile_dir = temp_dir / PathFromUtf8(target.edge_profile);
   spec.arguments = config.args.empty() ? DefaultEdgeFlags() : config.args;
   spec.arguments.push_back("--app=" + spec.url);
   spec.arguments.push_back("--start-fullscreen");

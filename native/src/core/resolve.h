@@ -25,7 +25,9 @@ struct ResolvedTarget {
   ResolveState state = ResolveState::Resolved;
   int slide = 0;  // 0 when the target is disabled
   std::string label;
-  std::string html_path;  // absolute normalized filesystem path, no query/hash
+  // Absolute normalized filesystem path without query/hash, encoded as
+  // UTF-8. Callers must use PathFromUtf8 before filesystem operations.
+  std::string html_path;
   std::string query;      // merged query without the leading '?'
   std::string fragment;   // merged fragment without the leading '#'
   std::string stage_name;
