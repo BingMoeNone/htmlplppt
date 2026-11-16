@@ -8,6 +8,7 @@
 #include "core/config.h"
 #include "core/deck_info.h"
 #include "core/resolve.h"
+#include "core/utf8_path.h"
 
 using htmlppt::Config;
 using htmlppt::IssueSeverity;
@@ -103,6 +104,47 @@ HTMLPPT_TEST_CASE(resolve_slide_target_with_deck_info) {
                    std::filesystem::weakly_canonical(
                        fixture.dir.path() / "page1.html").string());
   HTMLPPT_CHECK(result.targets[0].state == ResolveState::Resolved);
+}
+
+HTMLPPT_TEST_CASE(resolve_reports_utf8_paths) {
+  Fixture fixture;
+  const std::string name = "\xE6\xBC\x94\xE7\xA4\xBA page.html";
+  fixture.Write(name, "<html>utf8</html>");
+  std::string json =
+      R"({"version": 1, "deck": "deck.pptx", "targets": [{"slide": 1, "html": ")";
+  json += name;
+  json += R"("}]})";
+  const Config config = ParseConfig(fixture, json);
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
+  const auto expected_path = htmlppt::Utf8Path(
+      std::filesystem::weakly_canonical(fixture.dir.path() / name));
+  HTMLPPT_CHECK_EQ(result.targets[0].html_path, expected_path);
+  HTMLPPT_CHECK(result.targets[0].html_path.find(name) != std::string::npos);
+  HTMLPPT_CHECK_EQ(result.targets[0].stage_name,
+                   std::string{"target-01-page.html"});
+}
+
+HTMLPPT_TEST_CASE(resolve_utf8_missing_file_message) {
+  Fixture fixture;
+  const std::string name = "\xE6\xBC\x94\xE7\xA4\xBA missing.html";
+  std::string json =
+      R"({"version": 1, "deck": "deck.pptx", "targets": [{"slide": 1, "html": ")";
+  json += name;
+  json += R"("}]})";
+  const Config config = ParseConfig(fixture, json);
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  bool found = false;
+  for (const auto& issue : result.issues) {
+    if (issue.path == "targets[0].html" &&
+        issue.message.find(name) != std::string::npos) {
+      found = true;
+    }
+  }
+  HTMLPPT_CHECK(found);
 }
 
 HTMLPPT_TEST_CASE(resolve_slide_out_of_range) {

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "core/utf8_path.h"
+
 namespace htmlppt {
 namespace {
 
@@ -77,7 +79,7 @@ EdgeLaunchSpec MakeEdgeLaunchSpec(const std::filesystem::path& edge_exe,
   spec.arguments = config.args.empty() ? DefaultEdgeFlags() : config.args;
   spec.arguments.push_back("--app=" + spec.url);
   spec.arguments.push_back("--start-fullscreen");
-  spec.arguments.push_back("--user-data-dir=" + spec.profile_dir.string());
+  spec.arguments.push_back("--user-data-dir=" + Utf8Path(spec.profile_dir));
   return spec;
 }
 

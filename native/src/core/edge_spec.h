@@ -11,9 +11,15 @@
 namespace htmlppt {
 
 struct EdgeLaunchSpec {
+  // Native path. Plan 5B-2 converts it to UTF-16 for CreateProcessW.
   std::filesystem::path executable;
+  // UTF-8 URL.
   std::string url;
+  // Native path. The --user-data-dir argument is serialized as UTF-8.
   std::filesystem::path profile_dir;
+  // UTF-8 argument strings. Plan 5B-2 converts them to UTF-16 (not the
+  // active code page) before calling CreateProcessW, so non-ASCII paths
+  // survive intact.
   std::vector<std::string> arguments;
 };
 

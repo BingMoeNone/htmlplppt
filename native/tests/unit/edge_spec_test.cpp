@@ -1,10 +1,12 @@
 #include "test_main.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include "core/edge_spec.h"
+#include "core/utf8_path.h"
 
 using htmlppt::BuildEdgeUrl;
 using htmlppt::DefaultEdgeFlags;
@@ -12,6 +14,16 @@ using htmlppt::EdgeConfig;
 using htmlppt::EdgeLaunchSpec;
 using htmlppt::MakeEdgeLaunchSpec;
 using htmlppt::ResolvedTarget;
+using htmlppt::Utf8Path;
+
+namespace {
+
+bool Contains(const std::vector<std::string>& values,
+              const std::string& value) {
+  return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+} // namespace
 
 HTMLPPT_TEST_CASE(edge_url_encodes_unicode_and_spaces) {
   ResolvedTarget target;
@@ -37,6 +49,32 @@ HTMLPPT_TEST_CASE(edge_url_keeps_query_and_fragment_empty) {
   HTMLPPT_CHECK_EQ(url, std::string{"file:///tmp/page1.html"});
 }
 
+HTMLPPT_TEST_CASE(edge_url_handles_windows_drive_path) {
+  ResolvedTarget target;
+  target.html_path = "C:\\Users\\A B\\page.html";
+  HTMLPPT_CHECK_EQ(BuildEdgeUrl(target),
+                   std::string{"file:///C:/Users/A%20B/page.html"});
+}
+
+HTMLPPT_TEST_CASE(edge_url_handles_unc_path) {
+  ResolvedTarget target;
+  target.html_path = "\\\\server\\share\\page.html";
+  // Edge/Chromium normalizes the extra leading slash for UNC paths on
+  // Windows; this test pins the current core representation.
+  HTMLPPT_CHECK_EQ(BuildEdgeUrl(target),
+                   std::string{"file:////server/share/page.html"});
+}
+
+HTMLPPT_TEST_CASE(edge_url_percent_encodes_path_reserved_characters) {
+  ResolvedTarget target;
+  target.html_path = "/tmp/a?b#c%.html";
+  const std::string url = BuildEdgeUrl(target);
+  HTMLPPT_CHECK_EQ(url, std::string{"file:///tmp/a%3Fb%23c%25.html"});
+  HTMLPPT_CHECK(url.find("%3F") != std::string::npos);
+  HTMLPPT_CHECK(url.find("%23") != std::string::npos);
+  HTMLPPT_CHECK(url.find("%25") != std::string::npos);
+}
+
 HTMLPPT_TEST_CASE(edge_spec_uses_profile_and_default_flags) {
   ResolvedTarget target;
   target.html_path = "/tmp/page1.html";
@@ -46,18 +84,17 @@ HTMLPPT_TEST_CASE(edge_spec_uses_profile_and_default_flags) {
   HTMLPPT_CHECK_EQ(spec.executable.string(), std::string{"/usr/bin/msedge"});
   HTMLPPT_CHECK_EQ(spec.profile_dir.string(),
                    std::string{"/tmp/htmlppt-deck-t05"});
-  bool has_app = false;
-  bool has_profile = false;
-  bool has_fullscreen = false;
-  for (const auto& arg : spec.arguments) {
-    if (arg.rfind("--app=", 0) == 0) has_app = true;
-    if (arg.rfind("--user-data-dir=", 0) == 0) has_profile = true;
-    if (arg == "--start-fullscreen") has_fullscreen = true;
-  }
-  HTMLPPT_CHECK(has_app);
-  HTMLPPT_CHECK(has_profile);
-  HTMLPPT_CHECK(has_fullscreen);
-  HTMLPPT_CHECK(!DefaultEdgeFlags().empty());
+  HTMLPPT_CHECK_EQ(spec.url, BuildEdgeUrl(target));
+  HTMLPPT_CHECK(Contains(spec.arguments,
+                         "--app=" + BuildEdgeUrl(target)));
+  HTMLPPT_CHECK(Contains(spec.arguments,
+                         "--user-data-dir=" + Utf8Path(spec.profile_dir)));
+  HTMLPPT_CHECK(Contains(spec.arguments, "--start-fullscreen"));
+  const std::vector<std::string> flags = DefaultEdgeFlags();
+  HTMLPPT_CHECK(Contains(flags, "--no-first-run"));
+  HTMLPPT_CHECK(Contains(flags, "--disable-sync"));
+  HTMLPPT_CHECK(Contains(flags, "--disable-breakpad"));
+  HTMLPPT_CHECK(!flags.empty());
 }
 
 HTMLPPT_TEST_CASE(edge_spec_uses_configured_flags_when_present) {

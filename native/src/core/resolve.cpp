@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "core/config_issue.h"
+#include "core/utf8_path.h"
 
 namespace htmlppt {
 namespace {
@@ -138,7 +139,7 @@ std::string AsciiSlug(const std::string& text) {
 }
 
 std::string AutoStageName(int ordinal, const std::string& html_path) {
-  const std::string stem = std::filesystem::path(html_path).stem().string();
+  const std::string stem = Utf8Path(std::filesystem::path(html_path).stem());
   std::ostringstream out;
   out << "target-" << std::setw(2) << std::setfill('0') << ordinal << "-"
       << AsciiSlug(stem) << ".html";
@@ -294,7 +295,7 @@ bool ResolveHtml(const TargetConfig& target, const std::filesystem::path& base_d
   std::error_code error;
   if (!std::filesystem::is_regular_file(html_path, error)) {
     AddError(issues, target_path + ".html",
-             "HTML file does not exist: " + html_path.string());
+             "HTML file does not exist: " + Utf8Path(html_path));
     return false;
   }
   const QueryFragment extra = ParseExtraReference(target.html_query);
@@ -311,7 +312,7 @@ bool ResolveHtml(const TargetConfig& target, const std::filesystem::path& base_d
              "fragment conflicts with html: " + extra.fragment);
     return false;
   }
-  resolved->html_path = html_path.string();
+  resolved->html_path = Utf8Path(html_path);
   resolved->query = query;
   resolved->fragment =
       !html.fragment.empty() ? html.fragment : extra.fragment;
@@ -339,7 +340,7 @@ bool ResolveAssets(const TargetConfig& target,
   std::error_code error;
   if (!std::filesystem::is_directory(root, error)) {
     AddError(issues, target_path + ".assets.root",
-             "asset root does not exist: " + root.string());
+             "asset root does not exist: " + Utf8Path(root));
     return false;
   }
   return true;
@@ -385,7 +386,7 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     std::error_code error;
     if (!std::filesystem::is_regular_file(deck_path, error)) {
       AddError(result.issues, "deck",
-               "deck file does not exist: " + deck_path.string());
+               "deck file does not exist: " + Utf8Path(deck_path));
     }
   }
   if (config.active.targets.empty()) {
