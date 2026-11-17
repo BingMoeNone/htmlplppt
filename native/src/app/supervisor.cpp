@@ -36,6 +36,7 @@
 #include "platform/win32/named_pipe.h"
 #include "platform/win32/process_job.h"
 #include "platform/win32/process_query.h"
+#include "platform/win32/pumping_clock.h"
 #include "platform/win32/shared_blackbox.h"
 #include "platform/win32/window_system_win32.h"
 #include "platform/win32/wps_host.h"
@@ -732,7 +733,10 @@ int RunWorker(const SupervisorRunOptions& options) {
     return 1;
   }
 
-  SteadyClock clock;
+  // The worker loop's waits pump this thread's message queue: the loop is the
+  // STA that owns the COM objects and the cover window, so a plain sleep would
+  // starve their callbacks.
+  PumpingClock clock;
   WpsHost wps(clock);
   Win32CoverOverlay overlay;
   Win32EdgeLauncher launcher;

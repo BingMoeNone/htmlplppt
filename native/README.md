@@ -275,6 +275,20 @@ advise/unadvise lifetime handling. The probe stays in the tree so the decision
 can be revisited if the cadence is ever raised or WPS exposes a named event
 interface.
 
+### Threading model
+
+The worker is a single STA thread that owns the COM objects, the cover window,
+and the state loop. A helper thread only sends heartbeat frames (under a send
+mutex) so a blocking COM action cannot starve the supervisor.
+
+The loop's wait is `PumpingClock` (`platform/win32/pumping_clock`): it waits with
+`MsgWaitForMultipleObjectsEx` and dispatches queued messages in slices of at most
+50 ms. That matters because the loop thread is the apartment that hosts the COM
+objects and the cover window -- a plain `sleep_until` would leave their callbacks
+queued until the next COM call. It is deliberately not a multi-thread rework: the
+heartbeat helper already covers the supervisor-side liveness requirement, and a
+split COM/UI/IPC model only pays off if the slide source becomes an event sink.
+
 From a second shell, inspect the run and stop it:
 
 ```powershell
