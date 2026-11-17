@@ -12,16 +12,25 @@
 #include "core/resolve.h"
 #include "core/state_machine_types.h"
 #include "core/utf8_path.h"
+#include "core/window_system.h"
 #include "core/worker_plan.h"
+#include "core/worker_runtime.h"
 
+using htmlppt::BuildStateMachineConfig;
+using htmlppt::BuildWorkerHostConfig;
 using htmlppt::BuildWorkerPlan;
 using htmlppt::Config;
 using htmlppt::Duration;
+using htmlppt::OnFailurePolicy;
 using htmlppt::ReadWorkerPlanFile;
 using htmlppt::ResolveResult;
 using htmlppt::ResolvedTarget;
+using htmlppt::ScreenMetrics;
+using htmlppt::StateMachineConfig;
 using htmlppt::TargetPlan;
 using htmlppt::TriggerMode;
+using htmlppt::WorkerHostConfig;
+using htmlppt::WorkerHostFacts;
 using htmlppt::WorkerPlan;
 using htmlppt::WorkerPlanFromJson;
 using htmlppt::WorkerPlanToJson;
@@ -101,6 +110,23 @@ ResolveResult ResolveTestTargets(const Config& config) {
   ResolveResult resolved = htmlppt::ResolveTargets(config, nullptr, options);
   HTMLPPT_CHECK(!HasError(resolved));
   return resolved;
+}
+
+// Every defaults knob the runtime mappings read, with values distinct from the
+// built-in defaults so reading the wrong field cannot pass.
+Config LoadMappingConfig() {
+  return ParseConfig(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "defaults": {
+      "trigger": "arrive",
+      "onFailure": "safe",
+      "maxConsecutiveTriggerFailures": 5,
+      "cover": { "fadeMs": 250, "holdMs": 1500, "maxHoldMs": 9000 },
+      "edge": { "maxLiveMs": 120000, "prewarmProfile": true,
+                "args": ["--kiosk"] }
+    }
+  })");
 }
 
 // CJK label and CJK html/deck paths to prove the round-trip is byte-preserving.
@@ -343,4 +369,47 @@ HTMLPPT_TEST_CASE(worker_plan_file_io_tolerates_null_error) {
                                     nullptr));
   const auto out = ReadWorkerPlanFile(dir / "plan.json", nullptr);
   HTMLPPT_CHECK(out.has_value());
+}
+
+HTMLPPT_TEST_CASE(worker_plan_maps_defaults_to_state_machine_config) {
+  const StateMachineConfig machine =
+      BuildStateMachineConfig(LoadMappingConfig());
+  HTMLPPT_CHECK_EQ(machine.cover_fade, Duration{250});
+  HTMLPPT_CHECK_EQ(machine.cover_hold, Duration{1500});
+  HTMLPPT_CHECK_EQ(machine.cover_max_hold, Duration{9000});
+  HTMLPPT_CHECK_EQ(machine.edge_max_live, Duration{120000});
+  HTMLPPT_CHECK_EQ(machine.max_consecutive_trigger_failures, 5);
+  HTMLPPT_CHECK(machine.default_on_failure == OnFailurePolicy::Safe);
+  // No config key feeds the focus timeout, so the state machine default stands
+  // and BuildWorkerHostConfig must follow it.
+  HTMLPPT_CHECK_EQ(machine.focus_timeout, Duration{6000});
+}
+
+HTMLPPT_TEST_CASE(worker_plan_maps_defaults_and_host_facts_to_worker_host) {
+  const Config config = LoadMappingConfig();
+  WorkerHostFacts facts;
+  facts.temp_dir = "C:/Temp/run-7";
+  facts.edge_exe = "C:/Edge/msedge.exe";
+  facts.screen = ScreenMetrics{1920, 1080};
+  facts.wps_pids = {10, 20};
+
+  const WorkerHostConfig host = BuildWorkerHostConfig(config, facts);
+  HTMLPPT_CHECK_EQ(host.temp_dir, facts.temp_dir);
+  HTMLPPT_CHECK_EQ(host.edge_exe, facts.edge_exe);
+  HTMLPPT_CHECK_EQ(host.screen.width, 1920);
+  HTMLPPT_CHECK_EQ(host.screen.height, 1080);
+  HTMLPPT_CHECK_EQ(host.wps_pids, facts.wps_pids);
+  HTMLPPT_CHECK_EQ(host.edge.max_live_ms, 120000);
+  HTMLPPT_CHECK(host.edge.prewarm_profile);
+  HTMLPPT_CHECK_EQ(host.edge.args.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(host.edge.args.front(), std::string{"--kiosk"});
+  HTMLPPT_CHECK_EQ(host.cover.fade, Duration{250});
+  HTMLPPT_CHECK_EQ(host.cover.hold, Duration{1500});
+  HTMLPPT_CHECK_EQ(host.cover.max_hold, Duration{9000});
+  HTMLPPT_CHECK_EQ(host.focus.timeout,
+                   BuildStateMachineConfig(config).focus_timeout);
+  // Host facts are not config: the remaining host timings keep their defaults.
+  HTMLPPT_CHECK_EQ(host.focus.interval, Duration{100});
+  HTMLPPT_CHECK_EQ(host.poll_interval, Duration{100});
+  HTMLPPT_CHECK_EQ(host.return_retry_interval, Duration{2000});
 }

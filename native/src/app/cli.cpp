@@ -314,16 +314,20 @@ ParseResult ParseCli(int argc, char** argv) {
   const Command command = result.options.command;
   const bool needs_config = command == Command::Validate ||
                             command == Command::Resolve ||
-                            command == Command::PrintConfig;
+                            command == Command::PrintConfig ||
+                            command == Command::Supervisor;
   if (needs_config && result.options.config_path.empty()) {
     result.ok = false;
-    result.error = "--config is required for this command";
+    result.error = command == Command::Supervisor
+                       ? "--config is required for --supervisor"
+                       : "--config is required for this command";
     return result;
   }
   if (!result.options.deck_info_path.empty() && command != Command::Validate &&
-      command != Command::Resolve) {
+      command != Command::Resolve && command != Command::Supervisor) {
     result.ok = false;
-    result.error = "--deck-info is only valid with --validate or --resolve";
+    result.error =
+        "--deck-info is only valid with --validate, --resolve, or --supervisor";
     return result;
   }
   const bool host_command =
@@ -481,6 +485,12 @@ int RunCli(int argc, char** argv) {
   }
   const std::string state_dir =
       parsed.options.overrides.state_dir.value_or("");
+  SupervisorRunOptions run_options;
+  run_options.state_dir = state_dir;
+  run_options.run_id = parsed.options.run_id;
+  run_options.config_path = parsed.options.config_path;
+  run_options.deck_info_path = parsed.options.deck_info_path;
+  run_options.overrides = parsed.options.overrides;
   switch (parsed.options.command) {
     case Command::Version:
       std::cout << "htmlppt-watchdog " << version() << "\n";
@@ -498,9 +508,9 @@ int RunCli(int argc, char** argv) {
       std::cout << ConfigSchema() << "\n";
       return 0;
     case Command::Supervisor:
-      return RunSupervisor({state_dir, parsed.options.run_id});
+      return RunSupervisor(run_options);
     case Command::Worker:
-      return RunWorker({state_dir, parsed.options.run_id});
+      return RunWorker(run_options);
     case Command::Stop:
       return RunStop(parsed.options.run_id);
     case Command::Status:

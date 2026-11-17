@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -8,6 +9,7 @@
 
 #include "core/resolve.h"
 #include "core/state_machine_types.h"
+#include "core/window_system.h"
 
 namespace htmlppt {
 
@@ -18,6 +20,30 @@ struct WorkerPlan {
   std::vector<ResolvedTarget> targets;
   std::string deck_utf8;
 };
+
+// Host facts the config cannot express: where this run's staged files and Edge
+// live, the display metrics, and the WPS processes to focus. They are runtime
+// facts, never config.
+struct WorkerHostFacts {
+  std::filesystem::path temp_dir;
+  std::filesystem::path edge_exe;
+  ScreenMetrics screen;
+  std::vector<std::uint32_t> wps_pids;
+};
+
+struct WorkerHostConfig;  // defined in core/worker_runtime.h
+
+// Maps Config::defaults onto the state machine's timing and policy knobs. Knobs
+// the config cannot express keep the state machine defaults; the focus timeout
+// it leaves here is also what the worker host uses.
+StateMachineConfig BuildStateMachineConfig(const Config& config);
+
+// Maps the same defaults plus the host facts onto the worker host config. The
+// cover timings and focus timeout come from BuildStateMachineConfig so the host
+// and the machine cannot drift. Include core/worker_runtime.h where the result
+// is used: WorkerHostConfig is only forward declared here.
+WorkerHostConfig BuildWorkerHostConfig(const Config& config,
+                                       const WorkerHostFacts& facts);
 
 // Maps the resolved configuration onto one TargetPlan per enabled target.
 // Resolved targets with slide <= 0 are dropped. Effective trigger, on_failure,

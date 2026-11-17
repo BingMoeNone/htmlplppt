@@ -12,13 +12,20 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include "core/config.h"
+#include "core/config_issue.h"
+#include "core/deck_info.h"
 #include "core/journal.h"
+#include "core/resolve.h"
 #include "core/single_instance.h"
 #include "core/supervisor.h"
+#include "core/utf8_path.h"
+#include "core/worker_plan.h"
 #include "platform/win32/crash_dump.h"
 #include "platform/win32/named_pipe.h"
 #include "platform/win32/process_job.h"
 #include "platform/win32/shared_blackbox.h"
+#include "platform/win32/wps_host.h"
 
 namespace htmlppt {
 namespace {
@@ -77,6 +84,79 @@ WorkerEvent MakeEvent(WorkerEventKind kind, std::uint32_t sequence = 0) {
   event.at = SteadyClock{}.now();
   event.sequence = sequence;
   return event;
+}
+
+// Names the first error of a failed config/deck/resolve step as one readable
+// line: "path: message" or just the message when the issue has no path.
+std::string FirstError(const std::vector<ConfigIssue>& issues) {
+  for (const auto& issue : issues) {
+    if (issue.severity != IssueSeverity::Error) continue;
+    if (issue.path.empty()) return issue.message;
+    return issue.path + ": " + issue.message;
+  }
+  return "unknown error";
+}
+
+DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
+                                      const Config& config) {
+  const auto deck_path = ResolveDeckPath(config);
+  if (!options.deck_info_path.empty()) {
+    JsonDeckInfoProvider provider(options.deck_info_path);
+    return provider.Load(deck_path);
+  }
+  SteadyClock clock;
+  WpsHostConfig host_config;
+  host_config.launch_attempts = 1;
+  WpsHost host(clock, host_config);
+  DeckInfoResult loaded = host.Load(deck_path);
+  host.Release();
+  return loaded;
+}
+
+// Resolves the config once and writes the plan the worker will read, so target
+// resolution never runs twice and the two roles cannot disagree. Returns false
+// with a readable message on any failure, before anything is launched.
+bool WriteSupervisorPlan(const SupervisorRunOptions& options,
+                         const std::string& run_id,
+                         const std::filesystem::path& state_dir,
+                         std::string* error) {
+  const auto loaded = LoadConfigFile(options.config_path, options.overrides);
+  if (!loaded.config.has_value()) {
+    *error = "cannot load config " + Utf8Path(options.config_path) + ": " +
+             FirstError(loaded.issues);
+    return false;
+  }
+  const Config& config = *loaded.config;
+
+  DeckInfoResult deck = LoadSupervisorDeckInfo(options, config);
+  if (!deck.info.has_value()) {
+    *error = "cannot load deck info: " + FirstError(deck.issues);
+    return false;
+  }
+  if (deck.info->slides.empty()) {
+    *error = "deck info has no slides: " + Utf8Path(deck.info->path);
+    return false;
+  }
+
+  ResolveOptions resolve_options;
+  resolve_options.allow_outside_folder = options.overrides.allow_outside_folder;
+  const ResolveResult resolved =
+      ResolveTargets(config, &*deck.info, resolve_options);
+  if (HasErrorIssue(resolved.issues)) {
+    *error = "cannot resolve targets: " + FirstError(resolved.issues);
+    return false;
+  }
+
+  const WorkerPlan plan =
+      BuildWorkerPlan(config, resolved,
+                      static_cast<int>(deck.info->slides.size()), run_id);
+  std::string write_error;
+  if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
+                           &write_error)) {
+    *error = std::move(write_error);
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -174,6 +254,21 @@ int RunSupervisor(const SupervisorRunOptions& options) {
 
   JsonlJournal journal(state_dir / "journal.jsonl");
   AppendJournal(journal, run_id, "Supervisor", "start", "supervisor start");
+
+  // Resolve the config and write the worker's plan before the worker is
+  // launched, so a bad config fails the run here instead of inside a restarted
+  // worker.
+  std::string plan_error;
+  if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error)) {
+    AppendJournal(journal, run_id, "Plan", "plan failed", plan_error);
+    std::cerr << "error: " << plan_error << "\n";
+    blackbox.reset();
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+    CloseHandle(stop_event);
+    return 1;
+  }
+  AppendJournal(journal, run_id, "Plan", "plan", "worker plan written");
 
   NamedPipeServer server;
   if (!server.Create(SupervisorPipeName(run_id))) {

@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/utf8_path.h"
+#include "core/worker_runtime.h"
 
 namespace htmlppt {
 namespace {
@@ -316,6 +317,35 @@ WorkerPlan BuildWorkerPlan(const Config& config, const ResolveResult& resolved,
     plan.targets.push_back(std::move(entry.spec));
   }
   return plan;
+}
+
+StateMachineConfig BuildStateMachineConfig(const Config& config) {
+  StateMachineConfig machine;
+  machine.cover_fade = Duration{config.defaults.cover.fade_ms};
+  machine.cover_hold = Duration{config.defaults.cover.hold_ms};
+  machine.cover_max_hold = Duration{config.defaults.cover.max_hold_ms};
+  machine.edge_max_live = Duration{config.defaults.edge.max_live_ms};
+  machine.max_consecutive_trigger_failures =
+      config.defaults.max_consecutive_trigger_failures;
+  machine.default_on_failure =
+      OnFailurePolicyFromConfig(config.defaults.on_failure);
+  return machine;
+}
+
+WorkerHostConfig BuildWorkerHostConfig(const Config& config,
+                                       const WorkerHostFacts& facts) {
+  const StateMachineConfig machine = BuildStateMachineConfig(config);
+  WorkerHostConfig host;
+  host.temp_dir = facts.temp_dir;
+  host.edge_exe = facts.edge_exe;
+  host.edge = config.defaults.edge;
+  host.cover.fade = machine.cover_fade;
+  host.cover.hold = machine.cover_hold;
+  host.cover.max_hold = machine.cover_max_hold;
+  host.focus.timeout = machine.focus_timeout;
+  host.screen = facts.screen;
+  host.wps_pids = facts.wps_pids;
+  return host;
 }
 
 std::string WorkerPlanToJson(const WorkerPlan& plan) {

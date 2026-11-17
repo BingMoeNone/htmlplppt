@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -89,18 +91,74 @@ CliResult RunCli(const std::vector<std::wstring>& args,
   return result;
 }
 
+// The supervisor resolves the config itself, so every launch needs a readable
+// config plus the deck facts it would otherwise query from WPS. The fixture
+// lives in the per-test state directory and is self-contained.
+struct SupervisorInputs {
+  std::filesystem::path config;
+  std::filesystem::path deck_info;
+};
+
+SupervisorInputs WriteSupervisorInputs(
+    const std::filesystem::path& state_dir) {
+  const auto write = [&](const wchar_t* name, const std::string& text) {
+    std::ofstream out(state_dir / name, std::ios::binary);
+    out << text;
+  };
+  write(L"deck.pptx", "PK");
+  write(L"page1.html", "<html>1</html>");
+  write(L"deck-info.json",
+        R"({"slides":[{"index":1,"title":"Cover","name":"Slide1"}]})");
+  write(L"watcher.json", R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{ "slide": 1, "html": "page1.html", "label": "Cover" }]
+  })");
+  return {state_dir / L"watcher.json", state_dir / L"deck-info.json"};
+}
+
+std::vector<std::wstring> SupervisorArgs(
+    const std::filesystem::path& state_dir, const std::string& run_id,
+    const SupervisorInputs& inputs) {
+  return {L"--supervisor", L"--state-dir", state_dir.wstring(), L"--run-id",
+          std::wstring(run_id.begin(), run_id.end()), L"--config",
+          inputs.config.wstring(), L"--deck-info", inputs.deck_info.wstring()};
+}
+
+std::string ReadTextFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
 } // namespace
+
+HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  // Resolving the config needs the HTML the target points at; without it the
+  // supervisor must journal the failure and exit 1 instead of launching a
+  // worker that cannot work.
+  std::filesystem::remove(state_dir / L"page1.html");
+  const auto result = RunCli(SupervisorArgs(state_dir, RunId(), inputs), 10000);
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
+  HTMLPPT_CHECK(ReadTextFile(state_dir / L"journal.jsonl")
+                    .find("plan failed") != std::string::npos);
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"worker-plan.json"));
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
 
 HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
   JobHandle job;
   ProcessHandle supervisor;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(supervisor.LaunchSuspended(
-      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
-                  L"--run-id", std::wstring(run_id.begin(), run_id.end())},
-      job));
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
   HTMLPPT_CHECK(supervisor.Resume());
 
   HANDLE stop = WaitForStopEvent(
@@ -119,6 +177,15 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   }
   HTMLPPT_CHECK(saw_records);
 
+  // The supervisor writes the plan before it launches the worker, so a running
+  // worker implies the file and the journal record exist.
+  const auto plan_path = state_dir / L"worker-plan.json";
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(plan_path));
+  const std::string plan = ReadTextFile(plan_path);
+  HTMLPPT_CHECK(plan.find("\"runId\": \"" + run_id + "\"") != std::string::npos);
+  HTMLPPT_CHECK(ReadTextFile(state_dir / L"journal.jsonl")
+                    .find("worker plan written") != std::string::npos);
+
   SetEvent(stop);
   CloseHandle(stop);
   HTMLPPT_CHECK(supervisor.WaitForExit(10000));
@@ -131,14 +198,13 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
 
 HTMLPPT_TEST_CASE(win32_supervisor_restarts_crashed_worker) {
   const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
   JobHandle job;
   ProcessHandle supervisor;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(supervisor.LaunchSuspended(
-      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
-                  L"--run-id", std::wstring(run_id.begin(), run_id.end())},
-      job));
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
   HTMLPPT_CHECK(supervisor.Resume());
   HANDLE stop = WaitForStopEvent(
       htmlppt::SupervisorStopEventName(run_id), 5000);
@@ -167,24 +233,21 @@ HTMLPPT_TEST_CASE(win32_supervisor_restarts_crashed_worker) {
 
 HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
   const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string first_id = RunId();
   const std::string second_id = RunId() + "-second";
   JobHandle job;
   ProcessHandle supervisor;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(supervisor.LaunchSuspended(
-      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
-                  L"--run-id", std::wstring(first_id.begin(), first_id.end())},
-      job));
+      ExePath(), SupervisorArgs(state_dir, first_id, inputs), job));
   HTMLPPT_CHECK(supervisor.Resume());
   HANDLE stop = WaitForStopEvent(
       htmlppt::SupervisorStopEventName(first_id), 5000);
   HTMLPPT_CHECK(stop != nullptr);
 
-  const auto duplicate = RunCli(
-      {L"--supervisor", L"--state-dir", state_dir.wstring(), L"--run-id",
-       std::wstring(second_id.begin(), second_id.end())},
-      5000);
+  const auto duplicate = RunCli(SupervisorArgs(state_dir, second_id, inputs),
+                                5000);
   HTMLPPT_CHECK(duplicate.completed);
   HTMLPPT_CHECK_EQ(duplicate.exit_code, DWORD{1});
 
@@ -197,14 +260,13 @@ HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
 
 HTMLPPT_TEST_CASE(win32_cli_stop) {
   const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
   JobHandle job;
   ProcessHandle supervisor;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(supervisor.LaunchSuspended(
-      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
-                  L"--run-id", std::wstring(run_id.begin(), run_id.end())},
-      job));
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
   HTMLPPT_CHECK(supervisor.Resume());
   HANDLE stop = WaitForStopEvent(
       htmlppt::SupervisorStopEventName(run_id), 5000);
@@ -226,14 +288,13 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
 
 HTMLPPT_TEST_CASE(win32_cli_status) {
   const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
   JobHandle job;
   ProcessHandle supervisor;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(supervisor.LaunchSuspended(
-      ExePath(), {L"--supervisor", L"--state-dir", state_dir.wstring(),
-                  L"--run-id", std::wstring(run_id.begin(), run_id.end())},
-      job));
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
   HTMLPPT_CHECK(supervisor.Resume());
   HANDLE stop = WaitForStopEvent(
       htmlppt::SupervisorStopEventName(run_id), 5000);

@@ -39,3 +39,17 @@ expect_result(validate_missing_html 1 "HTML file does not exist"
 expect_result(map_duplicate 1 "already mapped by target"
   --resolve --config "${FIXTURES}/watcher.json"
   --deck-info "${FIXTURES}/deck-info.json" --map 1=page2.html)
+
+# A supervisor without a config must be rejected by the CLI, never started: the
+# timeout keeps a regression that starts one from hanging the suite.
+execute_process(
+  COMMAND "${EXE}" --supervisor
+  TIMEOUT 10
+  ERROR_VARIABLE supervisor_err
+  RESULT_VARIABLE supervisor_rc)
+if (NOT supervisor_rc EQUAL 2)
+  message(FATAL_ERROR "--supervisor without --config: rc=${supervisor_rc}")
+endif()
+if (NOT supervisor_err MATCHES "config is required")
+  message(FATAL_ERROR "--supervisor without --config: ${supervisor_err}")
+endif()

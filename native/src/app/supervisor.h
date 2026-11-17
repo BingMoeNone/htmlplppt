@@ -5,11 +5,20 @@
 #include <string>
 #include <string_view>
 
+#include "core/config.h"
+
 namespace htmlppt {
 
+// Options for the host commands. Only the supervisor resolves the config: it
+// carries the path plus the same CLI overrides --validate/--resolve use, and
+// writes the resulting plan into the state directory for the worker.
+// --worker keeps its existing options in this task.
 struct SupervisorRunOptions {
   std::filesystem::path state_dir;
   std::string run_id;
+  std::filesystem::path config_path;
+  std::filesystem::path deck_info_path;
+  CliConfigOverrides overrides;
 };
 
 inline std::wstring SupervisorPipeName(std::string_view run_id) {
