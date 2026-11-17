@@ -35,6 +35,7 @@
 #include "platform/win32/edge_launcher_win32.h"
 #include "platform/win32/named_pipe.h"
 #include "platform/win32/process_job.h"
+#include "platform/win32/process_query.h"
 #include "platform/win32/shared_blackbox.h"
 #include "platform/win32/window_system_win32.h"
 #include "platform/win32/wps_host.h"
@@ -108,32 +109,21 @@ std::string FirstError(const std::vector<ConfigIssue>& issues) {
   }
   return "unknown error";
 }
-
-bool EqualsIgnoreCase(std::string_view left, std::string_view right) {
-  if (left.size() != right.size()) return false;
-  for (std::size_t i = 0; i < left.size(); ++i) {
-    const auto left_char = static_cast<unsigned char>(left[i]);
-    const auto right_char = static_cast<unsigned char>(right[i]);
-    if (std::tolower(left_char) != std::tolower(right_char)) return false;
-  }
-  return true;
-}
-
-// The WPS slideshow window class; the editor and its tool panes use other
-// classes, so only these windows belong to the presentation being driven.
-constexpr std::string_view kWpsSlideshowWindowClass = "SlideShowClass";
-
-// The WPS processes that own a slideshow window. Zero pids is a defect: focus
-// and return would have no WPS window to target, so the caller reports it.
-std::vector<std::uint32_t> CollectWpsPids(WindowSystem& windows) {
+// The WPS processes that can own a slideshow window. Zero pids is a defect:
+// focus and return would have no WPS window to target, so the caller reports it.
+//
+// Process identity is the reliable source: the slideshow window class differs
+// between builds (Office uses screenClass/SlideShowClass; WPS 12's show window
+// exposes neither, and its PP12FrameClass belongs to the editor frame), so a
+// class whitelist silently returns zero on WPS. SelectWpsShowWindow still scores
+// the windows of these pids, which keeps the editor out of the pick.
+std::vector<std::uint32_t> CollectWpsPids() {
   std::vector<std::uint32_t> pids;
-  for (const auto& window : windows.Enumerate()) {
-    if (window.pid == 0) continue;
-    if (!EqualsIgnoreCase(window.class_name, kWpsSlideshowWindowClass)) {
-      continue;
-    }
-    if (std::find(pids.begin(), pids.end(), window.pid) == pids.end()) {
-      pids.push_back(window.pid);
+  for (const wchar_t* name : {L"wpp.exe", L"kwpp.exe", L"wps.exe"}) {
+    for (const auto id : ProcessIdsByName(name)) {
+      if (std::find(pids.begin(), pids.end(), id) == pids.end()) {
+        pids.push_back(id);
+      }
     }
   }
   return pids;
@@ -796,7 +786,7 @@ int RunWorker(const SupervisorRunOptions& options) {
       started.show_detail = shown.detail;
       return;
     }
-    facts.wps_pids = CollectWpsPids(windows);
+    facts.wps_pids = CollectWpsPids();
     started.wps_pid_count = facts.wps_pids.size();
   };
 
