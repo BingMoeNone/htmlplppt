@@ -318,7 +318,14 @@ try {
   }
 
   $Supervisor.Dispose()
-  Write-Output "state: $stateLine"
+  # --status appends the state name in brackets; show it alone so the output is
+  # one readable line instead of the raw record.
+  $stateName = if ($stateLine -match '\[([A-Za-z]+)\]\s*$') {
+    $Matches[1]
+  } else {
+    "state $ExpectState"
+  }
+  Write-Output "state: $stateName"
   Write-Output "OK: run $RunId reached state $ExpectState and stopped cleanly"
   exit 0
 } catch {

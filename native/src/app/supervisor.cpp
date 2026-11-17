@@ -349,7 +349,8 @@ int RunStatus(std::string_view run_id,
     const auto& record = snapshot[i];
     std::cout << record.sequence << " " << record.timestamp_ms << " "
               << static_cast<int>(record.event) << " " << record.state
-              << " " << record.detail << "\n";
+              << " " << record.detail << " ["
+              << StateName(static_cast<State>(record.state)) << "]\n";
   }
   const auto journal_path = state_dir / "journal.jsonl";
   std::cout << "journal " << journal_path.string() << "\n";

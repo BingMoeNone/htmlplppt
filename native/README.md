@@ -213,7 +213,7 @@ The same EXE runs as supervisor and worker.
 - `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job. It resolves the config with the CLI overrides applied, writes `worker-plan.json` and the effective `worker-config.json` into the state dir, then launches the worker with that config; it expects heartbeats with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
 - `--worker --run-id <id>` reads the plan and the effective config, opens the deck in WPS, starts the slideshow, and runs the state machine loop, heartbeating the current state while the loop works. It exits on a Stop frame or after a clean state-machine exit; a supervisor loss is reported to the machine and the loop continues.
 - `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
-- `--status --run-id <id> --state-dir <dir>` prints the last black-box records and the journal path.
+- `--status --run-id <id> --state-dir <dir>` prints the last black-box records (each line ends with the state name, e.g. `[Monitoring]`) and the journal path.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
@@ -296,10 +296,10 @@ native\build\htmlppt-watchdog.exe --status --run-id demo --state-dir .\state
 native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir .\state
 ```
 
-`--status` prints the last black-box records and the journal path. `--stop`
-sets the stop event and returns after the supervisor has terminated the worker,
-flushed the journal, and closed its handles; the supervisor exits 0 after a
-clean stop. A config or deck that cannot be resolved fails before a worker is
+`--status` prints the last black-box records (state number and name) and the
+journal path. `--stop` sets the stop event and returns after the supervisor has
+terminated the worker, flushed the journal, and closed its handles; it exits 0
+after a clean stop. A config or deck that cannot be resolved fails before a worker is
 launched, journals the reason, and exits 1.
 
 WPS Presentation must be installed and the deck must be closed before a run:

@@ -497,18 +497,9 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
 }
 
 std::string ResolveTableToText(const ResolveResult& result) {
-  struct Row {
-    std::string ordinal;
-    std::string slide;
-    std::string label;
-    std::string html;
-    std::string stage;
-    std::string profile;
-    std::string state;
-  };
-  std::vector<Row> rows;
-  rows.push_back({"#", "SLIDE", "LABEL", "HTML", "STAGE", "EDGE-PROFILE",
-                  "STATE"});
+  std::vector<std::vector<std::string>> rows;
+  rows.push_back({"#", "SLIDE", "LABEL", "HTML", "STAGE", "ASSETS",
+                  "EDGE-PROFILE", "STATE"});
   for (const auto& target : result.targets) {
     rows.push_back(
         {std::to_string(target.ordinal),
@@ -517,30 +508,24 @@ std::string ResolveTableToText(const ResolveResult& result) {
          target.label.empty() ? "-" : target.label,
          target.html_path.empty() ? "-" : target.html_path,
          target.stage_name.empty() ? "-" : target.stage_name,
+         target.assets_mode.empty() ? "-" : target.assets_mode,
          target.edge_profile.empty() ? "-" : target.edge_profile,
          target.state == ResolveState::Disabled ? "disabled" : "resolved"});
   }
-  std::vector<std::size_t> widths(7, 0);
+  std::vector<std::size_t> widths(rows.front().size(), 0);
   for (const auto& row : rows) {
-    const std::array<std::string, 7> cells = {
-        row.ordinal, row.slide, row.label, row.html,
-        row.stage,   row.profile, row.state};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      widths[i] = std::max(widths[i], cells[i].size());
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      widths[i] = std::max(widths[i], row[i].size());
     }
   }
   std::ostringstream out;
   for (const auto& row : rows) {
-    const std::array<std::string, 7> cells = {
-        row.ordinal, row.slide, row.label, row.html,
-        row.stage,   row.profile, row.state};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      out << std::left << std::setw(static_cast<int>(widths[i])) << cells[i];
-      if (i + 1 != cells.size()) out << "  ";
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      out << std::left << std::setw(static_cast<int>(widths[i])) << row[i];
+      if (i + 1 != row.size()) out << "  ";
     }
     out << '\n';
   }
   return out.str();
 }
-
 } // namespace htmlppt
