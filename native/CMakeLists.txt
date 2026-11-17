@@ -7,6 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(HTMLPPT_BUILD_TESTS "Build unit tests" ON)
 option(HTMLPPT_WERROR "Treat warnings as errors" OFF)
+option(HTMLPPT_STATIC_CRT "Link the MSVC runtime statically" OFF)
+
+if (MSVC AND HTMLPPT_STATIC_CRT)
+  # Static CRT keeps the single-EXE distribution free of a VC redist dependency.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 function(htmlppt_enable_warnings target)
   if (MSVC)
@@ -27,6 +33,19 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/generated/core/version.h"
   @ONLY)
 
+if (WIN32)
+  # Version resource + PerMonitorV2 manifest embedded in the EXE (spec 10.3).
+  set(HTMLPPT_APP_MANIFEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.manifest")
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/version.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc"
+    @ONLY)
+  enable_language(RC)
+  list(APPEND HTMLPPT_WIN32_RESOURCES
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc")
+endif()
+
 file(GLOB HTMLPPT_CORE_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp")
 add_library(htmlppt_core STATIC ${HTMLPPT_CORE_SOURCES})
@@ -41,13 +60,14 @@ if (WIN32)
   file(GLOB HTMLPPT_WIN32_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win32/*.cpp")
   add_library(htmlppt_win32 STATIC ${HTMLPPT_WIN32_SOURCES})
+  target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX)
   target_link_libraries(htmlppt_win32 PUBLIC htmlppt_core dbghelp ole32
     oleaut32 shell32)
   htmlppt_enable_warnings(htmlppt_win32)
 endif()
 
 add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp
-  src/app/supervisor.cpp src/app/worker_session.cpp)
+  src/app/supervisor.cpp src/app/worker_session.cpp ${HTMLPPT_WIN32_RESOURCES})
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
 if (WIN32)
   target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_win32)

@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S native -B native/build -A x64
+          -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+      - name: Build
+        run: cmake --build native/build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir native/build -C Release --output-on-failure
+      - name: Static CRT configure
+        # The release shape must also configure with the static runtime.
+        run: >
+          cmake -S native -B native/build-static -A x64
+          -DHTMLPPT_BUILD_TESTS=OFF -DHTMLPPT_STATIC_CRT=ON
+      - name: Static CRT build
+        run: cmake --build native/build-static --config Release --parallel
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S native -B native/build
+          -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+      - name: Build
+        run: cmake --build native/build --parallel
+      - name: Test
+        run: ctest --test-dir native/build --output-on-failure
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Test
+        run: npm test
