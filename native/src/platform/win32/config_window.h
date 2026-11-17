@@ -49,6 +49,12 @@ using RemoveHandler =
 // open.
 bool ShouldCloseWindow(bool dirty, bool answer_save);
 
+// The status line after a successful edit: an empty reason means the handler's
+// refresh found nothing blocking, so the edit was applied; otherwise the reason
+// is the first blocking error and is reported verbatim. The edit handler is the
+// only writer, so an unchanged config never gets a blanket "applied".
+std::wstring EditStatusText(const std::wstring& reason);
+
 // Converts the detail pane's raw text into one model edit. The slide must parse
 // as a whole number (an empty field is an error); html and label are encoded
 // from UTF-16 to UTF-8. The assets mode and the enabled switch are not part of

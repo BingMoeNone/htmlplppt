@@ -854,6 +854,14 @@ HTMLPPT_TEST_CASE(win32_config_window_close_policy_prompts_only_when_dirty) {
   }
 }
 
+HTMLPPT_TEST_CASE(win32_edit_status_text_reports_the_blocking_reason) {
+  // A clean refresh means the edit was applied; a blocked refresh reports the
+  // first reason verbatim instead of a blanket "applied".
+  HTMLPPT_CHECK_EQ(htmlppt::EditStatusText(L""), std::wstring(L"applied"));
+  HTMLPPT_CHECK_EQ(htmlppt::EditStatusText(L"deck must not be empty"),
+                   std::wstring(L"deck must not be empty"));
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;

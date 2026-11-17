@@ -116,7 +116,7 @@ int RunConfigUi(const std::filesystem::path& config_path,
         // owner of the edit's status line: it reports "applied", or the first
         // blocking reason when the refresh left Save closed.
         const std::wstring reason = refresh();
-        window.SetStatus(reason.empty() ? L"applied" : reason);
+        window.SetStatus(EditStatusText(reason));
         return true;
       });
 

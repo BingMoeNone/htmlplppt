@@ -80,6 +80,10 @@ bool ShouldCloseWindow(bool dirty, bool answer_save) {
   return !dirty || answer_save;
 }
 
+std::wstring EditStatusText(const std::wstring& reason) {
+  return reason.empty() ? L"applied" : reason;
+}
+
 bool ParseTargetEditFields(const std::wstring& slide_text,
                            const std::wstring& html,
                            const std::wstring& label, TargetEdit* edit,
