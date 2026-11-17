@@ -49,9 +49,10 @@ int ScoreWpsWindow(const WindowInfo& window, ScreenMetrics screen) {
   if (screen.width > 0 && screen.height > 0) {
     const int min_width = static_cast<int>(screen.width * 0.9);
     const int min_height = static_cast<int>(screen.height * 0.9);
-    if (window.rect.width() >= min_width && window.rect.height() >= min_height) {
-      score += 1;
+    if (window.rect.width() < min_width || window.rect.height() < min_height) {
+      return 0;
     }
+    score += 1;
   }
   return score;
 }

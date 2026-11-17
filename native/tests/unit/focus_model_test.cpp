@@ -96,3 +96,12 @@ HTMLPPT_TEST_CASE(focus_accepts_exactly_four_points) {
   HTMLPPT_CHECK(selected.has_value());
   HTMLPPT_CHECK_EQ(*selected, htmlppt::WindowId{1});
 }
+
+HTMLPPT_TEST_CASE(focus_rejects_wps_window_below_fullscreen_gate) {
+  const ScreenMetrics screen{1920, 1080};
+  std::vector<WindowInfo> windows{
+      MakeWindow(1, 300, "screenClass", WpsShowTitle(), 1700, 1080, true,
+                 false, false),
+  };
+  HTMLPPT_CHECK(!SelectWpsShowWindow(windows, {300}, screen).has_value());
+}
