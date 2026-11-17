@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -32,6 +33,13 @@ struct ResolvedTarget {
   std::string fragment;   // merged fragment without the leading '#'
   std::string stage_name;
   std::string edge_profile;
+  // Asset staging mode from the config: "direct" opens the source HTML in
+  // place, "file" copies just the HTML, and "tree" copies the HTML plus its
+  // asset root. assets_root is an absolute UTF-8 path, tree mode only.
+  std::string assets_mode = "direct";
+  std::string assets_root;
+  // 0 means no cap. From assets.maxBytes.
+  std::int64_t assets_max_bytes = 0;
 };
 
 struct ResolveResult {

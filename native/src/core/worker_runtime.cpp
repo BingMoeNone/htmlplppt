@@ -6,6 +6,8 @@
 
 #include "core/edge_spec.h"
 #include "core/focus_model.h"
+#include "core/staging.h"
+#include "core/utf8_path.h"
 
 namespace htmlppt {
 namespace {
@@ -314,8 +316,26 @@ void WorkerRuntime::LaunchEdge(int slide) {
                             std::to_string(slide));
     return;
   }
+  ResolvedTarget launch_target = *target;
+  // Staging copies the page (and, in tree mode, its assets) into the run's
+  // temp directory so Edge opens a predictable ASCII name instead of the
+  // source path. Failure here is reported like a launch failure: the machine's
+  // retry policy owns the next attempt.
+  if (launch_target.assets_mode != "direct") {
+    const StageOutcome staged =
+        StageTargetHtml(launch_target, host_.temp_dir / "stage",
+                        launch_target.assets_max_bytes);
+    if (!staged.staged) {
+      ReportEdgeLaunchFailure("staging failed: " + staged.error);
+      return;
+    }
+    launch_target.html_path = Utf8Path(staged.html_path);
+    AppendJournal("staged " + launch_target.stage_name + " (" +
+                  std::to_string(staged.copied_bytes) + " bytes)");
+  }
   const EdgeLaunchSpec spec =
-      MakeEdgeLaunchSpec(host_.edge_exe, host_.temp_dir, *target, host_.edge);
+      MakeEdgeLaunchSpec(host_.edge_exe, host_.temp_dir, launch_target,
+                         host_.edge);
   if (!edge_.Launch(spec)) {
     // No pid to observe: the machine's retry policy owns the next attempt.
     edge_pid_ = 0;

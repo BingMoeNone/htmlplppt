@@ -1,6 +1,8 @@
 #include "test_main.h"
 
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -452,4 +454,43 @@ HTMLPPT_TEST_CASE(worker_runtime_edge_live_timeout_removes_cover_and_resumes) {
   HTMLPPT_CHECK_EQ(h.overlay.hide_calls, 0); // fade out, not a failure hide
   HTMLPPT_CHECK_EQ(h.presentation.resume_slides.size(), 1u);
   HTMLPPT_CHECK(h.presentation.resume_slides.back() == 1);
+}
+
+// Edge must open the staged copy when the target asks for staging, so a deck
+// folder can be handed over with only the source assets.
+HTMLPPT_TEST_CASE(worker_runtime_stages_html_for_a_file_mode_target) {
+  WorkerHarness h;
+  const auto root =
+      std::filesystem::temp_directory_path() / "htmlppt-runtime-stage";
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root, error);
+  const auto source = root / "source.html";
+  {
+    std::ofstream out(source, std::ios::binary);
+    out << "<html>live</html>";
+  }
+
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};
+  auto resolved = MakeResolvedTarget(1, 1, "t1", "p1");
+  resolved.html_path = source.string();
+  resolved.stage_name = "page1.html";
+  resolved.assets_mode = "file";
+  h.plan.targets = {resolved};
+  h.host.temp_dir = root / "work";
+  h.config.startup_ignore = Duration{0};
+  h.rebuild();
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();
+  h.presentation.show.slide = 2;
+  h.runtime.Step();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();  // CoverHold -> LaunchEdge with the staged path
+
+  HTMLPPT_CHECK_EQ(h.launcher.launch_count, 1);
+  const auto staged = root / "work" / "stage" / "page1.html";
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(staged));
+  HTMLPPT_CHECK(h.launcher.last_spec.url.find("page1.html") != std::string::npos);
+  std::filesystem::remove_all(root, error);
 }

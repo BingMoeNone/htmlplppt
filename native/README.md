@@ -310,6 +310,22 @@ owns. `stop-live.vbs`-style tooling and the troubleshooting steps in
 that is killed leaves the lock behind, which is exactly the stale-lock case the
 legacy watcher already handles.
 
+### Asset staging
+
+`targets[].assets.mode` decides what Edge opens:
+
+- `direct` (default): the resolved source HTML path.
+- `file`: the HTML is copied to `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and
+  Edge opens that copy.
+- `tree`: the same, plus the whole `assets.root` tree (default: the HTML's
+  folder), preserving relative paths, capped by `assets.maxBytes` (0 = no cap).
+
+Staging runs when the cover is fading in. A missing source or an over-cap tree
+fails the trigger -- it is journalled and the retry policy owns the next attempt
+-- instead of opening a broken page. Destination names come from `stageName`, so
+a CJK source filename still produces a predictable URL, and the stage directory
+is removed with the run's temp directory.
+
 ### Live page contract
 
 `templates/live-page.html` is the reference page. The watchdog watches the Edge

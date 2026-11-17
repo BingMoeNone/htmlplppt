@@ -323,7 +323,8 @@ bool ResolveAssets(const TargetConfig& target,
                    const std::filesystem::path& base_dir,
                    const std::filesystem::path& html_path, std::size_t index,
                    bool allow_outside_folder,
-                   std::vector<ConfigIssue>& issues) {
+                   std::vector<ConfigIssue>& issues,
+                   std::string* resolved_root) {
   if (target.assets.mode != "tree") return true;
   const std::string target_path = "targets[" + std::to_string(index) + "]";
   std::filesystem::path root = target.assets.root.empty()
@@ -343,6 +344,7 @@ bool ResolveAssets(const TargetConfig& target,
              "asset root does not exist: " + Utf8Path(root));
     return false;
   }
+  if (resolved_root != nullptr) *resolved_root = Utf8Path(root);
   return true;
 }
 
@@ -434,10 +436,15 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                      &resolved, result.issues)) {
       continue;
     }
+    std::string assets_root;
     if (!ResolveAssets(target, base_dir, PathFromUtf8(resolved.html_path), i,
-                       options.allow_outside_folder, result.issues)) {
+                       options.allow_outside_folder, result.issues,
+                       &assets_root)) {
       continue;
     }
+    resolved.assets_mode = target.assets.mode;
+    resolved.assets_root = std::move(assets_root);
+    resolved.assets_max_bytes = target.assets.max_bytes;
 
     const std::string stage = target.stage_name.empty()
                                   ? AutoStageName(ordinal, resolved.html_path)

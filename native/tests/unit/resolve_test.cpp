@@ -177,6 +177,12 @@ HTMLPPT_TEST_CASE(resolve_utf8_assets_root) {
   const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
   HTMLPPT_CHECK(!HasError(result));
   HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
+  // The staging policy travels with the resolved target so the worker can stage
+  // without re-reading the config.
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+  HTMLPPT_CHECK(result.targets[0].assets_root.find(" assets") !=
+                std::string::npos);
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_max_bytes, std::int64_t{0});
 }
 
 HTMLPPT_TEST_CASE(resolve_slide_out_of_range) {
