@@ -272,7 +272,8 @@ The script targets Windows PowerShell 5.1 and later, so a host without `pwsh`
 can run the same command through `powershell -File` instead.
 
 The script tears the supervisor down and prints the last 20 journal records
-when any step fails. Every wait is bounded by `-HoldSeconds` (default 20). A
+when any step fails. Each run step is bounded by `-HoldSeconds` (default 20);
+teardown after a failure adds a fixed ~25 s before the journal tail. A
 pass means the supervisor resolved the config, launched the worker, and the
 worker published a state record. The check opens a real slideshow, so run it
 only on a machine where that is acceptable; it is not part of `ctest`.

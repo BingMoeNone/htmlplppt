@@ -7,8 +7,9 @@
 #
 # This script starts the supervisor as a background process, waits for the
 # plan, polls --status once a second until the black box reports a worker
-# state, then runs --stop and requires the supervisor to exit 0. Every wait is
-# bounded by -HoldSeconds. On any failure the supervisor is torn down and the
+# state, then runs --stop and requires the supervisor to exit 0. Each run step
+# is bounded by -HoldSeconds; teardown after a failure adds a fixed ~25 s
+# before the journal tail. On any failure the supervisor is torn down and the
 # last 20 journal records are printed, so the operator sees why the run did not
 # reach the show.
 #
