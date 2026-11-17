@@ -62,6 +62,11 @@ HTMLPPT_TEST_CASE(win32_config_window_shows_the_target_rows) {
   ListView_GetItemText(window.list_view(), 1, 4, text, 128);
   HTMLPPT_CHECK(std::wstring(text).rfind(L"error", 0) == 0);
 
+  window.SetStatus(L"2 target(s)");
+  wchar_t status[64] = {};
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"2 target(s)"));
+
   window.Close();
   const DWORD deadline = GetTickCount() + 5000;
   while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
@@ -73,6 +78,8 @@ HTMLPPT_TEST_CASE(win32_config_window_shows_the_target_rows) {
     Sleep(10);
   }
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+  HTMLPPT_CHECK(window.list_view() == nullptr);
+  HTMLPPT_CHECK(window.status_view() == nullptr);
 }
 
 HTMLPPT_TEST_CASE(config_editor_opens_an_empty_model_for_a_missing_file) {
@@ -101,6 +108,45 @@ HTMLPPT_TEST_CASE(win32_config_window_keeps_non_ascii_text_intact) {
   HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"\u5c55\u793a"));
   ListView_GetItemText(window.list_view(), 0, 2, text, 128);
   HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"\u6f14\u793a/p.html"));
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+
+  SendMessageW(window.handle(), WM_SIZE, SIZE_RESTORED, MAKELPARAM(600, 400));
+
+  RECT list_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.list_view(), &list_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&list_rect), 2);
+  HTMLPPT_CHECK_EQ(list_rect.left, 0);
+  HTMLPPT_CHECK_EQ(list_rect.top, 0);
+  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600);
+  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top, 400 - 24);
+
+  RECT status_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.status_view(), &status_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&status_rect), 2);
+  HTMLPPT_CHECK_EQ(status_rect.left, 0);
+  HTMLPPT_CHECK_EQ(status_rect.top, 400 - 24);
+  HTMLPPT_CHECK_EQ(status_rect.right - status_rect.left, 600);
+  HTMLPPT_CHECK_EQ(status_rect.bottom - status_rect.top, 24);
 
   window.Close();
   const DWORD deadline = GetTickCount() + 5000;

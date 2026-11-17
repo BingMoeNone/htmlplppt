@@ -3,6 +3,8 @@
 #include <fstream>
 #include <utility>
 
+#include "core/utf8_path.h"
+
 namespace htmlppt {
 namespace {
 
@@ -105,6 +107,25 @@ std::vector<DisplayRow> ConfigEditorModel::DisplayRows(
     rows.push_back(std::move(row));
   }
   return rows;
+}
+
+std::string ConfigStatusText(const ConfigLoadResult& loaded,
+                             const std::vector<DisplayRow>& rows,
+                             const std::filesystem::path& config_path) {
+  if (!loaded.config.has_value()) {
+    std::string status = "cannot load " + Utf8Path(config_path);
+    if (!loaded.issues.empty()) {
+      status += ": " + loaded.issues.front().message;
+    }
+    return status;
+  }
+  std::string status = std::to_string(rows.size()) + " target(s)";
+  for (const auto& row : rows) {
+    if (row.state != "error") continue;
+    status += " - " + row.issue;
+    break;
+  }
+  return status;
 }
 
 bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,

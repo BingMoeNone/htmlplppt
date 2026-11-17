@@ -35,6 +35,7 @@ class ConfigWindow {
   bool Close();
   HWND handle() const { return handle_; }
   HWND list_view() const { return list_view_; }
+  HWND status_view() const { return status_view_; }
 
   // Repopulates the table; called with the model's DisplayRows.
   void SetRows(const std::vector<DisplayRow>& rows);
@@ -46,7 +47,7 @@ class ConfigWindow {
                                      LPARAM lparam);
   LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   void CreateChildren();
-  void Layout();
+  void Layout(int width, int height);
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;

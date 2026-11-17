@@ -90,4 +90,11 @@ class ConfigEditorModel {
   bool dirty_ = false;
 };
 
+// One-line status for the editor window. For a file that did not load it is
+// "cannot load <path>: <first issue message>"; otherwise it is the row count
+// ("<N> target(s)") plus " - <issue>" for the first row in the error state.
+std::string ConfigStatusText(const ConfigLoadResult& loaded,
+                             const std::vector<DisplayRow>& rows,
+                             const std::filesystem::path& config_path);
+
 } // namespace htmlppt

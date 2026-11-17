@@ -57,23 +57,7 @@ int RunConfigUi(const std::filesystem::path& config_path,
     return 1;
   }
   window.SetRows(rows);
-
-  std::wstring status;
-  if (!loaded.config.has_value()) {
-    status = L"cannot load " + config_path.wstring();
-    if (!loaded.issues.empty()) {
-      status += L": " + Widen(loaded.issues.front().message);
-    }
-  } else {
-    status = std::to_wstring(rows.size()) + L" target(s)";
-    for (const auto& row : rows) {
-      if (row.state == "error") {
-        status += L" - " + Widen(row.issue);
-        break;
-      }
-    }
-  }
-  window.SetStatus(status);
+  window.SetStatus(Widen(ConfigStatusText(loaded, rows, config_path)));
   return window.RunMessageLoop();
 }
 

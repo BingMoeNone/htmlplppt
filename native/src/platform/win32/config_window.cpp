@@ -66,7 +66,9 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
       nullptr, GetModuleHandleW(nullptr), this);
   if (handle_ == nullptr) return false;
   CreateChildren();
-  Layout();
+  RECT client{};
+  GetClientRect(handle_, &client);
+  Layout(client.right - client.left, client.bottom - client.top);
   if (options.show) {
     ShowWindow(handle_, SW_SHOW);
     UpdateWindow(handle_);
@@ -96,16 +98,15 @@ void ConfigWindow::CreateChildren() {
   }
 }
 
-void ConfigWindow::Layout() {
-  if (handle_ == nullptr || list_view_ == nullptr) return;
-  RECT client{};
-  GetClientRect(handle_, &client);
+void ConfigWindow::Layout(int width, int height) {
+  if (handle_ == nullptr || list_view_ == nullptr || status_view_ == nullptr) {
+    return;
+  }
   constexpr int kStatusHeight = 24;
-  const int height = client.bottom - client.top - kStatusHeight;
-  MoveWindow(list_view_, client.left, client.top, client.right - client.left,
-             height > 0 ? height : 0, TRUE);
-  MoveWindow(status_view_, client.left, client.bottom - kStatusHeight,
-             client.right - client.left, kStatusHeight, TRUE);
+  const int list_height = height - kStatusHeight;
+  MoveWindow(list_view_, 0, 0, width, list_height > 0 ? list_height : 0, TRUE);
+  MoveWindow(status_view_, 0, height - kStatusHeight, width, kStatusHeight,
+             TRUE);
 }
 
 void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
@@ -175,7 +176,7 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                                     LPARAM lparam) {
   switch (message) {
     case WM_SIZE:
-      Layout();
+      Layout(static_cast<int>(LOWORD(lparam)), static_cast<int>(HIWORD(lparam)));
       return 0;
     case WM_CLOSE:
       DestroyWindow(hwnd);

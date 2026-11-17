@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "core/config_editor.h"
 #include "core/deck_info.h"
@@ -247,4 +248,40 @@ HTMLPPT_TEST_CASE(config_editor_display_rows_keep_a_clean_config_clean) {
   HTMLPPT_CHECK(rows[0].issue.empty());
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_status_text_reports_the_missing_file_issue) {
+  htmlppt::ConfigLoadResult loaded;
+  loaded.issues.push_back(htmlppt::ConfigIssue{htmlppt::IssueSeverity::Error,
+                                               "deck", "deck is missing"});
+  const std::string text =
+      htmlppt::ConfigStatusText(loaded, {}, "watcher.json");
+  HTMLPPT_CHECK_EQ(text,
+                   std::string{"cannot load watcher.json: deck is missing"});
+}
+
+HTMLPPT_TEST_CASE(config_status_text_reports_the_first_error_row) {
+  htmlppt::ConfigLoadResult loaded;
+  loaded.config = Config{};
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].state = "resolved";
+  rows[1].state = "error";
+  rows[1].issue = "slide 1 is already mapped by target 0";
+  const std::string text =
+      htmlppt::ConfigStatusText(loaded, rows, "watcher.json");
+  HTMLPPT_CHECK_EQ(
+      text,
+      std::string{"2 target(s) - slide 1 is already mapped by target 0"});
+}
+
+HTMLPPT_TEST_CASE(config_status_text_is_clean_for_a_clean_config) {
+  htmlppt::ConfigLoadResult loaded;
+  loaded.config = Config{};
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].state = "resolved";
+  rows[1].state = "disabled";
+  const std::string text =
+      htmlppt::ConfigStatusText(loaded, rows, "watcher.json");
+  HTMLPPT_CHECK_EQ(text, std::string{"2 target(s)"});
+  HTMLPPT_CHECK(text.find(" - ") == std::string::npos);
 }
