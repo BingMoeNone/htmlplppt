@@ -356,10 +356,11 @@ legacy watcher already handles.
 
 `targets[].assets.mode` decides what Edge opens:
 
-- `direct` (default): the resolved source HTML path.- `file`: the HTML is copied to `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and
-  Edge opens that copy.
+- `file` (default): the HTML is copied to
+  `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and Edge opens that copy.
 - `tree`: the same, plus the whole `assets.root` tree (default: the HTML's
   folder), preserving relative paths, capped by `assets.maxBytes` (0 = no cap).
+- `direct`: Edge opens the resolved source path in place, with no copy.
 
 Staging runs when the cover is fading in. A missing source or an over-cap tree
 fails the trigger -- it is journalled and the retry policy owns the next attempt
