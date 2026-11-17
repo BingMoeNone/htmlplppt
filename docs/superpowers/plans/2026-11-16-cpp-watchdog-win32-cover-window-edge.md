@@ -2518,7 +2518,7 @@ acceptance, then run the final whole-branch review. Plan 5C (staging, Edge
 execution flow, compatibility flags/logs, stop entry) follows after 5B-2
 lands.
 
-## As-Built Amendments (2026-11-17)
+## As-Built Amendments (2026-11-17; plan dated 2026-11-16)
 
 Plan 5B-2 is complete on branch `worktree-plan-5b-2-win32-adapters`. Tasks 1-4
 were implemented and reviewed; Task 5 ran the full gates, the manual
@@ -2537,10 +2537,11 @@ Commits:
 - `20dfcdf` feat: add win32 layered cover overlay
 - `3dea235` fix: bound win32 cover overlay shutdown
 - `9172189` feat: add win32 edge launcher and process query
-- Task 5: the documentation commit that adds this section
-  (`docs: record Plan 5B-2 win32 adapters`). The commit hash cannot be
-  embedded in the content it hashes; it is the final commit on the branch and
-  is reported with the task.
+- Task 5: the documentation commits that add and correct this section
+  (`docs: record Plan 5B-2 win32 adapters`, `docs: fix Plan 5B-2 gate counts
+  and acceptance notes`). A commit hash cannot be embedded in the content it
+  hashes; they are the final commits on the branch and their hashes are
+  reported with the task.
 
 Gate counts observed on 2026-11-17:
 
@@ -2552,13 +2553,14 @@ Gate counts observed on 2026-11-17:
 
 Deviations:
 
-1. **Two pre-existing Windows-only `edge_spec_test.cpp` failures**: the
-   plan's Windows CTest 9/9 baseline was stale. Two journal cases are
-   excluded on Windows, but two `edge_spec_test.cpp` assertions compared
+1. **Two pre-existing Windows-only `edge_spec_test.cpp` failures**: the plan
+   assumed the existing Windows suite was green, but two existing
+   `edge_spec_test.cpp` assertions compared
    `std::filesystem::path::string()` against POSIX literals and failed on the
-   backslash separator. Commit `6ef3ed2` makes those assertions compare
-   `std::filesystem::path` and `Utf8Path` values instead. The fix is
-   test-only; no production code changed.
+   backslash separator; CTest 9/9 was unreachable until they were fixed.
+   Two journal cases are excluded on Windows. Commit `6ef3ed2` makes those
+   assertions compare `std::filesystem::path` and `Utf8Path` values instead.
+   The fix is test-only; no production code changed.
 
 2. **`IDC_ARROW` workaround**: Task 2's test window class and Task 3's
    overlay class use `LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))` instead
@@ -2588,9 +2590,15 @@ Deviations:
 Manual acceptance (Windows host, interactive desktop, Edge
 `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe` installed):
 
-1. Overlay flash: during the suite a visible topmost `HtmlpptCoverOverlay`
-   window at virtual-screen bounds `0,0,2560,1440` was observed; after the
-   suite no overlay window of that class remained.
+1. Overlay flash: during the suite the probe observed a
+   `HtmlpptCoverOverlay` window at virtual-screen bounds `0,0,2560,1440`
+   with `WS_POPUP` and `WS_VISIBLE` styles and extended styles
+   `WS_EX_LAYERED`, `WS_EX_TOPMOST`, `WS_EX_NOACTIVATE`,
+   `WS_EX_TOOLWINDOW`, and `WS_EX_TRANSPARENT`; it recorded the visible
+   state at t=578 ms and the hidden state at t=625 ms. After the suite no
+   overlay window of that class remained. The probe did not verify pixel
+   content or color, so the black fill and window appearance were not
+   visually verified.
 2. Real Edge: the environment-gated case ran with `HTMLPPT_MANUAL_EDGE=1`
    reaching the Windows executable and passed inside the full 54/54 suite. A
    new `msedge.exe` process created a visible foreground window at
@@ -2601,8 +2609,12 @@ Manual acceptance (Windows host, interactive desktop, Edge
 
 The observations were made with a temporary desktop probe executable outside
 the repository (`EnumWindows`, `GetForegroundWindow`, `IsWindowVisible`,
-`GetWindowRect`, and `NtQueryInformationProcess` command-line reads), not by
-human visual inspection; PowerShell and `cmd.exe` were unavailable in the
+`GetWindowRect`, `GetWindowLongPtr`, and `NtQueryInformationProcess`
+command-line reads), not by human visual inspection. `HTMLPPT_MANUAL_EDGE=1`
+was propagated to the Windows executable through `WSLENV`, and that
+propagation was verified with the probe before the gated case ran; the
+PowerShell snippet in `native/README.md` is an alternative invocation, not
+the method used here. PowerShell and `cmd.exe` were unavailable in the
 worktree-isolated session.
 
 Deferred items:

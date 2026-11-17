@@ -253,7 +253,8 @@ These units are platform-neutral and tested on Linux. Plan 5B-2 maps them onto
 Win32 layered windows, `EnumWindows`, foreground unlocking, and
 `CreateProcessW`/Job Objects.
 
-Linux gate for these units: 244/244 unit cases, CTest 8/8, `npm test` 3/3.
+Plan 5B-1 Linux gate (historical): 244/244 unit cases, CTest 8/8,
+`npm test` 3/3. The current Plan 5B-2 Linux gate is 247/247.
 The Windows gate (MSVC `/WX`, real `EnumWindows`, layered window, Edge) is
 part of Plan 5B-2.
 
