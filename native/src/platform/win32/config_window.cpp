@@ -4,7 +4,12 @@
 
 #include <commctrl.h>
 
+#include <charconv>
+#include <optional>
+#include <system_error>
 #include <utility>
+
+#include "platform/win32/utf8_win32.h"
 
 namespace htmlppt {
 namespace {
@@ -13,6 +18,9 @@ constexpr wchar_t kWindowClass[] = L"HtmlpptConfigWindow";
 
 // Stable id so the Apply button's BN_CLICKED can be routed in WM_COMMAND.
 constexpr int kApplyButtonId = 1001;
+
+// The assets combo's first entry: the target keeps inheriting the stage mode.
+constexpr wchar_t kInheritAssets[] = L"inherit";
 
 // Master-detail layout: the list fills the left column, the detail pane is a
 // fixed right-hand column, and the status line spans the bottom.
@@ -46,6 +54,70 @@ std::wstring TextOf(HWND control) {
 }
 
 } // namespace
+
+bool ParseTargetEditFields(const std::wstring& slide_text,
+                           const std::wstring& html,
+                           const std::wstring& label, TargetEdit* edit,
+                           std::wstring* error) {
+  const auto fail = [error](const wchar_t* message) {
+    if (error != nullptr) *error = message;
+    return false;
+  };
+  if (edit == nullptr) return fail(L"no edit to fill");
+  if (slide_text.empty()) return fail(L"slide must not be empty");
+
+  // std::from_chars has no wide overload. The slide field holds ASCII digits,
+  // so an exact narrowing keeps from_chars' "consume the whole field" check:
+  // anything non-digit, including surrounding spaces, fails below.
+  std::string ascii;
+  ascii.reserve(slide_text.size());
+  for (const wchar_t ch : slide_text) {
+    if (ch > 0x7F) return fail(L"slide must be a whole number");
+    ascii.push_back(static_cast<char>(ch));
+  }
+  int slide = 0;
+  const char* first = ascii.data();
+  const char* last = first + ascii.size();
+  const std::from_chars_result parsed = std::from_chars(first, last, slide);
+  if (parsed.ec != std::errc() || parsed.ptr != last) {
+    return fail(L"slide must be a whole number");
+  }
+
+  const std::optional<std::string> utf8_html = WideToUtf8(html);
+  if (!utf8_html.has_value()) return fail(L"html is not valid Unicode");
+  const std::optional<std::string> utf8_label = WideToUtf8(label);
+  if (!utf8_label.has_value()) return fail(L"label is not valid Unicode");
+
+  TargetEdit parsed_edit;
+  parsed_edit.slide = slide;
+  parsed_edit.html = *utf8_html;
+  parsed_edit.label = *utf8_label;
+  *edit = std::move(parsed_edit);
+  if (error != nullptr) error->clear();
+  return true;
+}
+
+bool TargetEditFromDetailFields(const DetailFields& fields, TargetEdit* edit,
+                                std::wstring* error) {
+  if (!ParseTargetEditFields(fields.slide, fields.html, fields.label, edit,
+                             error)) {
+    return false;
+  }
+  edit->enabled = fields.enabled;
+  if (fields.assets.empty() || fields.assets == kInheritAssets) {
+    // "inherit" leaves the target on the stage mode; ApplyEdit reads an empty
+    // mode as "keep the target's own assets block untouched".
+    edit->assets_mode.clear();
+    return true;
+  }
+  const std::optional<std::string> assets = WideToUtf8(fields.assets);
+  if (!assets.has_value()) {
+    if (error != nullptr) *error = L"assets mode is not valid Unicode";
+    return false;
+  }
+  edit->assets_mode = *assets;
+  return true;
+}
 
 ConfigWindow::~ConfigWindow() {
   if (handle_ != nullptr) {
@@ -145,7 +217,8 @@ void ConfigWindow::CreateChildren() {
       0, L"COMBOBOX", L"",
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0,
       0, 0, 0, handle_, nullptr, GetModuleHandleW(nullptr), nullptr);
-  const wchar_t* assets_modes[] = {L"inherit", L"direct", L"file", L"tree"};
+  const wchar_t* assets_modes[] = {kInheritAssets, L"direct", L"file",
+                                   L"tree"};
   for (const wchar_t* mode : assets_modes) {
     SendMessageW(detail_assets_combo_, CB_ADDSTRING, 0,
                  reinterpret_cast<LPARAM>(mode));
@@ -205,6 +278,7 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
     selected_row_ = -1;
     ClearDetail();
     UpdateDetailEnabled();
+    NotifySelection();
     return;
   }
   // Programmatic item mutation/selection must not bounce back as a user
@@ -251,6 +325,7 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
   }
   suppress_selection_notify_ = previous_suppress;
   UpdateDetailEnabled();
+  NotifySelection();
 }
 
 void ConfigWindow::SetStatus(const std::wstring& text) {
@@ -285,6 +360,7 @@ void ConfigWindow::SelectRow(int row) {
     ClearDetail();
   }
   UpdateDetailEnabled();
+  NotifySelection();
 }
 
 DetailFields ConfigWindow::detail_fields() const {
@@ -305,6 +381,20 @@ bool ConfigWindow::detail_enabled() const {
 
 void ConfigWindow::SetEditHandler(DetailEditHandler handler) {
   edit_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetSelectionHandler(std::function<void(int)> handler) {
+  selection_handler_ = std::move(handler);
+}
+
+void ConfigWindow::NotifySelection() {
+  if (!selection_handler_) return;
+  int model_index = -1;
+  if (selected_row_ >= 0 && selected_row_ < static_cast<int>(rows_.size())) {
+    model_index = static_cast<int>(
+        rows_[static_cast<std::size_t>(selected_row_)].index);
+  }
+  selection_handler_(model_index);
 }
 
 void ConfigWindow::ApplyDetail() {

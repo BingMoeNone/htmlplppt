@@ -189,6 +189,16 @@ std::vector<ConfigIssue> ConfigEditorModel::Validate(
   return resolved.issues;
 }
 
+bool ConfigEditorModel::HasBlockingError(const DeckInfo* deck,
+                                         ResolveOptions options) const {
+  // The displayed state is the UI's contract, so the gate reads the same rows
+  // the user sees instead of re-deriving the rule from the raw issues.
+  for (const auto& row : DisplayRows(deck, options)) {
+    if (row.state == "error") return true;
+  }
+  return false;
+}
+
 std::string ConfigEditorModel::ToJson() const { return ConfigToJson(config_); }
 
 bool ConfigEditorModel::Save(const std::filesystem::path& path,

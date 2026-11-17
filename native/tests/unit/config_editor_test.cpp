@@ -278,6 +278,32 @@ HTMLPPT_TEST_CASE(config_editor_display_rows_expose_enabled_and_explicit_assets)
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(config_editor_blocks_save_while_a_row_has_an_error) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto deck = MakeDeck();
+  std::string error;
+  HTMLPPT_CHECK(!model.HasBlockingError(&deck, htmlppt::ResolveOptions{}));
+  HTMLPPT_CHECK(model.AddTarget(1, "page2.html", &error));  // duplicate slide 1
+  HTMLPPT_CHECK(model.HasBlockingError(&deck, htmlppt::ResolveOptions{}));
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_does_not_block_on_a_clean_or_disabled_row) {
+  const auto dir = MakeDir();
+  Config config = MakeConfig(dir);
+  // A disabled target is a deliberate choice, not a validation error.
+  config.active.targets[0].enabled = false;
+  ConfigEditorModel model(config);
+  const auto deck = MakeDeck();
+  HTMLPPT_CHECK(!model.HasBlockingError(&deck, htmlppt::ResolveOptions{}));
+  const auto rows = model.DisplayRows(&deck, htmlppt::ResolveOptions{});
+  HTMLPPT_CHECK_EQ(rows[0].state, std::string{"disabled"});
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_status_text_reports_the_missing_file_issue) {
   htmlppt::ConfigLoadResult loaded;
   loaded.issues.push_back(htmlppt::ConfigIssue{htmlppt::IssueSeverity::Error,

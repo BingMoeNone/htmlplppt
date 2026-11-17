@@ -34,6 +34,22 @@ struct DetailFields {
 using DetailEditHandler =
     std::function<bool(const DetailFields& fields, std::wstring* error)>;
 
+// Converts the detail pane's raw text into one model edit. The slide must parse
+// as a whole number (an empty field is an error); html and label are encoded
+// from UTF-16 to UTF-8. The assets mode and the enabled switch are not part of
+// this conversion; TargetEditFromDetailFields adds them.
+bool ParseTargetEditFields(const std::wstring& slide_text,
+                           const std::wstring& html,
+                           const std::wstring& label, TargetEdit* edit,
+                           std::wstring* error);
+
+// One detail-pane snapshot -> one TargetEdit: the three text fields through
+// ParseTargetEditFields, plus the assets combo and the enabled switch. The
+// combo's "inherit" entry keeps the stage mode applying, which the edit
+// expresses as an empty assets_mode.
+bool TargetEditFromDetailFields(const DetailFields& fields, TargetEdit* edit,
+                                std::wstring* error);
+
 // The config editor's top-level window. The view is deliberately thin: it owns
 // the window and its controls, and all edits go through ConfigEditorModel.
 class ConfigWindow {
@@ -67,6 +83,12 @@ class ConfigWindow {
 
   // Task 3 installs the edit handler; the view itself never touches Config.
   void SetEditHandler(DetailEditHandler handler);
+  // Reports selection changes with the selected row's model index
+  // (DisplayRow::index), or -1 when nothing is selected. A refresh that clears
+  // a stale selection reports -1 as well, so the app never applies an edit to a
+  // target that no longer exists. The window is only a view: the handler must
+  // not assume it can keep the HWND alive past WM_DESTROY.
+  void SetSelectionHandler(std::function<void(int)> handler);
   // Forwards the pane fields to the installed handler, if any; the status line
   // shows "applied" or the handler's error text.
   void ApplyDetail();
@@ -82,6 +104,7 @@ class ConfigWindow {
   void FillDetail(const DisplayRow& row);
   void ClearDetail();
   void UpdateDetailEnabled();
+  void NotifySelection();
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;
@@ -103,6 +126,7 @@ class ConfigWindow {
   // Programmatic list selection must not bounce back through WM_NOTIFY.
   bool suppress_selection_notify_ = false;
   DetailEditHandler edit_handler_;
+  std::function<void(int)> selection_handler_;
 };
 
 } // namespace htmlppt

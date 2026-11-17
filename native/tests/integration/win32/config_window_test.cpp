@@ -348,6 +348,122 @@ HTMLPPT_TEST_CASE(win32_config_window_keeps_non_ascii_text_intact) {
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
+HTMLPPT_TEST_CASE(win32_parse_target_edit_fields_rejects_non_numeric_slide) {
+  htmlppt::TargetEdit edit;
+  std::wstring error;
+  HTMLPPT_CHECK(!htmlppt::ParseTargetEditFields(L"x", L"page1.html", L"", &edit,
+                                               &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(htmlppt::ParseTargetEditFields(L"7", L"page1.html", L"Live",
+                                               &edit, &error));
+  HTMLPPT_CHECK_EQ(edit.slide, 7);
+  HTMLPPT_CHECK_EQ(edit.label, std::string{"Live"});
+  // CJK path survives wide -> UTF-8.
+  HTMLPPT_CHECK(htmlppt::ParseTargetEditFields(
+      L"1", L"\u6f14\u793a/p.html", L"", &edit, &error));
+  HTMLPPT_CHECK_EQ(edit.html, std::string{"\xE6\xBC\x94\xE7\xA4\xBA/p.html"});
+}
+
+HTMLPPT_TEST_CASE(win32_parse_target_edit_fields_rejects_a_partial_number) {
+  htmlppt::TargetEdit edit;
+  std::wstring error;
+  // An empty slide field is a parse error, not a silent default.
+  HTMLPPT_CHECK(!htmlppt::ParseTargetEditFields(L"", L"page1.html", L"", &edit,
+                                               &error));
+  HTMLPPT_CHECK(!error.empty());
+  // from_chars must consume the whole field, not just its leading digits.
+  HTMLPPT_CHECK(!htmlppt::ParseTargetEditFields(L"7x", L"page1.html", L"", &edit,
+                                               &error));
+  HTMLPPT_CHECK(!htmlppt::ParseTargetEditFields(L" 7", L"page1.html", L"", &edit,
+                                               &error));
+  // A successful parse clears the stale error text.
+  HTMLPPT_CHECK(htmlppt::ParseTargetEditFields(L"3", L"page1.html", L"", &edit,
+                                               &error));
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(edit.slide, 3);
+}
+
+HTMLPPT_TEST_CASE(win32_target_edit_from_detail_fields_maps_the_switch_and_mode) {
+  htmlppt::DetailFields fields;
+  fields.slide = L"3";
+  fields.html = L"page.html";
+  fields.label = L"Live";
+  fields.assets = L"tree";
+  fields.enabled = false;
+  htmlppt::TargetEdit edit;
+  std::wstring error;
+  HTMLPPT_CHECK(htmlppt::TargetEditFromDetailFields(fields, &edit, &error));
+  HTMLPPT_CHECK_EQ(edit.slide, 3);
+  HTMLPPT_CHECK_EQ(edit.html, std::string{"page.html"});
+  HTMLPPT_CHECK_EQ(edit.label, std::string{"Live"});
+  HTMLPPT_CHECK_EQ(edit.assets_mode, std::string{"tree"});
+  HTMLPPT_CHECK(!edit.enabled);
+
+  // "inherit" means the target keeps the stage mode, so no explicit block is
+  // written: the edit carries an empty assets_mode.
+  fields.assets = L"inherit";
+  HTMLPPT_CHECK(htmlppt::TargetEditFromDetailFields(fields, &edit, &error));
+  HTMLPPT_CHECK(edit.assets_mode.empty());
+
+  // A bad slide surfaces the parser's message instead of a half-filled edit.
+  fields.slide = L"x";
+  HTMLPPT_CHECK(!htmlppt::TargetEditFromDetailFields(fields, &edit, &error));
+  HTMLPPT_CHECK(!error.empty());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_reports_the_selected_model_index) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
+  rows[0].state = "resolved";
+  rows[1].index = 7; rows[1].slide = 5; rows[1].html = "two.html";
+  rows[1].state = "resolved";
+  window.SetRows(rows);
+
+  std::vector<int> reported;
+  window.SetSelectionHandler(
+      [&reported](int index) { reported.push_back(index); });
+  // A list selection notification (the same one a click produces) reports the
+  // row's model index, not its position in the list.
+  ListView_SetItemState(window.list_view(), 1, LVIS_SELECTED | LVIS_FOCUSED,
+                        LVIS_SELECTED | LVIS_FOCUSED);
+  HTMLPPT_CHECK(!reported.empty());
+  HTMLPPT_CHECK_EQ(reported.back(), 7);
+
+  // Clearing the selection reports that there is nothing to apply.
+  window.SelectRow(-1);
+  HTMLPPT_CHECK_EQ(reported.back(), -1);
+
+  // A refresh that drops the selected row must report the cleared selection,
+  // so the app cannot keep applying edits to a vanished target.
+  ListView_SetItemState(window.list_view(), 0, LVIS_SELECTED, LVIS_SELECTED);
+  HTMLPPT_CHECK_EQ(reported.back(), 0);
+  window.SetRows(std::vector<htmlppt::DisplayRow>{});
+  HTMLPPT_CHECK_EQ(reported.back(), -1);
+
+  // Removing the handler stops the callbacks instead of crashing on a click.
+  std::size_t calls = reported.size();
+  window.SetSelectionHandler(nullptr);
+  window.SetRows(rows);
+  window.SelectRow(0);
+  HTMLPPT_CHECK_EQ(reported.size(), calls);
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;

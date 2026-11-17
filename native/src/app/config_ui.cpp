@@ -1,6 +1,7 @@
 #include "app/config_ui.h"
 
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "core/config.h"
 #include "core/config_editor.h"
 #include "core/deck_info.h"
+#include "core/resolve.h"
 #include "platform/win32/config_window.h"
 
 namespace htmlppt {
@@ -46,8 +48,12 @@ int RunConfigUi(const std::filesystem::path& config_path,
                              ? ResolveDeckPath(*loaded.config)
                              : std::filesystem::path{});
   }
-  const std::vector<DisplayRow> rows = model.DisplayRows(
-      deck.info.has_value() ? &*deck.info : nullptr, ResolveOptions{});
+  const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
+  const std::vector<DisplayRow> rows =
+      model.DisplayRows(deck_info, ResolveOptions{});
+
+  // Declared before the window so it outlives the handlers stored in it.
+  std::optional<std::size_t> selected_index;
 
   ConfigWindow window;
   ConfigWindowOptions options;
@@ -56,6 +62,42 @@ int RunConfigUi(const std::filesystem::path& config_path,
     std::cerr << "error: cannot create the config window\n";
     return 1;
   }
+
+  // The view reports the selected row's model index, never its own row
+  // position; the edit handler applies to exactly that target.
+  window.SetSelectionHandler([&selected_index](int model_index) {
+    if (model_index < 0) {
+      selected_index.reset();
+    } else {
+      selected_index = static_cast<std::size_t>(model_index);
+    }
+  });
+
+  window.SetEditHandler(
+      [&window, &model, &selected_index,
+       deck_info](const DetailFields& fields, std::wstring* error) {
+        TargetEdit edit;
+        std::wstring parse_error;
+        if (!TargetEditFromDetailFields(fields, &edit, &parse_error)) {
+          if (error != nullptr) *error = parse_error;
+          return false;
+        }
+        if (!selected_index.has_value()) {
+          if (error != nullptr) *error = L"no row selected";
+          return false;
+        }
+        std::string model_error;
+        if (!model.ApplyEdit(*selected_index, edit, &model_error)) {
+          if (error != nullptr) *error = Widen(model_error);
+          return false;
+        }
+        // The view never writes Config: after a successful edit, recompute the
+        // rows here and hand the fresh snapshot to the window.
+        window.SetRows(model.DisplayRows(deck_info, ResolveOptions{}));
+        window.SetStatus(L"applied");
+        return true;
+      });
+
   window.SetRows(rows);
   window.SetStatus(Widen(ConfigStatusText(loaded, rows, config_path)));
   return window.RunMessageLoop();
