@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -24,6 +25,7 @@
 #include "core/config.h"
 #include "core/config_issue.h"
 #include "core/deck_info.h"
+#include "core/faults.h"
 #include "core/journal.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
@@ -835,6 +837,19 @@ int RunWorker(const SupervisorRunOptions& options) {
   WorkerHostGuard host_guard(wps, overlay);
 
   WorkerHostFacts facts;
+  // Spec 6.6 fault injection. The worker is launched by the supervisor, so the
+  // switch travels through the environment; an injected run must be obvious in
+  // the logs, never silent.
+  if (const char* faults_env = std::getenv("HTMLPPT_FAULTS");
+      faults_env != nullptr) {
+    facts.faults = ParseFaults(faults_env);
+  }
+  if (HasAnyFault(facts.faults)) {
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0,
+                           "faults: " + FaultsToString(facts.faults));
+    std::cerr << "warning: fault injection active: "
+              << FaultsToString(facts.faults) << "\n";
+  }
   // Edge's --user-data-dir is a complete browser profile (~15 MB per run), so
   // it lives in the system temp area, not in the state directory, and the guard
   // removes it when this worker exits.

@@ -16,6 +16,7 @@ using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
 using htmlppt::WindowInfo;
+using htmlppt::WindowRect;
 using htmlppt::WorkerHostConfig;
 using htmlppt::test::HLiveAtSlide1;
 using htmlppt::test::HTriggeredAtSlide1;
@@ -568,4 +569,44 @@ HTMLPPT_TEST_CASE(worker_runtime_safe_mode_restores_the_operator_view) {
   HTMLPPT_CHECK_EQ(h.presentation.exit_show_calls, 1);
   HTMLPPT_CHECK(!h.windows.activate_calls.empty());
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "safe mode"));
+}
+// Spec 6.6: edge-slow models a cold start whose window appears late. Readiness
+// must be held back, and the machine's own deadline must stay in charge.
+HTMLPPT_TEST_CASE(worker_runtime_edge_slow_fault_delays_readiness) {
+  WorkerHarness h;
+  h.host.faults.edge_slow = true;
+  h.config.startup_ignore = Duration{0};
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};
+  auto resolved = MakeResolvedTarget(1, 1, "t1", "p1");
+  resolved.html_path = "/tmp/page.html";
+  h.plan.targets = {resolved};
+  h.rebuild();
+
+  // The fake launcher hands out pid 500; a matching visible Edge window means
+  // readiness depends only on the injected delay, not on window discovery.
+  WindowInfo edge_window;
+  edge_window.id = 900;
+  edge_window.pid = 500;
+  edge_window.visible = true;
+  edge_window.rect = WindowRect{0, 0, 1920, 1080};
+  h.windows.windows = {edge_window};
+
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();
+  h.presentation.show.slide = 2;
+  h.runtime.Step();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();  // launches Edge, readiness held for 3 s
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
+
+  h.advance(Duration{1000});
+  h.runtime.Step();
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
+
+  h.advance(Duration{2500});
+  h.runtime.Step();  // past the injected window: EdgeReady -> ShowExit
+  h.presentation.show = MakeShowState(HostStatus::Ok, false, 2);
+  h.runtime.Step();  // ShowEnded -> Live
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
 }

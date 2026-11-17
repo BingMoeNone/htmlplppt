@@ -249,6 +249,21 @@ LRESULT Win32CoverOverlay::HandleMessage(State& state, HWND hwnd, UINT message,
       ResizeToVirtualScreen(hwnd);
       if (state.visible) ApplyTopMost(hwnd);
       return 0;
+    case WM_DPICHANGED:
+      // A DPI change is a display-topology change for the cover: re-cover the
+      // new virtual screen instead of leaving a black band or a stale size.
+      ResizeToVirtualScreen(hwnd);
+      if (state.visible) ApplyTopMost(hwnd);
+      return 0;
+    case WM_POWERBROADCAST:
+      // The loop's wait now pumps messages, so a resume reaches the overlay
+      // directly. QPC jumps across sleep, so re-assert the cover geometry and
+      // topmost instead of trusting the pre-sleep placement.
+      if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+        ResizeToVirtualScreen(hwnd);
+        if (state.visible) ApplyTopMost(hwnd);
+      }
+      return TRUE;
     case WM_CLOSE:
       return 0;
     default:

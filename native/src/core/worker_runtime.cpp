@@ -114,6 +114,17 @@ void WorkerRuntime::HandleSupervisorLost(std::string detail) {
 }
 
 void WorkerRuntime::ObserveShow() {
+  // Spec 6.6 fault injection: an operator can force the COM failure paths on a
+  // real machine without wedging WPS itself.
+  if (host_.faults.com_hang || host_.faults.com_462) {
+    last_com_failed_ = true;
+    const std::string detail =
+        host_.faults.com_462 ? "COM busy: 0x462 (injected)"
+                             : "COM hang (injected)";
+    Handle(MakeFailure(ports_.clock.now(), FailureKind::Transient,
+                       FailureSource::Com, detail));
+    return;
+  }
   const ShowState show = ports_.presentation.QueryShow();
   const ClockPoint now = ports_.clock.now();
   if (show.status == HostStatus::Busy ||
@@ -145,6 +156,9 @@ void WorkerRuntime::ObserveShow() {
 }
 
 void WorkerRuntime::ObserveCover() {
+  // Spec 6.6: cover-hang models an overlay that never reports its hold, which
+  // is what the state machine's cover deadline must survive.
+  if (host_.faults.cover_hang) return;
   const CoverTick tick = cover_.Tick();
   const ClockPoint now = ports_.clock.now();
   if (tick.hold_reached && !last_cover_hold_) {
@@ -167,6 +181,7 @@ void WorkerRuntime::ObserveEdge() {
     edge_pid_ = 0;
     ready_sent_ = false;
     return_sent_ = false;
+    edge_ready_not_before_.reset();
     Handle(MakeEdgeClosed(now));
     return;
   }
@@ -187,6 +202,13 @@ void WorkerRuntime::ObserveEdge() {
     }
   }
   if (ready_sent_) return;
+  // Spec 6.6: focus-deny models an activation that always fails, and edge-slow
+  // models a cold start whose window appears late; both must be survived by the
+  // machine's EdgeStarting deadline, so neither blocks here.
+  if (host_.faults.focus_deny) return;
+  if (edge_ready_not_before_.has_value() && now < *edge_ready_not_before_) {
+    return;
+  }
   // One non-blocking attempt per step: the runtime must keep the poll cadence,
   // so waiting for the Edge window stays the state machine's deadline, not a
   // blocking focus loop.
@@ -270,6 +292,7 @@ void WorkerRuntime::Execute(const Action& action) {
       edge_pid_ = 0;
       ready_sent_ = false;
       return_sent_ = false;
+      edge_ready_not_before_.reset();
       break;
     case ActionKind::ExitShow: {
       const HostResult result = ports_.presentation.ExitShow();
@@ -294,12 +317,14 @@ void WorkerRuntime::Execute(const Action& action) {
       break;
     }
     case ActionKind::FocusEdge:
-      if (edge_pid_ != 0) focus_.TryFocusEdge(edge_.pid());
+      if (!host_.faults.focus_deny && edge_pid_ != 0) {
+        focus_.TryFocusEdge(edge_.pid());
+      }
       break;
     case ActionKind::FocusWps:
       // An empty pid list can never match a WPS window, so calling the
       // controller would only burn its full focus timeout.
-      if (!host_.wps_pids.empty()) {
+      if (!host_.faults.focus_deny && !host_.wps_pids.empty()) {
         focus_.FocusWps(host_.wps_pids, host_.screen);
       }
       break;
@@ -360,12 +385,19 @@ void WorkerRuntime::LaunchEdge(int slide) {
     edge_pid_ = 0;
     ready_sent_ = false;
     return_sent_ = false;
+    edge_ready_not_before_.reset();
     ReportEdgeLaunchFailure("edge launch failed");
     return;
   }
   edge_pid_ = edge_.pid();
   ready_sent_ = false;
   return_sent_ = false;
+  edge_ready_not_before_.reset();
+  if (host_.faults.edge_slow) {
+    // Spec 6.6: hold readiness back for a cold-start window; the machine's
+    // EdgeStarting deadline still owns the bound, so a real wedge is unaffected.
+    edge_ready_not_before_ = ports_.clock.now() + Duration{3000};
+  }
 }
 
 void WorkerRuntime::ReportEdgeLaunchFailure(std::string detail) {

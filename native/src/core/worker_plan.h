@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/faults.h"
 #include "core/resolve.h"
 #include "core/state_machine_types.h"
 #include "core/window_system.h"
@@ -29,6 +30,8 @@ struct WorkerHostFacts {
   std::filesystem::path edge_exe;
   ScreenMetrics screen;
   std::vector<std::uint32_t> wps_pids;
+  // Fault injection (spec 6.6); all off unless the operator asks for them.
+  Faults faults;
 };
 
 struct WorkerHostConfig;  // defined in core/worker_runtime.h

@@ -379,6 +379,7 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
   host.focus.timeout = machine.focus_timeout;
   host.screen = facts.screen;
   host.wps_pids = facts.wps_pids;
+  host.faults = facts.faults;
   return host;
 }
 

@@ -11,6 +11,7 @@
 #include "core/cover_controller.h"
 #include "core/cover_timeline.h"
 #include "core/edge_controller.h"
+#include "core/faults.h"
 #include "core/focus_controller.h"
 #include "core/presentation_host.h"
 #include "core/state_machine.h"
@@ -38,6 +39,8 @@ struct WorkerHostConfig {
   FocusTiming focus;
   ScreenMetrics screen;
   std::vector<std::uint32_t> wps_pids;
+  // Spec 6.6 fault switches. Off in production; see core/faults.h.
+  Faults faults;
   // Minimum spacing between two return attempts after a return failure. The
   // page keeps its renamed title, so without this the Faulted retry would fire
   // on every poll and hammer a wedged WPS with COM calls.
@@ -111,6 +114,9 @@ class WorkerRuntime : public WorkerDriver {
   // return_retry_interval.
   bool ready_sent_ = false;
   bool return_sent_ = false;
+  // Set only by the edge-slow fault: readiness is not reported before this
+  // point, modelling a browser whose window appears late.
+  std::optional<ClockPoint> edge_ready_not_before_;
   // When the current Faulted retry window opened: after the bounded idle wait
   // of the Step that observed the fault. AllowReturnRetry() measures
   // return_retry_interval from this point.

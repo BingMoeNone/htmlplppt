@@ -44,3 +44,5 @@ native/build/
 !native/tests/fixtures/deck.pptx
 # Vendored python-pptx template: Presentation() fails without it
 !vendor/pptx/templates/default.pptx
+
+demo/diag/

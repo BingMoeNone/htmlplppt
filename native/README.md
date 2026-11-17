@@ -276,6 +276,32 @@ advise/unadvise lifetime handling. The probe stays in the tree so the decision
 can be revisited if the cadence is ever raised or WPS exposes a named event
 interface.
 
+### Fault injection
+
+`HTMLPPT_FAULTS` in the supervisor's environment enables the spec 6.6 switches,
+so the resilience paths can be exercised on a real machine without wedging WPS:
+
+| switch | effect |
+|---|---|
+| `com-hang` | every COM query fails, driving the 2 s error window towards SafeMode |
+| `com-462` | the same path with the classic WPS busy HRESULT |
+| `edge-slow` | Edge readiness is held back 3 s (cold start); the machine's EdgeStarting deadline still bounds it |
+| `cover-hang` | the cover never reports its hold, so the machine's cover deadline owns recovery |
+| `focus-deny` | activation always fails, so Edge never becomes ready |
+
+The worker journals `faults: <list>` into the black box and prints a warning, so
+an injected run is never silent:
+
+```powershell
+$env:HTMLPPT_FAULTS = 'edge-slow'
+native\build\htmlppt-watchdog.exe --supervisor --config demo\watcher.json --state-dir demo\state --run-id demo
+```
+
+The cover window also re-covers on `WM_DISPLAYCHANGE`, `WM_DPICHANGED` and
+`WM_POWERBROADCAST` resume: the loop's wait pumps messages, so a topology change
+or resume reaches the overlay immediately instead of waiting for the next COM
+call.
+
 ### Threading model
 
 The worker is a single STA thread that owns the COM objects, the cover window,
