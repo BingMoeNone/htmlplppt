@@ -36,6 +36,7 @@ enum class Command {
   Worker,
   Stop,
   Status,
+  Diagnostics,
   DumpHelper,
 };
 
@@ -47,6 +48,7 @@ struct CliOptions {
   std::string run_id;
   std::uint32_t dump_pid = 0;
   std::string dump_path;
+  std::string diagnostics_out;
   CliConfigOverrides overrides;
 };
 
@@ -70,6 +72,7 @@ void PrintUsage(std::ostream& out) {
       << "  --worker               run the worker host (Windows only)\n"
       << "  --stop                 stop a running supervisor (Windows only)\n"
       << "  --status               print the run black box (Windows only)\n"
+      << "  --diagnostics          write a diagnostics package (needs --out PATH)\n"
       << "  --dump-helper PID PATH write a MiniDump for a process (Windows "
          "only)\n"
       << "\n"
@@ -202,6 +205,11 @@ ParseResult ParseCli(int argc, char** argv) {
         result.ok = false;
         return result;
       }
+    } else if (argument == "--diagnostics") {
+      if (!SetCommand(&result.options, Command::Diagnostics, &result.error)) {
+        result.ok = false;
+        return result;
+      }
     } else if (argument == "--dump-helper") {
       if (!SetCommand(&result.options, Command::DumpHelper, &result.error)) {
         result.ok = false;
@@ -270,6 +278,12 @@ ParseResult ParseCli(int argc, char** argv) {
         return result;
       }
       result.options.overrides.state_dir = value;
+    } else if (argument == "--out") {
+      if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      result.options.diagnostics_out = value;
     } else if (argument == "--scheduling") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
         result.ok = false;
@@ -332,18 +346,20 @@ ParseResult ParseCli(int argc, char** argv) {
   }
   const bool host_command =
       command == Command::Supervisor || command == Command::Worker ||
-      command == Command::Stop || command == Command::Status;
+      command == Command::Stop || command == Command::Status ||
+      command == Command::Diagnostics;
   if (!result.options.run_id.empty() && !host_command) {
     result.ok = false;
     result.error =
-        "--run-id is only valid with --supervisor, --worker, --stop, or "
-        "--status";
+        "--run-id is only valid with --supervisor, --worker, --stop, "
+        "--status, or --diagnostics";
     return result;
   }
-  if ((command == Command::Stop || command == Command::Status) &&
+  if ((command == Command::Stop || command == Command::Status ||
+       command == Command::Diagnostics) &&
       result.options.run_id.empty()) {
     result.ok = false;
-    result.error = "--run-id is required for --stop or --status";
+    result.error = "--run-id is required for --stop, --status, or --diagnostics";
     return result;
   }
   if (command == Command::DumpHelper &&
@@ -515,6 +531,16 @@ int RunCli(int argc, char** argv) {
       return RunStop(parsed.options.run_id);
     case Command::Status:
       return RunStatus(parsed.options.run_id, state_dir);
+    case Command::Diagnostics: {
+      if (parsed.options.diagnostics_out.empty()) {
+        std::cerr << "error: --diagnostics requires --out PATH\n";
+        return 2;
+      }
+      const auto dir = state_dir.empty() ? std::filesystem::path{}
+                                         : std::filesystem::path(state_dir);
+      return RunDiagnostics(parsed.options.run_id, dir,
+                            std::filesystem::path(parsed.options.diagnostics_out));
+    }
     case Command::DumpHelper:
       return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
   }

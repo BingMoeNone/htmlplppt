@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -26,8 +27,10 @@
 #include "core/journal.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
+#include "core/state_machine.h"
 #include "core/supervisor.h"
 #include "core/utf8_path.h"
+#include "core/version.h"
 #include "core/worker_plan.h"
 #include "core/worker_runtime.h"
 #include "platform/win32/crash_dump.h"
@@ -331,18 +334,105 @@ int RunStop(std::string_view run_id) {
   }
 }
 
+int RunDiagnostics(std::string_view run_id,
+                   const std::filesystem::path& state_dir,
+                   const std::filesystem::path& out_dir) {
+  if (out_dir.empty()) {
+    std::cerr << "error: --diagnostics requires --out PATH\n";
+    return 2;
+  }
+  std::error_code error;
+  std::filesystem::create_directories(out_dir, error);
+  if (error) {
+    std::cerr << "error: cannot create " << Utf8Path(out_dir) << ": "
+              << error.message() << "\n";
+    return 1;
+  }
+
+  std::ostringstream manifest;
+  manifest << "htmlppt-watchdog diagnostics\n";
+  manifest << "version " << version() << "\n";
+  manifest << "run " << run_id << "\n";
+  manifest << "state_dir " << Utf8Path(state_dir) << "\n";
+  manifest << "collected_at " << UtcTimestamp() << "\n";
+
+  // Everything that explains a run is copied beside the manifest, so the
+  // package can be handed over without the state directory.
+  for (const char* name : {"journal.jsonl", "watch-log.txt", "worker-plan.json",
+                           "worker-config.json", "watcher.json"}) {
+    const auto source = state_dir / name;
+    std::error_code copy_error;
+    if (!std::filesystem::is_regular_file(source, copy_error)) continue;
+    std::filesystem::copy_file(source, out_dir / name,
+                               std::filesystem::copy_options::overwrite_existing,
+                               copy_error);
+    manifest << "file " << name << " " << (copy_error ? "failed" : "copied")
+             << "\n";
+  }
+
+  // The black box only exists while the supervisor owns the run.
+  if (auto blackbox = SharedBlackbox::Open(SupervisorBlackboxName(run_id));
+      blackbox != nullptr) {
+    const auto snapshot = blackbox->Snapshot();
+    std::ofstream out(out_dir / "blackbox.txt", std::ios::binary);
+    for (const auto& record : snapshot) {
+      out << record.sequence << " " << record.timestamp_ms << " "
+          << static_cast<int>(record.event) << " " << record.state << " "
+          << record.detail << " ["
+          << StateName(static_cast<State>(record.state)) << "]\n";
+    }
+    manifest << "blackbox records " << snapshot.size() << " appended "
+             << blackbox->appended() << " dropped " << blackbox->dropped()
+             << "\n";
+  } else {
+    manifest << "blackbox unavailable\n";
+  }
+
+  // Crash dumps the supervisor left next to the journal.
+  for (const auto& entry :
+       std::filesystem::directory_iterator(state_dir, error)) {
+    if (error) break;
+    if (!entry.is_regular_file()) continue;
+    if (entry.path().extension() != ".dmp") continue;
+    std::error_code copy_error;
+    std::filesystem::copy_file(entry.path(), out_dir / entry.path().filename(),
+                               std::filesystem::copy_options::overwrite_existing,
+                               copy_error);
+    manifest << "dump " << Utf8Path(entry.path().filename()) << " "
+             << (copy_error ? "failed" : "copied") << "\n";
+  }
+
+  std::ofstream manifest_file(out_dir / "manifest.txt", std::ios::binary);
+  manifest_file << manifest.str();
+  std::cout << "diagnostics " << Utf8Path(out_dir) << "\n";
+  return 0;
+}
+
 int RunStatus(std::string_view run_id,
-              const std::filesystem::path& state_dir) {
-  if (run_id.empty()) return 2;
+              const std::filesystem::path& state_dir) {  if (run_id.empty()) return 2;
   auto blackbox = SharedBlackbox::Open(SupervisorBlackboxName(run_id));
   if (blackbox == nullptr) {
     std::cout << "no blackbox for run " << run_id << "\n";
     return 1;
   }
   const auto snapshot = blackbox->Snapshot();
-  std::cout << "run " << run_id << " records " << snapshot.size()
-            << " appended " << blackbox->appended() << " dropped "
-            << blackbox->dropped() << "\n";
+  // Spec 11.2: --status reports the state, run id, PID and last event, so a
+  // stalled or failed run is diagnosable from one command.
+  std::uint32_t worker_pid = 0;
+  const char* state_name = "Unknown";
+  std::string last_event;
+  for (const auto& record : snapshot) {
+    if (record.pid != 0) worker_pid = record.pid;
+    state_name = StateName(static_cast<State>(record.state));
+    last_event = record.detail;
+  }
+  std::cout << "run " << run_id << " state " << state_name << " pid "
+            << worker_pid << " records " << snapshot.size() << " appended "
+            << blackbox->appended() << " dropped " << blackbox->dropped()
+            << "\n";
+  if (!last_event.empty()) {
+    std::cout << "last event " << last_event << "\n";
+  }
   std::size_t start = 0;
   if (snapshot.size() > 10) start = snapshot.size() - 10;
   for (std::size_t i = start; i < snapshot.size(); ++i) {
@@ -915,6 +1005,12 @@ int RunStop(std::string_view) {
 
 int RunStatus(std::string_view, const std::filesystem::path&) {
   std::cerr << "error: --status requires Windows\n";
+  return 2;
+}
+
+int RunDiagnostics(std::string_view, const std::filesystem::path&,
+                   const std::filesystem::path&) {
+  std::cerr << "error: --diagnostics requires Windows\n";
   return 2;
 }
 

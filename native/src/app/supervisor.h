@@ -41,6 +41,11 @@ int RunWorker(const SupervisorRunOptions& options);
 int RunStop(std::string_view run_id);
 int RunStatus(std::string_view run_id,
               const std::filesystem::path& state_dir);
+// Writes a self-contained diagnostics package for a run: manifest, journal,
+// legacy watch log, plan/config, black box snapshot and any crash dumps.
+int RunDiagnostics(std::string_view run_id,
+                   const std::filesystem::path& state_dir,
+                   const std::filesystem::path& out_dir);
 int RunDumpHelper(std::uint32_t pid, const std::filesystem::path& path);
 
 } // namespace htmlppt

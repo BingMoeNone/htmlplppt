@@ -581,3 +581,28 @@ HTMLPPT_TEST_CASE(worker_rejects_plan_with_foreign_run_id) {
 }
 
 #endif // _WIN32
+
+HTMLPPT_TEST_CASE(win32_diagnostics_package_collects_the_run_files) {
+  const auto state_dir = TempStateDir();
+  {
+    std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
+    journal << "{\"detail\":\"supervisor start\",\"event\":\"start\"}\n";
+    std::ofstream log(state_dir / L"watch-log.txt", std::ios::binary);
+    log << "2026-01-01T00:00:00Z native watchdog start run=diag\n";
+  }
+  const auto out = state_dir / L"diag";
+  HTMLPPT_CHECK_EQ(htmlppt::RunDiagnostics("diag-run", state_dir, out), 0);
+
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"manifest.txt"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"journal.jsonl"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"watch-log.txt"));
+  const std::string manifest = ReadTextFile(out / L"manifest.txt");
+  HTMLPPT_CHECK(manifest.find("run diag-run") != std::string::npos);
+  HTMLPPT_CHECK(manifest.find("file journal.jsonl copied") != std::string::npos);
+  // No supervisor is running for this id, so the package must say so instead of
+  // silently omitting the black box.
+  HTMLPPT_CHECK(manifest.find("blackbox unavailable") != std::string::npos);
+
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
