@@ -1,3 +1,5 @@
+> **Superseded:** the master-detail plan at `docs/superpowers/plans/2026-11-17-cpp-watchdog-config-ui-v2.md` replaces this one. Tasks 1-4 of this plan are already committed (see that plan's "Already completed" table).
+
 # Config UI Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
