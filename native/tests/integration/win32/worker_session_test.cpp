@@ -1,0 +1,218 @@
+#include "test_main.h"
+
+#ifdef _WIN32
+#include <windows.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "app/worker_session.h"
+#include "core/supervisor_protocol.h"
+#include "fake_worker_driver.h"
+#include "platform/win32/named_pipe.h"
+#include "platform/win32/shared_blackbox.h"
+
+using htmlppt::Duration;
+using htmlppt::Frame;
+using htmlppt::FrameType;
+using htmlppt::NamedPipeClient;
+using htmlppt::NamedPipeServer;
+using htmlppt::RunWorkerSession;
+using htmlppt::RunWithStartupHeartbeats;
+using htmlppt::SharedBlackbox;
+using htmlppt::WorkerSessionConfig;
+using htmlppt::test::FakeWorkerDriver;
+
+namespace {
+
+std::wstring UniqueName(const wchar_t* prefix) {
+  static std::atomic<std::uint32_t> counter{0};
+  return std::wstring(prefix) + std::to_wstring(GetCurrentProcessId()) + L"-" +
+         std::to_wstring(counter++);
+}
+
+std::wstring UniquePipeName() {
+  return L"\\\\.\\pipe\\" + UniqueName(L"htmlppt-session-pipe-");
+}
+
+std::wstring UniqueBlackboxName() {
+  return L"Local\\" + UniqueName(L"htmlppt-session-blackbox-");
+}
+
+Frame MakeStop(std::uint32_t sequence) {
+  Frame stop;
+  stop.header.type = FrameType::Stop;
+  stop.header.sequence = sequence;
+  stop.header.timestamp_ms = 1;
+  return stop;
+}
+
+bool StrictlyIncreasing(const std::vector<std::uint32_t>& values) {
+  for (std::size_t i = 1; i < values.size(); ++i) {
+    if (values[i] <= values[i - 1]) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+HTMLPPT_TEST_CASE(worker_session_heartbeats_and_stops) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+
+  std::atomic<bool> client_ok{false};
+  std::atomic<bool> saw_cleanup{false};
+  std::vector<std::uint32_t> heartbeat_sequences;
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Heartbeat) {
+        heartbeat_sequences.push_back(frame->header.sequence);
+        if (heartbeat_sequences.size() == 2) {
+          if (!client.Send(MakeStop(1))) return;
+        }
+      } else if (frame->header.type == FrameType::Cleanup) {
+        saw_cleanup = true;
+        return;
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(saw_cleanup.load());
+  HTMLPPT_CHECK(heartbeat_sequences.size() >= std::size_t{2});
+  HTMLPPT_CHECK(StrictlyIncreasing(heartbeat_sequences));
+  HTMLPPT_CHECK_EQ(driver.start_calls, 1);
+  HTMLPPT_CHECK_EQ(driver.request_stop_calls, 1);
+  HTMLPPT_CHECK_EQ(driver.stop_reasons.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(driver.stop_reasons.front(), std::string{"supervisor stop"});
+  HTMLPPT_CHECK(blackbox->appended() > 0);
+  HTMLPPT_CHECK(error.empty());
+
+  channel->Close();
+  server.Close();
+}
+
+HTMLPPT_TEST_CASE(worker_session_survives_supervisor_loss) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    client.Close();
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  driver.steps_to_done = 400;
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  // Supervisor loss must not end the run or turn into a failure exit: the
+  // driver is told once, keeps stepping, and the worker still exits 0.
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK_EQ(driver.lost_calls, 1);
+  HTMLPPT_CHECK_EQ(driver.lost_details.size(), std::size_t{1});
+  HTMLPPT_CHECK(driver.step_calls_at_loss >= 0);
+  HTMLPPT_CHECK(driver.step_calls > driver.step_calls_at_loss);
+  HTMLPPT_CHECK(error.find("supervisor lost") != std::string::npos);
+  HTMLPPT_CHECK_EQ(driver.request_stop_calls, 0);
+
+  channel->Close();
+  server.Close();
+}
+
+HTMLPPT_TEST_CASE(worker_session_heartbeats_during_slow_startup) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::vector<std::uint32_t> sequences;
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(400);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{20});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Heartbeat) {
+        sequences.push_back(frame->header.sequence);
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  bool pipe_alive = false;
+  const std::uint32_t last = RunWithStartupHeartbeats(
+      *channel, *blackbox, config,
+      [] { std::this_thread::sleep_for(std::chrono::milliseconds(60)); },
+      &pipe_alive);
+  peer.join();
+
+  // A startup slower than the supervisor's heartbeat timeout must still see
+  // heartbeats, and the session must continue from the last startup sequence.
+  HTMLPPT_CHECK(pipe_alive);
+  HTMLPPT_CHECK(last >= std::uint32_t{3});
+  HTMLPPT_CHECK(sequences.size() >= std::size_t{3});
+  HTMLPPT_CHECK_EQ(sequences.front(), std::uint32_t{1});
+  HTMLPPT_CHECK_EQ(sequences.back(), last);
+  HTMLPPT_CHECK(StrictlyIncreasing(sequences));
+  HTMLPPT_CHECK(blackbox->appended() > 0);
+
+  channel->Close();
+  server.Close();
+}
+
+#endif // _WIN32

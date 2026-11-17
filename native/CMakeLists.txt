@@ -47,7 +47,7 @@ if (WIN32)
 endif()
 
 add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp
-  src/app/supervisor.cpp)
+  src/app/supervisor.cpp src/app/worker_session.cpp)
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
 if (WIN32)
   target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_win32)
@@ -112,13 +112,16 @@ if (HTMLPPT_BUILD_TESTS)
     htmlppt_enable_warnings(htmlppt_win32_arg_echo)
     add_executable(htmlppt_win32_tests
       ${HTMLPPT_WIN32_TEST_SOURCES}
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp")
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/app/supervisor.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/app/worker_session.cpp")
     target_include_directories(htmlppt_win32_tests PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(htmlppt_win32_tests PRIVATE htmlppt_win32)
     target_compile_definitions(htmlppt_win32_tests PRIVATE
       "HTMLPPT_EXE_PATH=\"$<TARGET_FILE:htmlppt-watchdog>\""
-      "HTMLPPT_HELPER_PATH=\"$<TARGET_FILE:htmlppt_win32_arg_echo>\"")
+      "HTMLPPT_HELPER_PATH=\"$<TARGET_FILE:htmlppt_win32_arg_echo>\""
+      "HTMLPPT_DECK_PATH=\"${HTMLPPT_FIXTURES}/deck.pptx\"")
     add_dependencies(htmlppt_win32_tests htmlppt-watchdog
       htmlppt_win32_arg_echo)
     htmlppt_enable_warnings(htmlppt_win32_tests)

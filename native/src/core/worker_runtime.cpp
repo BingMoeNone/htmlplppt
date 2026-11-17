@@ -101,6 +101,10 @@ void WorkerRuntime::RequestStop(std::string reason) {
   pending_stop_ = std::move(reason);
 }
 
+void WorkerRuntime::HandleSupervisorLost(std::string detail) {
+  Handle(MakeSupervisorLost(ports_.clock.now(), std::move(detail)));
+}
+
 void WorkerRuntime::ObserveShow() {
   const ShowState show = ports_.presentation.QueryShow();
   const ClockPoint now = ports_.clock.now();

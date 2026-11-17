@@ -371,6 +371,24 @@ HTMLPPT_TEST_CASE(worker_plan_file_io_tolerates_null_error) {
   HTMLPPT_CHECK(out.has_value());
 }
 
+HTMLPPT_TEST_CASE(worker_plan_cover_default_matches_state_machine_config) {
+  const Config config = ParseConfig(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "defaults": { "cover": { "maxHoldMs": 9000 } },
+    "targets": [ { "slide": 3, "html": "page3.html", "label": "Three" } ]
+  })");
+  const ResolveResult resolved = ResolveTestTargets(config);
+  const WorkerPlan plan = BuildWorkerPlan(config, resolved, 12, "run-1");
+  HTMLPPT_CHECK_EQ(plan.machine.targets.size(), std::size_t{1});
+  // The target has no per-target cover override, so the plan falls back to the
+  // same config default BuildStateMachineConfig maps. Pinning the equality is
+  // what keeps the plan and the machine from silently diverging.
+  HTMLPPT_CHECK_EQ(plan.machine.targets[0].cover_max_hold,
+                   BuildStateMachineConfig(config).cover_max_hold);
+  HTMLPPT_CHECK_EQ(plan.machine.targets[0].cover_max_hold, Duration{9000});
+}
+
 HTMLPPT_TEST_CASE(worker_plan_maps_defaults_to_state_machine_config) {
   const StateMachineConfig machine =
       BuildStateMachineConfig(LoadMappingConfig());

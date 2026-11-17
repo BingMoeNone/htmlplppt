@@ -16,6 +16,7 @@
 #include "core/state_machine.h"
 #include "core/state_machine_types.h"
 #include "core/window_system.h"
+#include "core/worker_driver.h"
 #include "core/worker_plan.h"
 
 namespace htmlppt {
@@ -46,8 +47,9 @@ struct WorkerHostConfig {
 
 // Samples the ports into state-machine events, executes the resulting
 // actions, and keeps the machine ticking. The state machine remains the only
-// state owner; ports only report facts.
-class WorkerRuntime {
+// state owner; ports only report facts. Implements WorkerDriver so the app's
+// session (pipe, heartbeats, stop, supervisor loss) is testable without it.
+class WorkerRuntime : public WorkerDriver {
  public:
   WorkerRuntime(WorkerPlan plan, StateMachineConfig config, WorkerPorts ports,
                 WorkerHostConfig host);
@@ -55,11 +57,12 @@ class WorkerRuntime {
   WorkerRuntime(const WorkerRuntime&) = delete;
   WorkerRuntime& operator=(const WorkerRuntime&) = delete;
 
-  void Start();
-  bool Step();
-  bool done() const { return done_; }
-  void RequestStop(std::string reason);
-  const StateSnapshot& snapshot() const { return snapshot_; }
+  void Start() override;
+  bool Step() override;
+  bool done() const override { return done_; }
+  void RequestStop(std::string reason) override;
+  void HandleSupervisorLost(std::string detail) override;
+  const StateSnapshot& snapshot() const override { return snapshot_; }
   const std::vector<std::string>& journal() const { return journal_; }
 
  private:

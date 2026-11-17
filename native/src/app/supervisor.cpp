@@ -1,10 +1,13 @@
 #include "app/supervisor.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -12,6 +15,8 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include "app/worker_session.h"
+#include "core/blackbox.h"
 #include "core/config.h"
 #include "core/config_issue.h"
 #include "core/deck_info.h"
@@ -21,10 +26,14 @@
 #include "core/supervisor.h"
 #include "core/utf8_path.h"
 #include "core/worker_plan.h"
+#include "core/worker_runtime.h"
 #include "platform/win32/crash_dump.h"
+#include "platform/win32/cover_overlay_win32.h"
+#include "platform/win32/edge_launcher_win32.h"
 #include "platform/win32/named_pipe.h"
 #include "platform/win32/process_job.h"
 #include "platform/win32/shared_blackbox.h"
+#include "platform/win32/window_system_win32.h"
 #include "platform/win32/wps_host.h"
 
 namespace htmlppt {
@@ -96,6 +105,65 @@ std::string FirstError(const std::vector<ConfigIssue>& issues) {
   }
   return "unknown error";
 }
+
+bool EqualsIgnoreCase(std::string_view left, std::string_view right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    const auto left_char = static_cast<unsigned char>(left[i]);
+    const auto right_char = static_cast<unsigned char>(right[i]);
+    if (std::tolower(left_char) != std::tolower(right_char)) return false;
+  }
+  return true;
+}
+
+// The WPS slideshow window class; the editor and its tool panes use other
+// classes, so only these windows belong to the presentation being driven.
+constexpr std::string_view kWpsSlideshowWindowClass = "SlideShowClass";
+
+// The WPS processes that own a slideshow window. Zero pids is a defect: focus
+// and return would have no WPS window to target, so the caller reports it.
+std::vector<std::uint32_t> CollectWpsPids(WindowSystem& windows) {
+  std::vector<std::uint32_t> pids;
+  for (const auto& window : windows.Enumerate()) {
+    if (window.pid == 0) continue;
+    if (!EqualsIgnoreCase(window.class_name, kWpsSlideshowWindowClass)) {
+      continue;
+    }
+    if (std::find(pids.begin(), pids.end(), window.pid) == pids.end()) {
+      pids.push_back(window.pid);
+    }
+  }
+  return pids;
+}
+
+void AppendWorkerDiagnostic(SharedBlackbox& blackbox, BlackboxEvent event,
+                            std::int64_t value, const std::string& detail) {
+  BlackboxRecord record;
+  record.timestamp_ms = NowMs();
+  record.event = event;
+  record.pid = GetCurrentProcessId();
+  record.value = value;
+  std::snprintf(record.detail, sizeof(record.detail), "%s", detail.c_str());
+  blackbox.Append(record);
+}
+
+// Hides the cover and releases the COM host on every RunWorker exit path,
+// including the early returns taken after the runtime has run.
+class WorkerHostGuard {
+ public:
+  WorkerHostGuard(PresentationHost& presentation, CoverOverlay& overlay)
+      : presentation_(presentation), overlay_(overlay) {}
+  ~WorkerHostGuard() {
+    overlay_.Hide();
+    presentation_.Release();
+  }
+  WorkerHostGuard(const WorkerHostGuard&) = delete;
+  WorkerHostGuard& operator=(const WorkerHostGuard&) = delete;
+
+ private:
+  PresentationHost& presentation_;
+  CoverOverlay& overlay_;
+};
 
 DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
                                       const Config& config) {
@@ -296,7 +364,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   const auto launch_worker = [&]() -> bool {
     std::vector<std::wstring> args = {
         L"--worker", L"--run-id", Widen(run_id), L"--state-dir",
-        state_dir.wstring()};
+        state_dir.wstring(), L"--config", options.config_path.wstring()};
     return worker.LaunchSuspended(exe, args, job) && worker.Resume();
   };
 
@@ -491,47 +559,127 @@ int RunSupervisor(const SupervisorRunOptions& options) {
 }
 
 int RunWorker(const SupervisorRunOptions& options) {
+  const auto state_dir =
+      options.state_dir.empty() ? DefaultStateDir() : options.state_dir;
   const std::string run_id =
       options.run_id.empty() ? NewRunId() : options.run_id;
-  auto blackbox = SharedBlackbox::OpenWritable(SupervisorBlackboxName(run_id));
-  if (blackbox == nullptr) {
-    std::cerr << "error: cannot open blackbox\n";
+
+  // The supervisor resolves the config once and passes it on, so the worker
+  // derives the machine timings and the host timings from the same file.
+  if (options.config_path.empty()) {
+    std::cerr << "error: --config is required for --worker\n";
     return 1;
   }
+  const auto loaded = LoadConfigFile(options.config_path, options.overrides);
+  if (!loaded.config.has_value()) {
+    std::cerr << "error: cannot load config " << Utf8Path(options.config_path)
+              << ": " << FirstError(loaded.issues) << "\n";
+    return 1;
+  }
+  const Config& config = *loaded.config;
+  const StateMachineConfig machine_config = BuildStateMachineConfig(config);
+
+  std::string plan_error;
+  const auto plan =
+      ReadWorkerPlanFile(state_dir / "worker-plan.json", &plan_error);
+  if (!plan.has_value()) {
+    std::cerr << "error: " << plan_error << "\n";
+    return 1;
+  }
+  // A failed plan write in an earlier run can leave its file behind, so a
+  // plan from another run is never executed.
+  if (!ValidateWorkerPlanRunId(*plan, run_id, &plan_error)) {
+    std::cerr << "error: " << plan_error << "\n";
+    return 1;
+  }
+
+  auto blackbox = SharedBlackbox::OpenWritable(SupervisorBlackboxName(run_id));
+  if (blackbox == nullptr) {
+    std::cerr << "error: cannot open blackbox for run " << run_id << "\n";
+    return 1;
+  }
+
   NamedPipeClient client;
   if (!client.Connect(SupervisorPipeName(run_id), Duration{5000})) {
     std::cerr << "error: cannot connect to supervisor pipe\n";
     return 1;
   }
-  std::uint32_t sequence = 0;
-  for (;;) {
-    const auto command = client.Receive(Duration{10});
-    if (!command.has_value() && client.broken()) return 1;
-    if (command.has_value() && command->header.type == FrameType::Stop) {
-      Frame cleanup;
-      cleanup.header.type = FrameType::Cleanup;
-      cleanup.header.sequence = ++sequence;
-      cleanup.header.timestamp_ms = static_cast<std::uint64_t>(NowMs());
-      client.Send(cleanup);
-      return 0;
-    }
-    Frame heartbeat;
-    heartbeat.header.type = FrameType::Heartbeat;
-    heartbeat.header.sequence = ++sequence;
-    heartbeat.header.timestamp_ms = static_cast<std::uint64_t>(NowMs());
-    if (!client.Send(heartbeat)) return 1;
-    if ((sequence % 5) == 0) {
-      BlackboxRecord record;
-      record.timestamp_ms = NowMs();
-      record.event = BlackboxEvent::Heartbeat;
-      record.pid = GetCurrentProcessId();
-      record.state = 0;
-      record.value = sequence;
-      std::snprintf(record.detail, sizeof(record.detail), "worker heartbeat");
-      blackbox->Append(record);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  SteadyClock clock;
+  WpsHost wps(clock);
+  Win32CoverOverlay overlay;
+  Win32EdgeLauncher launcher;
+  Win32WindowSystem windows;
+  WorkerHostGuard host_guard(wps, overlay);
+
+  WorkerHostFacts facts;
+  // Staged profiles and Edge's --user-data-dir live under the run's state dir.
+  facts.temp_dir = state_dir / "stage";
+  facts.screen = PrimaryScreenMetrics();
+  if (const auto edge = FindEdgeExecutable(); edge.has_value()) {
+    facts.edge_exe = *edge;
+  } else {
+    std::cerr << "warning: Edge was not found; Edge launches will fail\n";
   }
+
+  // Opening the deck and collecting the slideshow pids can block for seconds
+  // (COM activation plus WPS opening the file), which is longer than the
+  // supervisor's heartbeat window. Heartbeats keep flowing while it happens.
+  // The callback runs on this thread and only records facts: the blackbox is
+  // single-writer, so its diagnostic records are appended after the startup
+  // heartbeat thread has joined.
+  struct StartupResult {
+    bool launch_failed = false;
+    long launch_error = 0;
+    std::string launch_detail;
+    std::size_t wps_pid_count = 0;
+  } started;
+  const auto startup = [&] {
+    const HostResult launched = wps.Launch(PathFromUtf8(plan->deck_utf8));
+    started.launch_failed = !launched.ok();
+    started.launch_error = launched.error;
+    started.launch_detail = launched.detail;
+    facts.wps_pids = CollectWpsPids(windows);
+    started.wps_pid_count = facts.wps_pids.size();
+  };
+
+  WorkerSessionConfig session_config;
+  bool pipe_alive = true;
+  session_config.initial_sequence = RunWithStartupHeartbeats(
+      client, *blackbox, session_config, startup, &pipe_alive);
+  if (!pipe_alive) {
+    // The session reports the loss to the runtime and keeps running.
+    std::cerr << "warning: supervisor pipe closed before the worker loop "
+                 "started\n";
+  }
+  if (started.launch_failed) {
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure,
+                           started.launch_error,
+                           "WPS launch failed: " + started.launch_detail);
+    std::cerr << "warning: cannot open " << plan->deck_utf8 << ": "
+              << started.launch_detail << "\n";
+  }
+  const auto pid_count = static_cast<std::int64_t>(started.wps_pid_count);
+  AppendWorkerDiagnostic(
+      *blackbox,
+      pid_count == 0 ? BlackboxEvent::Failure : BlackboxEvent::Event,
+      pid_count, "wps pids: " + std::to_string(pid_count));
+  if (pid_count == 0) {
+    std::cerr << "warning: no WPS slideshow window found; focus and return "
+                 "will not target WPS\n";
+  }
+
+  WorkerRuntime runtime(
+      *plan, machine_config, WorkerPorts{wps, overlay, launcher, windows, clock},
+      BuildWorkerHostConfig(config, facts));
+
+  std::string session_error;
+  const int code = RunWorkerSession(runtime, client, *blackbox, session_config,
+                                    &session_error);
+  if (!session_error.empty()) {
+    std::cerr << "warning: " << session_error << "\n";
+  }
+  return code;
 }
 
 } // namespace htmlppt

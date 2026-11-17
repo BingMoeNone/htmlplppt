@@ -6,12 +6,16 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "app/supervisor.h"
+#include "app/worker_session.h"
+#include "core/worker_plan.h"
 #include "platform/win32/process_job.h"
 #include "platform/win32/shared_blackbox.h"
 
@@ -105,15 +109,19 @@ SupervisorInputs WriteSupervisorInputs(
     std::ofstream out(state_dir / name, std::ios::binary);
     out << text;
   };
-  write(L"deck.pptx", "PK");
   write(L"page1.html", "<html>1</html>");
   write(L"deck-info.json",
         R"({"slides":[{"index":1,"title":"Cover","name":"Slide1"}]})");
-  write(L"watcher.json", R"({
-    "version": 1,
-    "deck": "deck.pptx",
-    "targets": [{ "slide": 1, "html": "page1.html", "label": "Cover" }]
-  })");
+  // The worker opens the deck for real now, so the config points at the
+  // fixture deck. It must be a deck WPS can open (a placeholder byte string
+  // makes the automation Open call block on a corrupt-file prompt), and it must
+  // outlive the test: WPS keeps the opened file while the state dir is deleted.
+  const std::string deck =
+      std::filesystem::path(HTMLPPT_DECK_PATH).generic_string();
+  write(L"watcher.json",
+        "{\n    \"version\": 1,\n    \"deck\": \"" + deck +
+            "\",\n    \"targets\": [{ \"slide\": 1, \"html\": \"page1.html\", "
+            "\"label\": \"Cover\" }]\n  }");
   return {state_dir / L"watcher.json", state_dir / L"deck-info.json"};
 }
 
@@ -337,6 +345,41 @@ HTMLPPT_TEST_CASE(win32_cli_dump_helper) {
   HTMLPPT_CHECK(child.Terminate());
   HTMLPPT_CHECK(child.WaitForExit(5000));
   std::filesystem::remove(path, error);
+}
+
+HTMLPPT_TEST_CASE(worker_rejects_plan_with_foreign_run_id) {
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+
+  htmlppt::WorkerPlan plan;
+  plan.machine.run_id = "run-foreign";
+  plan.machine.slide_count = 1;
+  HTMLPPT_CHECK(htmlppt::WriteWorkerPlanFile(plan,
+                                             state_dir / L"worker-plan.json",
+                                             nullptr));
+
+  std::string error;
+  HTMLPPT_CHECK(!htmlppt::ValidateWorkerPlanRunId(plan, "run-local", &error));
+  HTMLPPT_CHECK(error.find("run-foreign") != std::string::npos);
+  HTMLPPT_CHECK(error.find("run-local") != std::string::npos);
+  HTMLPPT_CHECK(htmlppt::ValidateWorkerPlanRunId(plan, "run-foreign", &error));
+  HTMLPPT_CHECK(error.empty());
+
+  // The same validation inside RunWorker must reject the stale plan with exit 1
+  // and a message naming both ids, before any pipe or adapter is touched.
+  htmlppt::SupervisorRunOptions options;
+  options.state_dir = state_dir;
+  options.run_id = "run-local";
+  options.config_path = inputs.config;
+  std::ostringstream captured;
+  auto* previous = std::cerr.rdbuf(captured.rdbuf());
+  const int rc = htmlppt::RunWorker(options);
+  std::cerr.rdbuf(previous);
+  HTMLPPT_CHECK_EQ(rc, 1);
+  HTMLPPT_CHECK(captured.str().find("does not match") != std::string::npos);
+
+  std::error_code fs_error;
+  std::filesystem::remove_all(state_dir, fs_error);
 }
 
 #endif // _WIN32
