@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,11 @@ struct DetailFields {
   std::wstring assets;
   bool enabled = true;
 };
+
+// The window cannot parse or apply an edit; Task 3 installs this seam, which
+// receives the raw pane fields and reports an error on rejection.
+using DetailEditHandler =
+    std::function<bool(const DetailFields& fields, std::wstring* error)>;
 
 // The config editor's top-level window. The view is deliberately thin: it owns
 // the window and its controls, and all edits go through ConfigEditorModel.
@@ -59,6 +65,14 @@ class ConfigWindow {
   // False when there is no selection, so the pane must not be written through.
   bool detail_enabled() const;
 
+  // Task 3 installs the edit handler; the view itself never touches Config.
+  void SetEditHandler(DetailEditHandler handler);
+  // Forwards the pane fields to the installed handler, if any; the status line
+  // shows "applied" or the handler's error text.
+  void ApplyDetail();
+  // The Apply button handle; the test seam for the WM_COMMAND route.
+  HWND apply_button() const { return detail_apply_button_; }
+
  private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam);
@@ -88,6 +102,7 @@ class ConfigWindow {
   int selected_row_ = -1;
   // Programmatic list selection must not bounce back through WM_NOTIFY.
   bool suppress_selection_notify_ = false;
+  DetailEditHandler edit_handler_;
 };
 
 } // namespace htmlppt

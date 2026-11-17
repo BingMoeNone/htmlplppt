@@ -4,10 +4,15 @@
 
 #include <commctrl.h>
 
+#include <utility>
+
 namespace htmlppt {
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"HtmlpptConfigWindow";
+
+// Stable id so the Apply button's BN_CLICKED can be routed in WM_COMMAND.
+constexpr int kApplyButtonId = 1001;
 
 // Master-detail layout: the list fills the left column, the detail pane is a
 // fixed right-hand column, and the status line spans the bottom.
@@ -154,8 +159,10 @@ void ConfigWindow::CreateChildren() {
   detail_apply_button_ =
       CreateWindowExW(0, L"BUTTON", L"Apply",
                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0,
-                      0, 0, handle_, nullptr, GetModuleHandleW(nullptr),
-                      nullptr);
+                      0, 0, handle_,
+                      reinterpret_cast<HMENU>(
+                          static_cast<INT_PTR>(kApplyButtonId)),
+                      GetModuleHandleW(nullptr), nullptr);
   UpdateDetailEnabled();
 }
 
@@ -296,6 +303,21 @@ bool ConfigWindow::detail_enabled() const {
          IsWindowEnabled(detail_slide_edit_) != 0;
 }
 
+void ConfigWindow::SetEditHandler(DetailEditHandler handler) {
+  edit_handler_ = std::move(handler);
+}
+
+void ConfigWindow::ApplyDetail() {
+  if (!edit_handler_) return;
+  const DetailFields fields = detail_fields();
+  std::wstring error;
+  if (edit_handler_(fields, &error)) {
+    SetStatus(L"applied");
+  } else {
+    SetStatus(error);
+  }
+}
+
 void ConfigWindow::FillDetail(const DisplayRow& row) {
   const std::wstring slide = std::to_wstring(row.slide);
   SetWindowTextW(detail_slide_edit_, slide.c_str());
@@ -377,6 +399,12 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
+    case WM_COMMAND:
+      if (LOWORD(wparam) == kApplyButtonId && HIWORD(wparam) == BN_CLICKED) {
+        ApplyDetail();
+        return 0;
+      }
+      return DefWindowProcW(hwnd, message, wparam, lparam);
     case WM_NOTIFY: {
       auto* header = reinterpret_cast<NMHDR*>(lparam);
       if (header != nullptr && header->hwndFrom == list_view_ &&

@@ -143,6 +143,74 @@ HTMLPPT_TEST_CASE(win32_config_window_binds_selection_to_the_detail_pane) {
   HTMLPPT_CHECK(!window.detail_enabled());
 }
 
+HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].label = "Live";
+  rows[0].html = "page.html"; rows[0].state = "resolved";
+  window.SetRows(rows);
+  window.SelectRow(0);
+
+  htmlppt::DetailFields captured;
+  int calls = 0;
+  window.SetEditHandler(
+      [&](const htmlppt::DetailFields& fields, std::wstring* error) {
+        captured = fields;
+        ++calls;
+        if (error != nullptr) error->clear();
+        return true;
+      });
+  HTMLPPT_CHECK(window.apply_button() != nullptr);
+  const int apply_id = GetDlgCtrlID(window.apply_button());
+  const auto click_apply = [&]() {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(apply_id, BN_CLICKED),
+                 reinterpret_cast<LPARAM>(window.apply_button()));
+  };
+  click_apply();
+  HTMLPPT_CHECK_EQ(calls, 1);
+  HTMLPPT_CHECK_EQ(captured.slide, std::wstring(L"3"));
+  HTMLPPT_CHECK_EQ(captured.html, std::wstring(L"page.html"));
+  HTMLPPT_CHECK_EQ(captured.label, std::wstring(L"Live"));
+  wchar_t status[64] = {};
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"applied"));
+
+  // A rejected edit reports the handler's error text.
+  window.SetEditHandler(
+      [](const htmlppt::DetailFields&, std::wstring* error) {
+        if (error != nullptr) *error = L"html must not be empty";
+        return false;
+      });
+  click_apply();
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status),
+                   std::wstring(L"html must not be empty"));
+
+  // No handler installed: the same click is a no-op, not a crash.
+  window.SetEditHandler(nullptr);
+  click_apply();
+  HTMLPPT_CHECK_EQ(calls, 1);
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status),
+                   std::wstring(L"html must not be empty"));
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_follows_the_list_selection) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;
