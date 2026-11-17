@@ -351,9 +351,16 @@ uses, and saves atomically.
    The window declares a minimum size and follows `WM_DPICHANGED`, so the pane
    and its Apply button never cover the status line.
 
+**Profile-based configs are read-only for saving in v1.** When the file uses
+`profiles` or `activeProfile`, the editor loads the effective profile but Save
+stays disabled and the status line says so: the model serializes the effective
+profile only, so saving would flatten the file and drop the other profiles. Edit
+the profile blocks in the JSON itself.
+
 A missing or broken config is not fatal: the window opens with the loader's
-first issue in the status line, so the file can be repaired in place instead of
-losing the window. The auto-mapping wizard from spec 9.5 is still not built; the
+first issue in the status line instead of exiting. The deck is config-wide and
+is not editable in the window, so Save stays blocked until the file is repaired
+outside the window. The auto-mapping wizard from spec 9.5 is still not built; the
 editor sits on `ConfigEditorModel` so it can be added later.
 
 ### Threading model

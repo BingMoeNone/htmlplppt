@@ -13,10 +13,17 @@
 #include "core/config_editor.h"
 #include "core/deck_info.h"
 #include "core/resolve.h"
+#include "app/deck_info_loader.h"
 #include "platform/win32/config_window.h"
 
 namespace htmlppt {
 namespace {
+
+// The editor serializes the effective profile only, so a profile-based config
+// cannot be saved without dropping the other profiles. Read-only is the safe v1
+// behaviour; the user edits the profile blocks in the JSON itself.
+constexpr wchar_t kMultiProfileSaveDisabled[] =
+    L"multi-profile config: save is disabled (edit profiles in the JSON)";
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return {};
@@ -31,26 +38,29 @@ std::wstring Widen(const std::string& utf8) {
 
 } // namespace
 
-int RunConfigUi(const std::filesystem::path& config_path,
-                const std::filesystem::path& deck_info_path) {
+int RunConfigUi(const ConfigUiOptions& ui_options) {
+  const std::filesystem::path& config_path = ui_options.config_path;
   // A missing or broken config is not fatal for the editor: the window opens
   // with an empty model and the loader's first issue in the status line, so the
-  // user can repair the file instead of losing the window.
+  // user sees why instead of losing the window. The deck comes from the config
+  // as a whole, so the window cannot repair the file; editing stays blocked
+  // until the file is fixed outside it.
   const ConfigLoadResult loaded = LoadConfigFile(config_path);
   ConfigEditorModel model(loaded.config.has_value() ? *loaded.config : Config{});
 
-  DeckInfoResult deck;
-  if (!deck_info_path.empty()) {
-    JsonDeckInfoProvider provider(deck_info_path);
-    // Match the CLI: the deck path comes from the loaded config, not from the
-    // config file itself. A config that failed to load has nothing to resolve.
-    deck = provider.Load(loaded.config.has_value()
-                             ? ResolveDeckPath(*loaded.config)
-                             : std::filesystem::path{});
+  ResolveOptions resolve_options;
+  resolve_options.allow_outside_folder = ui_options.allow_outside_folder;
+
+  // Deck info reaches the editor the same way it reaches --validate: the JSON
+  // provider when --deck-info is given, WPS otherwise. A config that failed to
+  // load has no deck path to resolve, so no provider is asked.
+  DeckInfoLoad deck;
+  if (loaded.config.has_value()) {
+    deck = LoadDeckInfo(ui_options.deck_info_path, *loaded.config);
   }
   const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
   const std::vector<DisplayRow> rows =
-      model.DisplayRows(deck_info, ResolveOptions{});
+      model.DisplayRows(deck_info, resolve_options);
 
   // Declared before the window so it outlives the handlers stored in it.
   std::optional<std::size_t> selected_index;
@@ -67,18 +77,23 @@ int RunConfigUi(const std::filesystem::path& config_path,
   // and returns the first blocking message: a target row's error when there is
   // one, otherwise the config-wide resolver error that has no row of its own (a
   // missing or invalid deck). Empty means the config is clean.
-  const auto refresh = [&window, &model, deck_info]() -> std::wstring {
+  const auto refresh = [&window, &model, deck_info,
+                        resolve_options]() -> std::wstring {
     const std::vector<DisplayRow> rows =
-        model.DisplayRows(deck_info, ResolveOptions{});
+        model.DisplayRows(deck_info, resolve_options);
     window.SetRows(rows);
-    const bool blocked = model.HasBlockingError(deck_info, ResolveOptions{});
-    window.SetSaveEnabled(model.dirty() && !blocked);
+    const bool blocked = model.HasBlockingError(deck_info, resolve_options);
+    // A profile-based config is never saveable: ConfigToJson writes only the
+    // effective profile, so a save would silently drop the other profiles.
+    const bool profiles_blocked = model.HasProfiles();
+    window.SetSaveEnabled(model.dirty() && !blocked && !profiles_blocked);
     window.SetDirty(model.dirty());
+    if (profiles_blocked) return kMultiProfileSaveDisabled;
     if (!blocked) return {};
     for (const auto& row : rows) {
       if (row.state == "error") return Widen(row.issue);
     }
-    for (const auto& issue : model.Validate(deck_info, ResolveOptions{})) {
+    for (const auto& issue : model.Validate(deck_info, resolve_options)) {
       if (issue.severity == IssueSeverity::Error) return Widen(issue.message);
     }
     return L"configuration is invalid";
@@ -163,6 +178,12 @@ int RunConfigUi(const std::filesystem::path& config_path,
   });
 
   window.SetSaveHandler([&model, config_path, refresh](std::wstring* error) {
+    // Defence in depth: the button and the close prompt are already gated, but
+    // a direct route must never flatten a profile-based config either.
+    if (model.HasProfiles()) {
+      if (error != nullptr) *error = kMultiProfileSaveDisabled;
+      return false;
+    }
     std::string save_error;
     if (!model.SaveWithBackup(config_path, &save_error)) {
       if (error != nullptr) *error = Widen(save_error);
@@ -175,7 +196,9 @@ int RunConfigUi(const std::filesystem::path& config_path,
   });
 
   window.SetRows(rows);
-  window.SetStatus(Widen(ConfigStatusText(loaded, rows, config_path)));
+  window.SetStatus(model.HasProfiles()
+                       ? kMultiProfileSaveDisabled
+                       : Widen(ConfigStatusText(loaded, rows, config_path)));
   // Nothing is dirty before the first edit, so Save starts closed.
   window.SetSaveEnabled(false);
   return window.RunMessageLoop();
@@ -187,7 +210,7 @@ int RunConfigUi(const std::filesystem::path& config_path,
 
 namespace htmlppt {
 
-int RunConfigUi(const std::filesystem::path&, const std::filesystem::path&) {
+int RunConfigUi(const ConfigUiOptions&) {
   std::cerr << "error: --config-ui requires Windows\n";
   return 2;
 }

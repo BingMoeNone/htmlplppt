@@ -163,6 +163,10 @@ class ConfigWindow {
                                      LPARAM lparam);
   LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   void CreateChildren();
+  // The window's DPI-scaled UI font. Created with the window (and on every
+  // WM_DPICHANGED), applied to every child, and deleted with the window.
+  void CreateFontForDpi();
+  void ApplyFont();
   // One 96-DPI logical unit in the window's current layout DPI.
   int Scale(int value) const;
   void Layout(int width, int height);
@@ -197,6 +201,7 @@ class ConfigWindow {
   HWND detail_assets_combo_ = nullptr;
   HWND detail_enabled_check_ = nullptr;
   HWND detail_apply_button_ = nullptr;
+  HFONT font_ = nullptr;
   // The last snapshot from the model; the pane reads these rows, never the
   // list control's text.
   std::vector<DisplayRow> rows_;

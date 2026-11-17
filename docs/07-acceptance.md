@@ -61,7 +61,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 
 | # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 20 | 缺失配置也能打开 | `native\build\htmlppt-watchdog.exe --config-ui --config missing\watcher.json` | 窗口照常打开而不是退出；状态栏为 `cannot load <path>: <第一条问题>`，列表为空，可直接在窗口里修复 |
+| 20 | 缺失配置也能打开 | `native\build\htmlppt-watchdog.exe --config-ui --config missing\watcher.json` | 窗口照常打开而不是退出；状态栏为 `cannot load <path>: <第一条问题>`，列表为空；deck 属于整份配置、窗口中不可编辑，需在窗口外修复文件后重新打开，期间 Save 保持禁用 |
 | 21 | 编辑并保存 | 打开有效配置，选中一行，改 LABEL/HTML 后 Apply，再点 Save | 列表与状态栏反映新值；目标文件是新的原子写入结果，旧内容保留为 `<name>.bak`；保存成功后 Save 按钮变灰（模型不再 dirty） |
 | 22 | 有错时禁止保存 | 把一行的 slide 改成与另一行重复后 Apply；再用一个 deck 缺失的配置试全局错误 | 状态栏显示首个错误（包括没有对应行的全局错误），Save 按钮置灰，文件不会被写入 |
 | 23 | 关闭提示 | 修改后直接关闭窗口，在 Yes/No/Cancel 提示里分别操作 | Yes：保存成功后关闭；保存失败则保留窗口并把错误写进状态栏。No：不保存直接关闭。Cancel：保留窗口与编辑内容 |

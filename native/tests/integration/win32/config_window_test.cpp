@@ -41,6 +41,17 @@ int Scaled(int value, UINT dpi) {
   return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
+// Reads the font a control actually uses; 0 means WM_SETFONT never ran.
+int FontHeight(HWND control) {
+  if (control == nullptr) return 0;
+  const HFONT font =
+      reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+  if (font == nullptr) return 0;
+  LOGFONTW logfont{};
+  if (GetObjectW(font, sizeof(logfont), &logfont) == 0) return 0;
+  return logfont.lfHeight;
+}
+
 // Drains the message queue until a posted WM_CLOSE has destroyed the window.
 void PumpUntilDestroyed(HWND hwnd) {
   const DWORD deadline = GetTickCount() + 5000;
@@ -942,6 +953,17 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
   HTMLPPT_CHECK_EQ(created.right - created.left, Scaled(900, initial));
   HTMLPPT_CHECK_EQ(created.bottom - created.top, Scaled(560, initial));
 
+  // Fonts must scale with the DPI as well: geometry-only scaling left the text
+  // at its old size and clipped it inside the controls.
+  RECT at_96{40, 40, 40 + 1000, 40 + 700};
+  SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(96, 96),
+               reinterpret_cast<LPARAM>(&at_96));
+  HTMLPPT_CHECK_EQ(window.dpi(), UINT{96});
+  const int font_96_list = FontHeight(window.list_view());
+  const int font_96_button = FontHeight(window.save_button());
+  HTMLPPT_CHECK(font_96_list != 0);
+  HTMLPPT_CHECK(font_96_button != 0);
+
   // A DPI change moves the window onto the suggested rect and re-lays the
   // controls out at the new DPI.
   RECT suggested{40, 40, 40 + 1000, 40 + 700};
@@ -954,6 +976,15 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
   HTMLPPT_CHECK_EQ(moved.top, 40);
   HTMLPPT_CHECK_EQ(moved.right - moved.left, 1000);
   HTMLPPT_CHECK_EQ(moved.bottom - moved.top, 700);
+
+  // The font is recreated and re-applied to every child on the DPI change; the
+  // ListView and a toolbar button both carry the new, taller font.
+  const int font_144_list = FontHeight(window.list_view());
+  const int font_144_button = FontHeight(window.save_button());
+  HTMLPPT_CHECK(font_144_list != 0);
+  HTMLPPT_CHECK(font_144_button != 0);
+  HTMLPPT_CHECK(font_96_list != font_144_list);
+  HTMLPPT_CHECK(font_96_button != font_144_button);
 
   RECT client{};
   HTMLPPT_CHECK(GetClientRect(window.handle(), &client) != 0);

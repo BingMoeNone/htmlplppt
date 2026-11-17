@@ -158,6 +158,10 @@ ConfigWindow::~ConfigWindow() {
     DestroyWindow(handle_);
     handle_ = nullptr;
   }
+  if (font_ != nullptr) {
+    DeleteObject(font_);
+    font_ = nullptr;
+  }
 }
 
 bool ConfigWindow::Create(const ConfigWindowOptions& options) {
@@ -216,6 +220,9 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
 }
 
 void ConfigWindow::CreateChildren() {
+  // One font for the whole window, created at the window's current DPI. It is
+  // applied once every child exists, and recreated on WM_DPICHANGED.
+  CreateFontForDpi();
   // Toolbar: Add / Remove / Save / Validate, created first so the tab order
   // starts with the actions and the list keeps its own keyboard navigation.
   const auto make_button = [&](const wchar_t* text, int id) {
@@ -297,6 +304,38 @@ void ConfigWindow::CreateChildren() {
   UpdateDetailEnabled();
   // Nothing is dirty before the first edit, so Save starts closed.
   SetSaveEnabled(false);
+  ApplyFont();
+}
+
+void ConfigWindow::CreateFontForDpi() {
+  // 9 pt at the current DPI; a negative height requests a character height.
+  const int height = -MulDiv(9, static_cast<int>(dpi_), 72);
+  HFONT new_font = CreateFontW(
+      height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  if (new_font == nullptr) return;  // Keep the previous font rather than none.
+  if (font_ != nullptr) DeleteObject(font_);
+  font_ = new_font;
+}
+
+void ConfigWindow::ApplyFont() {
+  if (font_ == nullptr) return;
+  // Every child, including the ListView, gets the DPI-scaled font so its text
+  // stays readable instead of clipping in geometry that has already grown.
+  HWND children[] = {add_button_,          remove_button_,
+                     save_button_,         validate_button_,
+                     list_view_,           status_view_,
+                     detail_slide_label_,  detail_slide_edit_,
+                     detail_label_label_,  detail_label_edit_,
+                     detail_html_label_,   detail_html_edit_,
+                     detail_assets_label_, detail_assets_combo_,
+                     detail_enabled_check_, detail_apply_button_};
+  for (HWND child : children) {
+    if (child != nullptr) {
+      SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    }
+  }
 }
 
 int ConfigWindow::Scale(int value) const {
@@ -708,6 +747,10 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       // pixels; apply it and re-scale every layout metric to the new DPI.
       const UINT new_dpi = HIWORD(wparam);
       if (new_dpi != 0) dpi_ = new_dpi;
+      // Recreate and re-apply the font at the new DPI before laying out, so the
+      // scaled controls never render their old, clipped text.
+      CreateFontForDpi();
+      ApplyFont();
       const auto* suggested = reinterpret_cast<const RECT*>(lparam);
       if (suggested != nullptr) {
         SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
@@ -791,6 +834,10 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     }
     case WM_DESTROY:
       // Child windows are gone with the parent; never hold stale HWNDs.
+      if (font_ != nullptr) {
+        DeleteObject(font_);
+        font_ = nullptr;
+      }
       handle_ = nullptr;
       list_view_ = nullptr;
       status_view_ = nullptr;

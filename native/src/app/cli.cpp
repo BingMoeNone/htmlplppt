@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "app/config_ui.h"
+#include "app/deck_info_loader.h"
 #include "app/supervisor.h"
 #include "core/config.h"
 #include "core/config_issue.h"
@@ -19,9 +20,6 @@
 #include "core/deck_info.h"
 #include "core/resolve.h"
 #include "core/version.h"
-#ifdef _WIN32
-#include "platform/win32/wps_host.h"
-#endif
 
 namespace htmlppt {
 namespace {
@@ -346,10 +344,12 @@ ParseResult ParseCli(int argc, char** argv) {
     return result;
   }
   if (!result.options.deck_info_path.empty() && command != Command::Validate &&
-      command != Command::Resolve && command != Command::Supervisor) {
+      command != Command::Resolve && command != Command::Supervisor &&
+      command != Command::ConfigUi) {
     result.ok = false;
     result.error =
-        "--deck-info is only valid with --validate, --resolve, or --supervisor";
+        "--deck-info is only valid with --validate, --resolve, --supervisor, or "
+        "--config-ui";
     return result;
   }
   const bool host_command =
@@ -412,34 +412,6 @@ LoadedConfig LoadConfigForCommand(const CliOptions& options) {
   return result;
 }
 
-struct DeckInfoLoad {
-  std::vector<ConfigIssue> issues;
-  std::optional<DeckInfo> info;
-};
-
-DeckInfoLoad LoadDeckInfoForCommand(const CliOptions& options,
-                                    const Config& config) {
-  DeckInfoLoad result;
-  if (!options.deck_info_path.empty()) {
-    JsonDeckInfoProvider provider(options.deck_info_path);
-    auto loaded = provider.Load(ResolveDeckPath(config));
-    result.issues = std::move(loaded.issues);
-    result.info = std::move(loaded.info);
-    return result;
-  }
-#ifdef _WIN32
-  SteadyClock clock;
-  WpsHostConfig host_config;
-  host_config.launch_attempts = 1;
-  WpsHost host(clock, host_config);
-  auto loaded = host.Load(ResolveDeckPath(config));
-  host.Release();
-  result.issues = std::move(loaded.issues);
-  result.info = std::move(loaded.info);
-#endif
-  return result;
-}
-
 int RunValidate(const CliOptions& options) {
   LoadedConfig loaded = LoadConfigForCommand(options);
   if (!loaded.config.has_value()) {
@@ -449,7 +421,7 @@ int RunValidate(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfoForCommand(options, config);
+  auto deck_info = LoadDeckInfo(options.deck_info_path, config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -478,7 +450,7 @@ int RunResolve(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfoForCommand(options, config);
+  auto deck_info = LoadDeckInfo(options.deck_info_path, config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -554,9 +526,14 @@ int RunCli(int argc, char** argv) {
       return RunDiagnostics(parsed.options.run_id, dir,
                             std::filesystem::path(parsed.options.diagnostics_out));
     }
-    case Command::ConfigUi:
-      return RunConfigUi(parsed.options.config_path,
-                         parsed.options.deck_info_path);
+    case Command::ConfigUi: {
+      ConfigUiOptions config_ui_options;
+      config_ui_options.config_path = parsed.options.config_path;
+      config_ui_options.deck_info_path = parsed.options.deck_info_path;
+      config_ui_options.allow_outside_folder =
+          parsed.options.overrides.allow_outside_folder;
+      return RunConfigUi(config_ui_options);
+    }
     case Command::DumpHelper:
       return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
   }

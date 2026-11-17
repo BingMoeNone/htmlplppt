@@ -39,6 +39,10 @@ std::vector<ConfigEditorModel::Row> ConfigEditorModel::rows() const {
   return rows;
 }
 
+bool ConfigEditorModel::HasProfiles() const {
+  return !config_.profiles.empty() || !config_.active_profile.empty();
+}
+
 bool ConfigEditorModel::SetSlide(std::size_t index, int slide,
                                  std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
@@ -89,6 +93,17 @@ std::vector<DisplayRow> ConfigEditorModel::DisplayRows(
     DisplayRow row;
     row.index = index;
     row.slide = base[index].slide;
+    // A match target owns no literal slide, so its row must show the slide the
+    // resolver selected; displaying 0 made the pane rewrite it as slide 1.
+    if (config_.active.targets[index].match.has_value()) {
+      const int ordinal = static_cast<int>(index) + 1;
+      for (const auto& resolved_target : resolved.targets) {
+        if (resolved_target.ordinal == ordinal) {
+          row.slide = resolved_target.slide;
+          break;
+        }
+      }
+    }
     row.label = base[index].label;
     row.html = base[index].html;
     row.assets_mode = base[index].assets_mode;
@@ -133,7 +148,12 @@ std::string ConfigStatusText(const ConfigLoadResult& loaded,
 bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
                                   std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
-  if (edit.slide < 1) {
+  TargetConfig& target = config_.active.targets[index];
+  // A match target is located by title or name, not by a literal slide. Keep
+  // that locator intact and ignore the pane's (possibly unresolved) slide text;
+  // a slide-number target still requires a valid number.
+  const bool match_target = target.match.has_value();
+  if (!match_target && edit.slide < 1) {
     if (error != nullptr) *error = "slide must be >= 1";
     return false;
   }
@@ -141,8 +161,7 @@ bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
     if (error != nullptr) *error = "html must not be empty";
     return false;
   }
-  TargetConfig& target = config_.active.targets[index];
-  target.slide = edit.slide;
+  if (!match_target) target.slide = edit.slide;
   target.label = edit.label;
   target.html = edit.html;
   target.enabled = edit.enabled;

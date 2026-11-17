@@ -67,6 +67,10 @@ class ConfigEditorModel {
   std::vector<DisplayRow> DisplayRows(const DeckInfo* deck,
                                       ResolveOptions options) const;
   std::size_t target_count() const { return config_.active.targets.size(); }
+  // True when the source config is profile-based. ConfigToJson() writes only the
+  // effective profile, so saving such a config would drop `profiles` and
+  // `activeProfile`; the UI must refuse to save instead.
+  bool HasProfiles() const;
   // True once an edit changed the model and Save() has not been called.
   bool dirty() const { return dirty_; }
 

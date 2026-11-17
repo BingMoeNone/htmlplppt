@@ -130,6 +130,77 @@ HTMLPPT_TEST_CASE(config_editor_validate_reports_duplicate_slides) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(config_editor_display_rows_resolve_a_match_target_slide) {
+  const auto dir = MakeDir();
+  Config config = MakeConfig(dir);
+  // A match target has no literal slide; the resolver owns the number.
+  config.active.targets[0].slide.reset();
+  htmlppt::MatchConfig match;
+  match.slide_title = "Slide 4";
+  match.mode = "exact";
+  config.active.targets[0].match = match;
+  ConfigEditorModel model(config);
+  const auto deck = MakeDeck();
+  const auto rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK_EQ(rows.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(rows[0].state, std::string{"resolved"});
+  // Showing 0 here made every Apply rewrite the target as slide 1.
+  HTMLPPT_CHECK_EQ(rows[0].slide, 4);
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_apply_edit_keeps_a_match_target_on_match) {
+  const auto dir = MakeDir();
+  Config config = MakeConfig(dir);
+  config.active.targets[0].slide.reset();
+  htmlppt::MatchConfig match;
+  match.slide_title = "Slide 4";
+  match.mode = "exact";
+  config.active.targets[0].match = match;
+  ConfigEditorModel model(config);
+
+  htmlppt::TargetEdit edit;
+  // A match target needs no numeric slide; the UI may still show 0 before the
+  // deck is resolved, and that must not reject an unrelated edit.
+  edit.slide = 0;
+  edit.label = "Live";
+  edit.html = "page2.html";
+  edit.enabled = false;
+  std::string error;
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  const auto& target = model.config().active.targets[0];
+  HTMLPPT_CHECK(target.match.has_value());
+  HTMLPPT_CHECK_EQ(target.match->slide_title, std::string{"Slide 4"});
+  HTMLPPT_CHECK(!target.slide.has_value());
+  HTMLPPT_CHECK_EQ(target.label, std::string{"Live"});
+  HTMLPPT_CHECK_EQ(target.html, std::string{"page2.html"});
+  HTMLPPT_CHECK(!target.enabled);
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_detects_multi_profile_configs) {
+  const auto dir = MakeDir();
+  // The editor writes ConfigToJson, which flattens to the effective profile and
+  // drops `profiles`/`activeProfile`; it must know which configs it cannot save.
+  ConfigEditorModel single(MakeConfig(dir));
+  HTMLPPT_CHECK(!single.HasProfiles());
+
+  Config multi = MakeConfig(dir);
+  multi.profiles.emplace("demo", multi.active);
+  ConfigEditorModel multi_model(multi);
+  HTMLPPT_CHECK(multi_model.HasProfiles());
+
+  // An activeProfile selector alone also means the file is profile-based.
+  Config selected = MakeConfig(dir);
+  selected.active_profile = "demo";
+  ConfigEditorModel selected_model(selected);
+  HTMLPPT_CHECK(selected_model.HasProfiles());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_editor_save_is_atomic_and_clears_dirty) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));
