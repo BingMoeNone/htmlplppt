@@ -80,16 +80,18 @@ HTMLPPT_TEST_CASE(edge_spec_uses_profile_and_default_flags) {
   ResolvedTarget target;
   target.html_path = "/tmp/page1.html";
   target.edge_profile = "htmlppt-deck-t05";
+  const std::filesystem::path temp_dir = "/tmp";
   const EdgeLaunchSpec spec = MakeEdgeLaunchSpec(
-      "/usr/bin/msedge", "/tmp", target, EdgeConfig{});
-  HTMLPPT_CHECK_EQ(spec.executable.string(), std::string{"/usr/bin/msedge"});
-  HTMLPPT_CHECK_EQ(spec.profile_dir.string(),
-                   std::string{"/tmp/htmlppt-deck-t05"});
+      "/usr/bin/msedge", temp_dir, target, EdgeConfig{});
+  const std::filesystem::path expected_profile =
+      temp_dir / "htmlppt-deck-t05";
+  HTMLPPT_CHECK_EQ(spec.executable, std::filesystem::path("/usr/bin/msedge"));
+  HTMLPPT_CHECK_EQ(spec.profile_dir, expected_profile);
   HTMLPPT_CHECK_EQ(spec.url, BuildEdgeUrl(target));
   HTMLPPT_CHECK(Contains(spec.arguments,
                          "--app=" + BuildEdgeUrl(target)));
   HTMLPPT_CHECK(Contains(spec.arguments,
-                         "--user-data-dir=" + Utf8Path(spec.profile_dir)));
+                         "--user-data-dir=" + Utf8Path(expected_profile)));
   HTMLPPT_CHECK(Contains(spec.arguments, "--start-fullscreen"));
   HTMLPPT_CHECK(Contains(spec.arguments, "--no-first-run"));
   HTMLPPT_CHECK(Contains(spec.arguments, "--disable-sync"));
@@ -101,14 +103,15 @@ HTMLPPT_TEST_CASE(edge_spec_uses_utf8_profile_directory) {
   ResolvedTarget target;
   target.html_path = "/tmp/page1.html";
   target.edge_profile = "profile-\xE6\xBC\x94";
+  const std::filesystem::path temp_dir = "/tmp";
   const EdgeLaunchSpec spec = MakeEdgeLaunchSpec(
-      "/usr/bin/msedge", "/tmp", target, EdgeConfig{});
-  const std::string expected_profile = "/tmp/profile-\xE6\xBC\x94";
-  HTMLPPT_CHECK_EQ(spec.profile_dir,
-                   PathFromUtf8(expected_profile));
-  HTMLPPT_CHECK_EQ(Utf8Path(spec.profile_dir), expected_profile);
+      "/usr/bin/msedge", temp_dir, target, EdgeConfig{});
+  const std::filesystem::path expected_profile =
+      temp_dir / PathFromUtf8("profile-\xE6\xBC\x94");
+  HTMLPPT_CHECK_EQ(spec.profile_dir, expected_profile);
+  HTMLPPT_CHECK_EQ(Utf8Path(spec.profile_dir), Utf8Path(expected_profile));
   HTMLPPT_CHECK(Contains(spec.arguments,
-                         "--user-data-dir=" + expected_profile));
+                         "--user-data-dir=" + Utf8Path(expected_profile)));
 }
 
 HTMLPPT_TEST_CASE(edge_spec_uses_configured_flags_when_present) {
