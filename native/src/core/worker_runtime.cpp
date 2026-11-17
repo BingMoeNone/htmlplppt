@@ -299,12 +299,20 @@ void WorkerRuntime::Execute(const Action& action) {
       }
       break;
     // Kinds owned by later tasks. They are journaled rather than ignored so a
-    // missing case stays visible instead of vanishing in a default branch.
+    // missing case stays visible instead of vanishing in a default branch. The
+    // cleanup steps get their own labels: journaling the raw event detail twice
+    // made the log look like the stop was requested twice.
     case ActionKind::EnterSafeMode:
     case ActionKind::LegacyFallback:
-    case ActionKind::StopHelperThreads:
-    case ActionKind::ReleaseLock:
       AppendJournal(action.detail);
+      break;
+    case ActionKind::StopHelperThreads:
+      AppendJournal("cleanup: helper threads stop with the session (" +
+                    action.detail + ")");
+      break;
+    case ActionKind::ReleaseLock:
+      AppendJournal("cleanup: release the watcher lock (" + action.detail +
+                    ")");
       break;
   }
 }

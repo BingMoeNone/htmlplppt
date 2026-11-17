@@ -53,6 +53,9 @@ struct TargetConfig {
   std::string edge_profile;
   std::string stage_name;
   AssetsConfig assets;
+  // True when the target carries its own assets block. Otherwise the global
+  // stage.mode / stage.root apply, so --stage-mode is not silently ignored.
+  bool assets_set = false;
   std::string html_query;
   std::string trigger = "leave-forward";
   std::optional<CoverConfig> cover;

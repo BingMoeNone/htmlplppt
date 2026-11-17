@@ -643,3 +643,38 @@ HTMLPPT_TEST_CASE(resolve_table_contains_rows) {
   HTMLPPT_CHECK(table.find("page1.html") != std::string::npos);
   HTMLPPT_CHECK(table.find("resolved") != std::string::npos);
 }
+
+HTMLPPT_TEST_CASE(resolve_inherits_the_global_stage_mode) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "direct" },
+    "targets": [{ "slide": 1, "html": "page1.html" }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"direct"});
+}
+
+HTMLPPT_TEST_CASE(resolve_target_assets_override_the_global_stage_mode) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  fixture.Write(htmlppt::PathFromUtf8("assets/a.css"), "body{}");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "direct" },
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "assets": { "mode": "tree", "root": "assets" }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+}

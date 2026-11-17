@@ -513,3 +513,26 @@ HTMLPPT_TEST_CASE(worker_runtime_default_poll_intervals) {
   HTMLPPT_CHECK_EQ(WorkerHostConfig{}.poll_interval, Duration{100});
   HTMLPPT_CHECK_EQ(WorkerHostConfig{}.active_poll_interval, Duration{20});
 }
+// Cleanup steps must be individually identifiable in the journal; two placeholder
+// actions used to journal the same event detail, producing duplicate lines.
+HTMLPPT_TEST_CASE(worker_runtime_cleanup_journals_distinct_steps) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();  // Warming -> Monitoring
+  h.runtime.RequestStop("supervisor stop");
+  h.runtime.Step();  // executes the cleanup batch
+
+  const auto& journal = h.runtime.journal();
+  const auto count = [&journal](const std::string& needle) {
+    return std::count_if(journal.begin(), journal.end(), [&](const auto& line) {
+      return line.find(needle) != std::string::npos;
+    });
+  };
+  HTMLPPT_CHECK_EQ(count("cleanup start"), 1);
+  HTMLPPT_CHECK_EQ(count("cleanup: helper threads"), 1);
+  HTMLPPT_CHECK_EQ(count("cleanup: release the watcher lock"), 1);
+  // Both steps still name the cause, but under distinct labels: two identical
+  // "stop requested" lines used to make the log look like a double stop.
+  HTMLPPT_CHECK_EQ(count("stop requested: supervisor stop"), 2);
+}

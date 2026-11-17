@@ -319,17 +319,17 @@ bool ResolveHtml(const TargetConfig& target, const std::filesystem::path& base_d
   return true;
 }
 
-bool ResolveAssets(const TargetConfig& target,
+bool ResolveAssets(const std::string& mode, const std::string& root_text,
                    const std::filesystem::path& base_dir,
                    const std::filesystem::path& html_path, std::size_t index,
                    bool allow_outside_folder,
                    std::vector<ConfigIssue>& issues,
                    std::string* resolved_root) {
-  if (target.assets.mode != "tree") return true;
+  if (mode != "tree") return true;
   const std::string target_path = "targets[" + std::to_string(index) + "]";
-  std::filesystem::path root = target.assets.root.empty()
+  std::filesystem::path root = root_text.empty()
                                    ? html_path.parent_path()
-                                   : PathFromUtf8(target.assets.root);
+                                   : PathFromUtf8(root_text);
   if (root.is_relative()) root = base_dir / root;
   root = NormalizePath(root);
   if (!allow_outside_folder && !IsWithin(base_dir, root)) {
@@ -436,13 +436,21 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                      &resolved, result.issues)) {
       continue;
     }
+    // A target without its own assets block inherits the global stage policy,
+    // so --stage-mode and stage.mode in the config actually take effect.
+    const std::string assets_mode =
+        target.assets_set ? target.assets.mode : config.active.stage.mode;
+    const std::string assets_root_text = target.assets.root.empty()
+                                             ? config.active.stage.root
+                                             : target.assets.root;
     std::string assets_root;
-    if (!ResolveAssets(target, base_dir, PathFromUtf8(resolved.html_path), i,
+    if (!ResolveAssets(assets_mode, assets_root_text, base_dir,
+                       PathFromUtf8(resolved.html_path), i,
                        options.allow_outside_folder, result.issues,
                        &assets_root)) {
       continue;
     }
-    resolved.assets_mode = target.assets.mode;
+    resolved.assets_mode = assets_mode;
     resolved.assets_root = std::move(assets_root);
     resolved.assets_max_bytes = target.assets.max_bytes;
 

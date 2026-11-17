@@ -349,6 +349,7 @@ TargetConfig ParseTarget(const json& value, const std::string& path, int priorit
   target.stage_name = ReadString(value, "stageName", path, issues).value_or("");
   target.html_query = ReadString(value, "htmlQuery", path, issues).value_or("");
   if (const auto it = value.find("assets"); it != value.end()) {
+    target.assets_set = true;
     target.assets = ParseAssets(*it, FieldPath(path, "assets"), target.assets, issues);
   }
   target.trigger = ReadString(value, "trigger", path, issues).value_or(defaults.trigger);

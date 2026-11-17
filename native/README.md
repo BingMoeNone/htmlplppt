@@ -356,8 +356,7 @@ legacy watcher already handles.
 
 `targets[].assets.mode` decides what Edge opens:
 
-- `direct` (default): the resolved source HTML path.
-- `file`: the HTML is copied to `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and
+- `direct` (default): the resolved source HTML path.- `file`: the HTML is copied to `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and
   Edge opens that copy.
 - `tree`: the same, plus the whole `assets.root` tree (default: the HTML's
   folder), preserving relative paths, capped by `assets.maxBytes` (0 = no cap).
@@ -367,6 +366,10 @@ fails the trigger -- it is journalled and the retry policy owns the next attempt
 -- instead of opening a broken page. Destination names come from `stageName`, so
 a CJK source filename still produces a predictable URL, and the stage directory
 is removed with the run's temp directory.
+
+`stage.mode` / `stage.root` are the defaults for targets without their own
+`assets` block, and `--stage-mode` overrides that default for the run; a target's
+own `assets` block always wins.
 
 ### Live page contract
 
