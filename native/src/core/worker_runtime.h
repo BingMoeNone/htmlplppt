@@ -61,6 +61,9 @@ class WorkerRuntime {
  private:
   void ObserveShow();
   void ObserveCover();
+  void ObserveEdge();
+  void LaunchEdge(int slide);
+  void ReportEdgeLaunchFailure(std::string detail);
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
@@ -80,6 +83,13 @@ class WorkerRuntime {
   // edge only, so the poll loop cannot flood the machine with duplicates.
   bool last_cover_hold_ = false;
   bool last_cover_done_ = false;
+  // The process this runtime launched, or 0 when no launch is outstanding.
+  // ObserveEdge stays idle at 0 so a fresh runtime cannot report a closure.
+  std::uint32_t edge_pid_ = 0;
+  // Readiness and return are reported once per launch: EdgeReady once focused,
+  // ReturnRequested once even though the page keeps its renamed title.
+  bool ready_sent_ = false;
+  bool return_sent_ = false;
   std::optional<std::string> pending_stop_;
   bool done_ = false;
 };

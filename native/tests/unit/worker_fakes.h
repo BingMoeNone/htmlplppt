@@ -146,6 +146,10 @@ class FakeLauncher final : public EdgeLauncher {
   std::unique_ptr<EdgeProcess> Launch(const EdgeLaunchSpec& spec) override {
     ++launch_count;
     last_spec = spec;
+    if (fail_next) {
+      fail_next = false;
+      return nullptr;
+    }
     pid = next_pid++;
     alive = true;
     return std::make_unique<FakeEdgeProcess>(pid, alive, kill_calls);
@@ -160,6 +164,8 @@ class FakeLauncher final : public EdgeLauncher {
   std::uint32_t pid = 0;
   std::uint32_t next_pid = 500;
   bool alive = true;
+  // Rejects the next Launch call without assigning a pid.
+  bool fail_next = false;
 };
 
 class FakeWindowSystem final : public WindowSystem {

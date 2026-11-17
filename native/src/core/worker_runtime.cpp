@@ -1,6 +1,10 @@
 #include "core/worker_runtime.h"
 
+#include <string>
 #include <utility>
+
+#include "core/edge_spec.h"
+#include "core/focus_model.h"
 
 namespace htmlppt {
 
@@ -25,6 +29,7 @@ bool WorkerRuntime::Step() {
   if (done_) return false;
   ObserveShow();
   ObserveCover();
+  ObserveEdge();
   if (pending_stop_.has_value()) {
     std::string reason = std::move(*pending_stop_);
     pending_stop_.reset();
@@ -76,6 +81,40 @@ void WorkerRuntime::ObserveCover() {
   last_cover_done_ = tick.done;
 }
 
+void WorkerRuntime::ObserveEdge() {
+  if (edge_pid_ == 0) return;
+  const ClockPoint now = ports_.clock.now();
+  if (!edge_.active()) {
+    // The process is gone before or after readiness: clear the pid first so a
+    // later step cannot report the same closure twice.
+    edge_pid_ = 0;
+    Handle(MakeEdgeClosed(now));
+    return;
+  }
+  const std::uint32_t pid = edge_.pid();
+  if (!return_sent_) {
+    const std::vector<WindowInfo> windows = ports_.windows.Enumerate();
+    const auto selected = SelectEdgeWindow(windows, pid);
+    if (selected.has_value()) {
+      for (const auto& window : windows) {
+        if (window.id != *selected) continue;
+        if (IsReturnTitle(window.title)) {
+          return_sent_ = true;
+          Handle(MakeReturnRequested(now));
+          return;
+        }
+        break;
+      }
+    }
+  }
+  if (ready_sent_) return;
+  // FocusEdge waits out the focus timeout for the Edge window to appear, so it
+  // is called once per launch until it succeeds.
+  if (!focus_.FocusEdge(pid)) return;
+  ready_sent_ = true;
+  Handle(MakeEdgeReady(now));
+}
+
 void WorkerRuntime::Handle(const Event& event) {
   Dispatch(machine_.Handle(event));
   snapshot_ = machine_.Snapshot();
@@ -100,10 +139,14 @@ void WorkerRuntime::Execute(const Action& action) {
     case ActionKind::Diagnostic:
       journal_.push_back(action.detail);
       break;
+    case ActionKind::LaunchEdge:
+      LaunchEdge(action.slide);
+      break;
+    case ActionKind::KillEdge:
+      edge_.Kill();
+      break;
     // Kinds owned by later tasks. They are journaled rather than ignored so a
     // missing case stays visible instead of vanishing in a default branch.
-    case ActionKind::LaunchEdge:
-    case ActionKind::KillEdge:
     case ActionKind::ExitShow:
     case ActionKind::ResumeShow:
     case ActionKind::RestoreShow:
@@ -116,6 +159,40 @@ void WorkerRuntime::Execute(const Action& action) {
       journal_.push_back(action.detail);
       break;
   }
+}
+
+void WorkerRuntime::LaunchEdge(int slide) {
+  const ResolvedTarget* target = nullptr;
+  for (const auto& candidate : plan_.targets) {
+    if (candidate.slide == slide) {
+      target = &candidate;
+      break;
+    }
+  }
+  if (target == nullptr) {
+    ReportEdgeLaunchFailure("edge launch failed: no target for slide " +
+                            std::to_string(slide));
+    return;
+  }
+  const EdgeLaunchSpec spec =
+      MakeEdgeLaunchSpec(host_.edge_exe, host_.temp_dir, *target, host_.edge);
+  if (!edge_.Launch(spec)) {
+    // No pid to observe: the machine's retry policy owns the next attempt.
+    edge_pid_ = 0;
+    ready_sent_ = false;
+    return_sent_ = false;
+    ReportEdgeLaunchFailure("edge launch failed");
+    return;
+  }
+  edge_pid_ = edge_.pid();
+  ready_sent_ = false;
+  return_sent_ = false;
+}
+
+void WorkerRuntime::ReportEdgeLaunchFailure(std::string detail) {
+  journal_.push_back(detail);
+  Handle(MakeFailure(ports_.clock.now(), FailureKind::Transient,
+                     FailureSource::Edge, std::move(detail)));
 }
 
 } // namespace htmlppt
