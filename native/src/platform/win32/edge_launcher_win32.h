@@ -32,6 +32,10 @@ class Win32EdgeProcess final : public EdgeProcess {
   JobHandle job_;
 };
 
+// The launcher consumes only EdgeLaunchSpec::executable and
+// EdgeLaunchSpec::arguments; arguments must already contain the complete
+// argv, including --app= and --user-data-dir=. url and profile_dir are
+// informational for MakeEdgeLaunchSpec and are not consumed here.
 class Win32EdgeLauncher final : public EdgeLauncher {
  public:
   std::unique_ptr<EdgeProcess> Launch(const EdgeLaunchSpec& spec) override;

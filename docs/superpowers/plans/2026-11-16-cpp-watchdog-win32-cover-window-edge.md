@@ -2583,8 +2583,8 @@ Deviations:
 
 4. **No CMake glob changes**: the new sources and tests are picked up by the
    existing `CONFIGURE_DEPENDS` globs. The only CMake changes were the
-   `shell32` link needed by `process_query` (Task 1) and the
-   `htmlppt_win32_arg_echo` helper target plus the `HTMLPPT_HELPER_PATH`
+   `shell32` link needed by the command-line round-trip tests (Task 1) and
+   the `htmlppt_win32_arg_echo` helper target plus the `HTMLPPT_HELPER_PATH`
    definition in Task 4.
 
 Manual acceptance (Windows host, interactive desktop, Edge
@@ -2643,3 +2643,12 @@ Deferred items:
   launcher ignores `spec.url`/`spec.profile_dir` without documenting the
   argument precondition; an unused `Utf8ToWide` using-declaration remains in
   the launcher test.
+- The overlay foreground-event topmost guard and the `Activate` escalation
+  branches (`SwitchToThisWindow`, `AttachThreadInput`, synthetic Alt) have no
+  deterministic branch-level tests; the real-Edge run proves `Activate`
+  succeeds overall but not which branch fired. Track this as a Plan 5D
+  acceptance item.
+- WPS ranking uses primary-screen metrics for the 90 percent hard gate; a
+  secondary-display fullscreen show smaller than the primary screen would be
+  rejected. Add a secondary-display/multi-monitor acceptance item to Plan
+  5C/5D.

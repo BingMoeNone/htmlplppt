@@ -25,6 +25,8 @@ class Win32CoverOverlay final : public CoverOverlay {
   Win32CoverOverlay(const Win32CoverOverlay&) = delete;
   Win32CoverOverlay& operator=(const Win32CoverOverlay&) = delete;
 
+  // Starts the layered window at opacity 0; the caller must set opacity
+  // afterward. CoverController::FadeIn does this immediately.
   bool Show() override;
   void Hide() override;
   bool SetOpacity(double opacity) override;
