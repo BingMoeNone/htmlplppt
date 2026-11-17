@@ -5,6 +5,9 @@
 #include <windows.h>
 
 #include <string>
+#include <vector>
+
+#include "core/config_editor.h"
 
 namespace htmlppt {
 
@@ -31,13 +34,23 @@ class ConfigWindow {
   // Posts WM_CLOSE (the window may refuse while dirty; see Task 8).
   bool Close();
   HWND handle() const { return handle_; }
+  HWND list_view() const { return list_view_; }
+
+  // Repopulates the table; called with the model's DisplayRows.
+  void SetRows(const std::vector<DisplayRow>& rows);
+  // One-line feedback under the table (load errors, save result, first issue).
+  void SetStatus(const std::wstring& text);
 
  private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam);
   LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+  void CreateChildren();
+  void Layout();
 
   HWND handle_ = nullptr;
+  HWND list_view_ = nullptr;
+  HWND status_view_ = nullptr;
 };
 
 } // namespace htmlppt

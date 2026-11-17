@@ -60,7 +60,7 @@ if (WIN32)
   file(GLOB HTMLPPT_WIN32_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win32/*.cpp")
   add_library(htmlppt_win32 STATIC ${HTMLPPT_WIN32_SOURCES})
-  target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX)
+  target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX UNICODE _UNICODE)
   target_link_libraries(htmlppt_win32 PUBLIC htmlppt_core dbghelp ole32
     oleaut32 shell32 comctl32)
   htmlppt_enable_warnings(htmlppt_win32)

@@ -52,11 +52,81 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
       CW_USEDEFAULT, CW_USEDEFAULT, options.width, options.height, nullptr,
       nullptr, GetModuleHandleW(nullptr), this);
   if (handle_ == nullptr) return false;
+  CreateChildren();
+  Layout();
   if (options.show) {
     ShowWindow(handle_, SW_SHOW);
     UpdateWindow(handle_);
   }
   return true;
+}
+
+void ConfigWindow::CreateChildren() {
+  list_view_ = CreateWindowExW(
+      WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+      WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+      0, 0, 0, 0, handle_, nullptr, GetModuleHandleW(nullptr), nullptr);
+  status_view_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
+                                 0, 0, 0, 0, handle_, nullptr,
+                                 GetModuleHandleW(nullptr), nullptr);
+
+  const wchar_t* headings[] = {L"SLIDE", L"LABEL", L"HTML", L"ASSETS",
+                               L"STATE"};
+  const int widths[] = {70, 180, 380, 90, 110};
+  for (int i = 0; i < 5; ++i) {
+    LVCOLUMNW column{};
+    column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+    column.pszText = const_cast<wchar_t*>(headings[i]);
+    column.cx = widths[i];
+    column.iSubItem = i;
+    ListView_InsertColumn(list_view_, i, &column);
+  }
+}
+
+void ConfigWindow::Layout() {
+  if (handle_ == nullptr || list_view_ == nullptr) return;
+  RECT client{};
+  GetClientRect(handle_, &client);
+  constexpr int kStatusHeight = 24;
+  const int height = client.bottom - client.top - kStatusHeight;
+  MoveWindow(list_view_, client.left, client.top, client.right - client.left,
+             height > 0 ? height : 0, TRUE);
+  MoveWindow(status_view_, client.left, client.bottom - kStatusHeight,
+             client.right - client.left, kStatusHeight, TRUE);
+}
+
+void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
+  if (list_view_ == nullptr) return;
+  SendMessageW(list_view_, WM_SETREDRAW, FALSE, 0);
+  ListView_DeleteAllItems(list_view_);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const auto& row = rows[i];
+    const std::wstring slide = std::to_wstring(row.slide);
+    LVITEMW item{};
+    item.mask = LVIF_TEXT | LVIF_PARAM;
+    item.iItem = static_cast<int>(i);
+    item.iSubItem = 0;
+    item.pszText = const_cast<wchar_t*>(slide.c_str());
+    item.lParam = static_cast<LPARAM>(i);
+    const int inserted = ListView_InsertItem(list_view_, &item);
+    if (inserted < 0) continue;
+    const auto set_text = [&](int column, const std::string& text) {
+      const std::wstring wide(text.begin(), text.end());
+      ListView_SetItemText(list_view_, inserted, column,
+                           const_cast<wchar_t*>(wide.c_str()));
+    };
+    set_text(1, row.label);
+    set_text(2, row.html);
+    set_text(3, row.assets_mode);
+    set_text(4, row.issue.empty() ? row.state : row.state + ": " + row.issue);
+  }
+  SendMessageW(list_view_, WM_SETREDRAW, TRUE, 0);
+  InvalidateRect(list_view_, nullptr, TRUE);
+}
+
+void ConfigWindow::SetStatus(const std::wstring& text) {
+  if (status_view_ == nullptr) return;
+  SetWindowTextW(status_view_, text.c_str());
 }
 
 int ConfigWindow::RunMessageLoop() {
@@ -91,6 +161,9 @@ LRESULT CALLBACK ConfigWindow::WindowProc(HWND hwnd, UINT message, WPARAM wparam
 LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                                     LPARAM lparam) {
   switch (message) {
+    case WM_SIZE:
+      Layout();
+      return 0;
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
