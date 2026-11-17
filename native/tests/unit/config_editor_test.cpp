@@ -42,6 +42,11 @@ Config MakeConfig(const std::filesystem::path& dir) {
   return config;
 }
 
+std::string ReadAll(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(input)),
+                     std::istreambuf_iterator<char>());
+}
 DeckInfo MakeDeck() {
   DeckInfo deck;
   for (int index = 1; index <= 5; ++index) {
@@ -178,6 +183,40 @@ HTMLPPT_TEST_CASE(config_editor_apply_edit_rejects_bad_input) {
   HTMLPPT_CHECK(!model.ApplyEdit(0, edit, &error));
   edit.html = "page2.html";
   HTMLPPT_CHECK(!model.ApplyEdit(5, edit, &error));
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+HTMLPPT_TEST_CASE(config_editor_save_with_backup_keeps_the_previous_file) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  const std::string first = ReadAll(path);
+  // A CJK label must round-trip through the save.
+  HTMLPPT_CHECK(model.SetLabel(0, std::string{"\xE5\xB1\x95\xE7\xA4\xBA"}, &error));
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(std::filesystem::exists(dir / "watcher.json.bak"));
+  HTMLPPT_CHECK_EQ(ReadAll(dir / "watcher.json.bak"), first);
+  HTMLPPT_CHECK(!std::filesystem::exists(dir / "watcher.json.tmp"));
+  HTMLPPT_CHECK(ReadAll(path).find("\xE5\xB1\x95\xE7\xA4\xBA") != std::string::npos);
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_save_with_backup_leaves_the_file_on_failure) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  const std::string before = ReadAll(path);
+  // A directory in place of the temp file makes the write fail.
+  const auto blocker = dir / "watcher.json.tmp";
+  std::filesystem::create_directories(blocker);
+  HTMLPPT_CHECK(!model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(ReadAll(path), before);
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }

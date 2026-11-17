@@ -170,4 +170,56 @@ bool ConfigEditorModel::Save(const std::filesystem::path& path,
   return true;
 }
 
+bool ConfigEditorModel::SaveWithBackup(const std::filesystem::path& path,
+                                       std::string* error) {
+  const auto temp = path.string() + ".tmp";
+  {
+    std::ofstream output(temp, std::ios::binary | std::ios::trunc);
+    if (!output) {
+      if (error != nullptr) *error = "cannot write " + temp;
+      return false;
+    }
+    const std::string json = ToJson();
+    output.write(json.data(), static_cast<std::streamsize>(json.size()));
+    output.close();
+    if (!output.good()) {
+      std::error_code cleanup_error;
+      std::filesystem::remove(temp, cleanup_error);
+      if (error != nullptr) *error = "cannot finish " + temp;
+      return false;
+    }
+  }
+  std::error_code exists_error;
+  if (std::filesystem::is_regular_file(path, exists_error)) {
+    std::error_code backup_error;
+    std::filesystem::copy_file(
+        path, path.string() + ".bak",
+        std::filesystem::copy_options::overwrite_existing, backup_error);
+    if (backup_error) {
+      std::error_code cleanup_error;
+      std::filesystem::remove(temp, cleanup_error);
+      if (error != nullptr) {
+        *error = "cannot write " + path.string() + ".bak: " +
+                 backup_error.message();
+      }
+      return false;
+    }
+  }
+  std::error_code remove_error;
+  std::filesystem::remove(path, remove_error);
+  std::error_code rename_error;
+  std::filesystem::rename(temp, path, rename_error);
+  if (rename_error) {
+    std::error_code cleanup_error;
+    std::filesystem::remove(temp, cleanup_error);
+    if (error != nullptr) {
+      *error = "cannot replace " + path.string() + ": " +
+               rename_error.message();
+    }
+    return false;
+  }
+  dirty_ = false;
+  return true;
+}
+
 } // namespace htmlppt

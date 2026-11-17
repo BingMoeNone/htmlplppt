@@ -64,6 +64,9 @@ class ConfigEditorModel {
   // Atomic save: write a sibling temp file, then replace the target. A failed
   // write leaves the previous file untouched.
   bool Save(const std::filesystem::path& path, std::string* error);
+  // Same, plus a <path>.bak copy of the previous file when one existed. A
+  // failed write still leaves the previous file untouched and removes the temp.
+  bool SaveWithBackup(const std::filesystem::path& path, std::string* error);
 
  private:
   Config config_;
