@@ -60,6 +60,7 @@ class WorkerRuntime {
 
  private:
   void ObserveShow();
+  void ObserveCover();
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
@@ -75,6 +76,10 @@ class WorkerRuntime {
   StateSnapshot snapshot_;
   ShowState last_show_;
   int last_slide_ = 0;
+  // The previous cover tick's phase edges. Hold/done are emitted on a rising
+  // edge only, so the poll loop cannot flood the machine with duplicates.
+  bool last_cover_hold_ = false;
+  bool last_cover_done_ = false;
   std::optional<std::string> pending_stop_;
   bool done_ = false;
 };

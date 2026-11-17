@@ -24,6 +24,7 @@ void WorkerRuntime::Start() {
 bool WorkerRuntime::Step() {
   if (done_) return false;
   ObserveShow();
+  ObserveCover();
   if (pending_stop_.has_value()) {
     std::string reason = std::move(*pending_stop_);
     pending_stop_.reset();
@@ -62,6 +63,19 @@ void WorkerRuntime::ObserveShow() {
   last_show_ = show;
 }
 
+void WorkerRuntime::ObserveCover() {
+  const CoverTick tick = cover_.Tick();
+  const ClockPoint now = ports_.clock.now();
+  if (tick.hold_reached && !last_cover_hold_) {
+    Handle(MakeCoverHold(now));
+  }
+  if (tick.done && !last_cover_done_) {
+    Handle(MakeCoverDone(now));
+  }
+  last_cover_hold_ = tick.hold_reached;
+  last_cover_done_ = tick.done;
+}
+
 void WorkerRuntime::Handle(const Event& event) {
   Dispatch(machine_.Handle(event));
   snapshot_ = machine_.Snapshot();
@@ -73,11 +87,33 @@ void WorkerRuntime::Dispatch(const std::vector<Action>& actions) {
 
 void WorkerRuntime::Execute(const Action& action) {
   switch (action.kind) {
+    case ActionKind::CoverFadeIn:
+      cover_.FadeIn();
+      break;
+    case ActionKind::CoverFadeOut:
+      cover_.FadeOut();
+      break;
+    case ActionKind::CoverHide:
+      cover_.Hide();
+      break;
     case ActionKind::Journal:
     case ActionKind::Diagnostic:
       journal_.push_back(action.detail);
       break;
-    default:
+    // Kinds owned by later tasks. They are journaled rather than ignored so a
+    // missing case stays visible instead of vanishing in a default branch.
+    case ActionKind::LaunchEdge:
+    case ActionKind::KillEdge:
+    case ActionKind::ExitShow:
+    case ActionKind::ResumeShow:
+    case ActionKind::RestoreShow:
+    case ActionKind::FocusEdge:
+    case ActionKind::FocusWps:
+    case ActionKind::EnterSafeMode:
+    case ActionKind::LegacyFallback:
+    case ActionKind::StopHelperThreads:
+    case ActionKind::ReleaseLock:
+      journal_.push_back(action.detail);
       break;
   }
 }
