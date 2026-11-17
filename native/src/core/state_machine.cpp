@@ -52,6 +52,11 @@ std::vector<Action> StateMachine::Handle(const Event& event) {
       return OnFailure(event);
     case EventKind::SupervisorLost:
       return OnSupervisorLost(event);
+    case EventKind::ComHealthy:
+      // Spec 3.6: a successful COM read resets the contiguous-error window. The
+      // healthy path stays silent (no journal) so a normal poll adds no noise.
+      com_window_.reset();
+      return {};
   }
   return {};
 }

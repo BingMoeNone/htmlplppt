@@ -51,6 +51,10 @@ struct WorkerEvent {
   WorkerEventKind kind = WorkerEventKind::Heartbeat;
   ClockPoint at{};
   std::uint32_t sequence = 0;
+  // Loop progress decoded from the heartbeat payload. nullopt means the frame
+  // carried no progress, so the supervisor judges that heartbeat by sequence
+  // alone (as a pre-progress worker would be).
+  std::optional<std::uint64_t> progress;
   int exit_code = 0;
   std::string detail;
 };
@@ -74,10 +78,14 @@ class SupervisorCore {
   std::vector<SupervisorAction> EnterSafeMode(std::string detail);
   std::vector<SupervisorAction> ScheduleRestart(ClockPoint at,
                                                 std::string detail);
+  // The dump/terminate/restart batch shared by an explicit Hung event and the
+  // Tick() stall detectors.
+  std::vector<SupervisorAction> HangActions(ClockPoint at, std::string detail);
 
   SupervisorConfig config_;
   Clock& clock_;
   SequenceTracker sequence_;
+  ProgressTracker progress_;
   RestartBudget budget_;
   bool worker_running_ = false;
   bool stopping_ = false;

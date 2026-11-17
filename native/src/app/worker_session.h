@@ -17,8 +17,10 @@ class FrameChannel;
 class SharedBlackbox;
 
 struct WorkerSessionConfig {
-  // One heartbeat frame per interval, carrying snapshot().state.
-  Duration heartbeat_interval{500};
+  // One heartbeat frame per interval, carrying snapshot().state plus the loop
+  // progress counter. 200 ms is the design-spec value (spec 11.2 heartbeat
+  // table), ten times inside the supervisor's 2 s heartbeat timeout.
+  Duration heartbeat_interval{200};
   // A blackbox record on the first heartbeat and then every N heartbeats.
   int blackbox_every = 5;
   // The last sequence a startup phase already sent, so heartbeat numbers stay
@@ -47,7 +49,10 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
 // timeout, feeds Stop frames to WorkerDriver::RequestStop, and sends a
 // heartbeat every interval on a helper thread so a blocking Step cannot starve
 // the supervisor. The heartbeat carries the last state the loop published (one
-// step stale at worst) and is the only writer of the blackbox during the loop.
+// step stale at worst) plus a step counter incremented after each Step()
+// returns; an advancing sequence with a static progress is how the supervisor
+// detects a loop wedged in a call (a hung worker still heartbeats). It is the
+// only writer of the blackbox during the loop.
 // A broken pipe is reported once through WorkerDriver::HandleSupervisorLost and
 // does not stop the loop (SupervisorLossPolicy::Continue). Stops the heartbeat
 // thread, then sends a final Cleanup frame while the pipe is alive, and returns

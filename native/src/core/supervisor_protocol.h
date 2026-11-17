@@ -40,6 +40,27 @@ struct Frame {
   std::vector<std::uint8_t> payload;
 };
 
+// Heartbeat payload: one state byte followed by the worker's loop progress as a
+// little-endian uint64. Progress is a step counter the session publishes after
+// each Step() returns, so an advancing sequence with a static progress means
+// the loop is wedged in a call even though the helper thread still heartbeats.
+inline constexpr std::size_t kHeartbeatPayloadSize = 9;
+// Startup heartbeats run before the session's loop exists; they publish this
+// sentinel so the supervisor does not mistake startup for a stalled loop.
+inline constexpr std::uint64_t kProgressNotStarted = ~std::uint64_t{0};
+
+struct HeartbeatPayload {
+  std::uint8_t state = 0;
+  std::uint64_t progress = kProgressNotStarted;
+};
+
+std::vector<std::uint8_t> EncodeHeartbeatPayload(
+    const HeartbeatPayload& payload);
+// Returns nullopt for a payload that is not exactly kHeartbeatPayloadSize
+// bytes, such as a frame written by a worker without loop progress.
+std::optional<HeartbeatPayload> DecodeHeartbeatPayload(
+    std::span<const std::uint8_t> payload);
+
 std::uint32_t Crc32(std::span<const std::uint8_t> data);
 std::vector<std::uint8_t> EncodeFrame(const Frame& frame);
 
@@ -72,6 +93,28 @@ class SequenceTracker {
  private:
   ClockPoint start_;
   std::optional<std::uint32_t> last_sequence_;
+  ClockPoint last_update_{};
+};
+
+// Tracks the worker loop's published progress. It is intentionally separate
+// from SequenceTracker: the heartbeat helper thread keeps the sequence moving
+// while the loop itself is stuck, so only progress can reveal a hang.
+class ProgressTracker {
+ public:
+  explicit ProgressTracker(ClockPoint start);
+
+  // Records a heartbeat's progress. Returns true when the value advanced.
+  // kProgressNotStarted clears the sample (startup); a repeated or older value
+  // is not an advance and leaves the stall reference unchanged.
+  bool observe(std::uint64_t progress, ClockPoint now);
+  // True once a real progress sample has remained unchanged for `timeout`.
+  bool stalled(ClockPoint now, Duration timeout) const;
+  bool has_progress() const { return last_progress_.has_value(); }
+  std::uint64_t last_progress() const { return last_progress_.value_or(0); }
+  void reset(ClockPoint start);
+
+ private:
+  std::optional<std::uint64_t> last_progress_;
   ClockPoint last_update_{};
 };
 

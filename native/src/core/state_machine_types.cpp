@@ -111,4 +111,11 @@ Event MakeSupervisorLost(ClockPoint at, std::string detail) {
   return event;
 }
 
+Event MakeComHealthy(ClockPoint at) {
+  Event event;
+  event.kind = EventKind::ComHealthy;
+  event.at = at;
+  return event;
+}
+
 } // namespace htmlppt

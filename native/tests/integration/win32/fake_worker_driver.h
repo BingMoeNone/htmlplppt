@@ -23,8 +23,15 @@ class FakeWorkerDriver final : public WorkerDriver {
 
   bool Step() override {
     ++step_calls;
-    if (step_sleep.count() > 0) {
-      std::this_thread::sleep_for(step_sleep);
+    // The first step can block longer than the rest, which is how a real COM
+    // action behaves; the heartbeat progress tests use it to hold the loop
+    // inside Step while the helper thread keeps sending. Without an override
+    // every step uses step_sleep.
+    const Duration delay =
+        step_calls == 1 && first_step_sleep.count() > 0 ? first_step_sleep
+                                                       : step_sleep;
+    if (delay.count() > 0) {
+      std::this_thread::sleep_for(delay);
     }
     if (steps_to_done > 0 && step_calls >= steps_to_done) done_ = true;
     return !done_;
@@ -53,6 +60,8 @@ class FakeWorkerDriver final : public WorkerDriver {
   int steps_to_done = 0;
   bool stop_ends = true;
   Duration step_sleep{0};
+  // Extra delay for the first Step only; 0 uses step_sleep for every step.
+  Duration first_step_sleep{0};
   int request_stop_calls = 0;
   std::vector<std::string> stop_reasons;
   int lost_calls = 0;

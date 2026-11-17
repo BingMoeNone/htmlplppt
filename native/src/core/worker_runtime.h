@@ -89,6 +89,10 @@ class WorkerRuntime : public WorkerDriver {
   StateSnapshot snapshot_;
   ShowState last_show_;
   int last_slide_ = 0;
+  // True while the most recent COM show poll failed. The first Ok poll after
+  // one or more failures reports ComHealthy so the machine resets its
+  // contiguous-error window instead of escalating isolated errors (spec 3.6).
+  bool last_com_failed_ = false;
   // The previous cover tick's phase edges. Hold/done are emitted on a rising
   // edge only, so the poll loop cannot flood the machine with duplicates.
   bool last_cover_hold_ = false;

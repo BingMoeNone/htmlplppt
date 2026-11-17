@@ -216,11 +216,14 @@ The same EXE runs as supervisor and worker.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
 
-The WPS end-to-end supervisor case in `htmlppt_win32_tests` starts a real
-slideshow, so it runs only when the `Kwpp.Application` COM ProgID is registered.
-Without WPS it prints `SKIP: WPS not installed` and passes; every other case
-runs on any Windows machine. The case also terminates only the WPS processes it
-started, so repeated runs do not accumulate automation instances.
+Every supervisor case in `htmlppt_win32_tests` launches a worker that opens the
+deck in WPS and starts a real slideshow when WPS is present. The end-to-end case
+(`win32_supervisor_starts_and_stops`) additionally asserts the show-start
+record, so when the `Kwpp.Application` COM ProgID is not registered it prints
+`SKIP: WPS not installed` and passes; the other cases still exercise the
+supervisor and worker lifecycle around that attempt. The cases terminate only
+the WPS processes they started, so repeated runs do not accumulate automation
+instances.
 
 Windows gate: `htmlppt_core_tests` 284/284, `htmlppt_win32_tests` 61/61 (the
 WPS case is skipped without WPS), CTest 9/9, `-Werror` clean.
@@ -257,7 +260,9 @@ launched, journals the reason, and exits 1.
 
 WPS Presentation must be installed and the deck must be closed before a run:
 the supervisor reads the deck facts through COM and the worker opens that deck
-and starts the show.
+and starts the show. The supervisor's planning step needs a responsive WPS (or
+`--deck-info`), and a wedged WPS is a prerequisite failure, not a watchdog
+failure.
 
 The on-machine check is `scripts/smoke-watchdog.ps1`. It starts a run with the
 run id `smoke`, waits for `worker-plan.json`, polls `--status` once a second

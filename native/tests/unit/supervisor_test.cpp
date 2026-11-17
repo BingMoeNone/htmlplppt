@@ -39,6 +39,14 @@ WorkerEvent Heartbeat(htmlppt::ClockPoint at, std::uint32_t sequence) {
   return event;
 }
 
+WorkerEvent HeartbeatWithProgress(htmlppt::ClockPoint at,
+                                  std::uint32_t sequence,
+                                  std::uint64_t progress) {
+  WorkerEvent event = Heartbeat(at, sequence);
+  event.progress = progress;
+  return event;
+}
+
 WorkerEvent Event(WorkerEventKind kind, htmlppt::ClockPoint at) {
   WorkerEvent event;
   event.kind = kind;
@@ -72,6 +80,51 @@ HTMLPPT_TEST_CASE(supervisor_heartbeats_keep_worker_healthy) {
   clock.advance(Duration{1000});
   core.Handle(Heartbeat(clock.now(), 2));
   clock.advance(Duration{1000});
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+}
+
+// I2: the helper thread keeps the sequence moving while the worker loop is
+// wedged in a COM call, so an advancing sequence with frozen progress is a
+// hang, not a healthy worker.
+HTMLPPT_TEST_CASE(supervisor_detects_stalled_worker_progress) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 2, 0));
+  clock.advance(Duration{1000});  // sequence moved 1 s ago, progress 2 s ago
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::TerminateWorker));
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+HTMLPPT_TEST_CASE(supervisor_advancing_worker_progress_is_healthy) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 2, 1));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 3, 2));
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
+// A heartbeat without a progress payload (a pre-progress worker) must not be
+// declared hung by the progress rule; sequence liveness still applies.
+HTMLPPT_TEST_CASE(supervisor_heartbeat_without_progress_is_not_hung) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1000});
+  core.Handle(Heartbeat(clock.now(), 2));
   HTMLPPT_CHECK(core.Tick().empty());
   HTMLPPT_CHECK(core.worker_running());
 }

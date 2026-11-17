@@ -45,6 +45,23 @@ std::uint64_t ReadU64(const std::uint8_t* in) {
 
 } // namespace
 
+std::vector<std::uint8_t> EncodeHeartbeatPayload(
+    const HeartbeatPayload& payload) {
+  std::vector<std::uint8_t> out(kHeartbeatPayloadSize, 0);
+  out[0] = payload.state;
+  WriteU64(out.data() + 1, payload.progress);
+  return out;
+}
+
+std::optional<HeartbeatPayload> DecodeHeartbeatPayload(
+    std::span<const std::uint8_t> payload) {
+  if (payload.size() != kHeartbeatPayloadSize) return std::nullopt;
+  HeartbeatPayload decoded;
+  decoded.state = payload[0];
+  decoded.progress = ReadU64(payload.data() + 1);
+  return decoded;
+}
+
 std::uint32_t Crc32(std::span<const std::uint8_t> data) {
   std::uint32_t crc = 0xFFFFFFFFu;
   for (const std::uint8_t byte : data) {
@@ -147,6 +164,33 @@ std::uint32_t SequenceTracker::last_sequence() const {
 void SequenceTracker::reset(ClockPoint start) {
   start_ = start;
   last_sequence_.reset();
+  last_update_ = start;
+}
+
+ProgressTracker::ProgressTracker(ClockPoint start) : last_update_(start) {}
+
+bool ProgressTracker::observe(std::uint64_t progress, ClockPoint now) {
+  if (progress == kProgressNotStarted) {
+    // A startup heartbeat carries no loop progress. Clear any sample so the
+    // count starts at the session's first real value, not at process start.
+    last_progress_.reset();
+    return false;
+  }
+  if (last_progress_.has_value() && progress <= *last_progress_) return false;
+  last_progress_ = progress;
+  last_update_ = now;
+  return true;
+}
+
+bool ProgressTracker::stalled(ClockPoint now, Duration timeout) const {
+  // Before the first loop heartbeat there is no progress to judge; the
+  // sequence tracker still covers a worker that stops heartbeating entirely.
+  if (!last_progress_.has_value()) return false;
+  return now - last_update_ >= timeout;
+}
+
+void ProgressTracker::reset(ClockPoint start) {
+  last_progress_.reset();
   last_update_ = start;
 }
 

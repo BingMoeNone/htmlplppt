@@ -52,6 +52,7 @@ enum class EventKind {
   ConfigReloaded,
   Failure,
   SupervisorLost,
+  ComHealthy,
 };
 
 enum class TimeoutKind {
@@ -150,5 +151,6 @@ Event MakePowerResume(ClockPoint at);
 Event MakeFailure(ClockPoint at, FailureKind kind, FailureSource source,
                   std::string detail);
 Event MakeSupervisorLost(ClockPoint at, std::string detail);
+Event MakeComHealthy(ClockPoint at);
 
 } // namespace htmlppt

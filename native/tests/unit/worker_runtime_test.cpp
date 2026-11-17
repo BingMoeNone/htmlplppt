@@ -59,6 +59,43 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_com_busy_without_show_ended) {
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "COM busy"));
 }
 
+// Spec 3.6: a successful COM poll must reset the error window. Two isolated
+// Busy samples far apart are not a contiguous COM outage; without the healthy
+// signal the machine measures the window from the first error and the second
+// isolated failure would enter SafeMode.
+HTMLPPT_TEST_CASE(worker_runtime_isolated_com_error_does_not_arm_window) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start(); h.runtime.Step();                  // Monitoring
+  h.presentation.show.status = HostStatus::Busy;
+  h.runtime.Step();                             // first COM error
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+  h.presentation.show.status = HostStatus::Ok;
+  h.runtime.Step();                             // healthy poll resets the window
+  h.advance(Duration{3000});
+  h.presentation.show.status = HostStatus::Busy;
+  h.runtime.Step();                             // second, isolated COM error
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+  HTMLPPT_CHECK(!h.runtime.snapshot().safe_mode);
+}
+
+// A contiguous outage is still structural: repeated Busy polls across more than
+// 2 s with no successful sample in between must reach SafeMode.
+HTMLPPT_TEST_CASE(worker_runtime_continuous_com_error_reaches_safe_mode) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start(); h.runtime.Step();                  // Monitoring
+  h.presentation.show.status = HostStatus::Busy;
+  h.runtime.Step();                             // window opens
+  h.advance(Duration{1000});
+  h.runtime.Step();                             // still inside the window
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+  h.advance(Duration{1000});
+  h.runtime.Step();                             // window expired -> SafeMode
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::SafeMode);
+  HTMLPPT_CHECK(h.runtime.snapshot().safe_mode);
+}
+
 HTMLPPT_TEST_CASE(worker_runtime_fades_cover_in_holds_and_reports_done) {
   WorkerHarness h;
   h.config.startup_ignore = Duration{0};

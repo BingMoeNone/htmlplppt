@@ -18,6 +18,7 @@ using htmlppt::FakeClock;
 using htmlppt::FailureKind;
 using htmlppt::FailureSource;
 using htmlppt::MakeCleanupDone;
+using htmlppt::MakeComHealthy;
 using htmlppt::MakeCoverDone;
 using htmlppt::MakeCoverHold;
 using htmlppt::MakeEdgeClosed;
@@ -658,6 +659,27 @@ HTMLPPT_TEST_CASE(state_machine_com_success_resets_window) {
   m.machine->Handle(MakeFailure(m.clock.now(), FailureKind::Transient,
                                 FailureSource::Com, "COM busy"));
   m.machine->Handle(MakeEdgeReady(m.clock.now()));
+  m.Advance(2000);
+  const auto actions = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Com,
+                  "COM busy"));
+  HTMLPPT_CHECK(m.machine->state() != State::SafeMode);
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::EnterSafeMode));
+}
+
+// Spec 3.6: ComHealthy is the machine's explicit "reset the window" signal, so
+// a healthy poll after a run of COM failures must start the window over.
+HTMLPPT_TEST_CASE(state_machine_com_healthy_resets_error_window) {
+  auto config = MakeConfig();
+  config.com_error_window = Duration{2000};
+  config.retry.max_attempts = 10;
+  Machine m(config);
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  m.machine->Handle(MakeFailure(m.clock.now(), FailureKind::Transient,
+                                FailureSource::Com, "COM busy"));
+  const auto healthy = m.machine->Handle(MakeComHealthy(m.clock.now()));
+  HTMLPPT_CHECK(healthy.empty());
   m.Advance(2000);
   const auto actions = m.machine->Handle(
       MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Com,

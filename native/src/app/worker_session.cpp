@@ -42,12 +42,16 @@ bool RecordDue(int heartbeat_count, int every) {
   return every > 0 && heartbeat_count % every == 0;
 }
 
-Frame MakeHeartbeat(std::uint32_t sequence, State state) {
+Frame MakeHeartbeat(std::uint32_t sequence, State state,
+                    std::uint64_t progress) {
   Frame frame;
   frame.header.type = FrameType::Heartbeat;
   frame.header.sequence = sequence;
   frame.header.timestamp_ms = static_cast<std::uint64_t>(NowMs());
-  frame.payload.push_back(static_cast<std::uint8_t>(state));
+  HeartbeatPayload payload;
+  payload.state = static_cast<std::uint8_t>(state);
+  payload.progress = progress;
+  frame.payload = EncodeHeartbeatPayload(payload);
   return frame;
 }
 
@@ -82,11 +86,13 @@ class HeartbeatSender {
   HeartbeatSender(FrameChannel& channel, SharedBlackbox& blackbox,
                   WorkerSessionConfig config,
                   const std::atomic<int>& published_state,
+                  const std::atomic<std::uint64_t>& published_progress,
                   std::mutex& send_mutex)
       : channel_(channel),
         blackbox_(blackbox),
         config_(config),
         published_state_(published_state),
+        published_progress_(published_progress),
         send_mutex_(send_mutex),
         interval_(HeartbeatInterval(config)) {
     thread_ = std::thread([this] { Run(); });
@@ -121,12 +127,14 @@ class HeartbeatSender {
     for (;;) {
       const State state =
           static_cast<State>(published_state_.load(std::memory_order_relaxed));
+      const std::uint64_t progress =
+          published_progress_.load(std::memory_order_relaxed);
       ++sequence;
       last_sequence_.store(sequence, std::memory_order_relaxed);
       bool sent = false;
       {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        sent = channel_.Send(MakeHeartbeat(sequence, state));
+        sent = channel_.Send(MakeHeartbeat(sequence, state, progress));
       }
       if (!sent) {
         broken_.store(true, std::memory_order_relaxed);
@@ -147,6 +155,9 @@ class HeartbeatSender {
   SharedBlackbox& blackbox_;
   WorkerSessionConfig config_;
   const std::atomic<int>& published_state_;
+  // The session's loop step counter. The helper thread copies it into every
+  // heartbeat so the supervisor can tell a live helper thread from a live loop.
+  const std::atomic<std::uint64_t>& published_progress_;
   std::mutex& send_mutex_;
   Duration interval_;
   std::thread thread_;
@@ -179,8 +190,11 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
                                        bool* pipe_alive) {
   std::mutex send_mutex;
   std::atomic<int> published_state{static_cast<int>(State::Boot)};
+  // Startup is not the worker loop yet: the sentinel tells the supervisor to
+  // judge these heartbeats by sequence only.
+  std::atomic<std::uint64_t> published_progress{kProgressNotStarted};
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            send_mutex);
+                            published_progress, send_mutex);
   // The caller keeps the COM apartment: WPS automation objects are created on
   // this thread, and the heartbeat thread only touches the pipe and the box.
   // The sender must be stopped on every path, including a throwing startup.
@@ -210,6 +224,9 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
 
   driver.Start();
   std::atomic<int> published_state{static_cast<int>(driver.snapshot().state)};
+  // The loop's step counter; it advances only after Step() returns, so a
+  // worker wedged inside a COM call keeps heartbeating a frozen value.
+  std::atomic<std::uint64_t> published_progress{0};
   std::mutex send_mutex;
   if (!pipe_alive) report_loss(kLossDetail);
   // One heartbeat thread for the whole loop: WorkerDriver::Step() blocks in
@@ -217,7 +234,7 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // long COM action inside it must not starve the supervisor. This loop adds
   // no sleep of its own.
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            send_mutex);
+                            published_progress, send_mutex);
   while (!driver.done()) {
     if (pipe_alive) {
       const auto command = channel.Receive(Duration{0});
@@ -237,7 +254,11 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
       report_loss(kLossDetail);
     }
     if (driver.done()) break;
-    if (!driver.Step()) break;
+    const bool keep_going = driver.Step();
+    // Published after the step returns, never before: a blocking Step must not
+    // look like loop progress.
+    published_progress.fetch_add(1, std::memory_order_relaxed);
+    if (!keep_going) break;
     published_state.store(static_cast<int>(driver.snapshot().state),
                           std::memory_order_relaxed);
   }

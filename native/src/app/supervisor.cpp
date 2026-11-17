@@ -489,6 +489,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     return std::nullopt;
   };
 
+  // Set when the worker's final Cleanup frame arrives. Combined with exit code
+  // 0 it is a clean terminal end, not a crash: the worker finished on its own
+  // (machine-driven stop or SafeMode) and must not be dumped or restarted.
+  bool cleanup_received = false;
+
   for (;;) {
     if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
       if (channel != nullptr) {
@@ -527,14 +532,21 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       const auto frame = channel->Receive(Duration{100});
       if (frame.has_value()) {
         switch (frame->header.type) {
-          case FrameType::Heartbeat:
-            if (auto code = apply(core.Handle(
-                    MakeEvent(WorkerEventKind::Heartbeat,
-                              frame->header.sequence)));
-                code.has_value()) {
+          case FrameType::Heartbeat: {
+            WorkerEvent event = MakeEvent(WorkerEventKind::Heartbeat,
+                                          frame->header.sequence);
+            // Progress travels in the payload; a worker without it still
+            // heartbeats and is judged by sequence alone.
+            if (const auto payload =
+                    DecodeHeartbeatPayload(frame->payload);
+                payload.has_value()) {
+              event.progress = payload->progress;
+            }
+            if (auto code = apply(core.Handle(event)); code.has_value()) {
               return *code;
             }
             break;
+          }
           case FrameType::Stop:
             // Worker-initiated stop: the core StopRequested path expects a
             // CleanupDone that this worker never sends, so terminate and exit
@@ -546,6 +558,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             cleanup();
             return 0;
           case FrameType::Cleanup:
+            cleanup_received = true;
+            // While stopping, Cleanup completes the requested stop. Otherwise
+            // it is the first half of a machine-driven clean exit; the exit
+            // code check below decides that path.
             if (auto code =
                     apply(core.Handle(MakeEvent(WorkerEventKind::CleanupDone)));
                 code.has_value()) {
@@ -556,9 +572,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             break;
         }
       } else if (channel->broken()) {
-        // The stream is misaligned or the peer is gone; kill the worker and
-        // let Exited drive the restart schedule.
-        job.Terminate();
+        // The peer is gone (or the stream is misaligned). A worker that just
+        // sent Cleanup is expected to close the pipe and exit 0, so leave it
+        // for the exit-code check below; anything else is a crash and is
+        // terminated now.
+        if (!cleanup_received) job.Terminate();
         channel->Close();
         channel.reset();
         server.Close();
@@ -572,7 +590,27 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     }
 
     if (worker_exited) {
+      if (cleanup_received) {
+        // "Cleanup received + exit 0" is the worker's clean terminal end: the
+        // supervisor journals it and exits 0 without a dump or a restart. A
+        // missing Cleanup or a non-zero code is still the crash path below.
+        // The pipe is already closed here, so bound the wait and terminate a
+        // worker that sent Cleanup but never exited.
+        DWORD worker_code = 0;
+        const bool exited = worker.WaitForExit(2000);
+        if (exited && GetExitCodeProcess(worker.process(), &worker_code) != 0 &&
+            worker_code == 0) {
+          AppendJournal(journal, run_id, "Worker", "clean exit",
+                        "worker exited after cleanup");
+          cleanup();
+          return 0;
+        }
+        if (!exited) job.Terminate();
+      }
       AppendJournal(journal, run_id, "Worker", "exit", "worker exited");
+      // This worker did not end cleanly, so the next process must not inherit
+      // its Cleanup flag.
+      cleanup_received = false;
       if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
           code.has_value()) {
         return *code;
@@ -605,6 +643,13 @@ int RunWorker(const SupervisorRunOptions& options) {
   if (config_path.empty()) {
     std::cerr << "error: --config is required for --worker\n";
     return 1;
+  }
+  if (has_effective_config && !options.config_path.empty()) {
+    // One line so a hand-run --worker is not silently using a different config
+    // than the one it was given on the command line.
+    std::cerr << "note: --worker uses " << Utf8Path(effective_config)
+              << " instead of --config " << Utf8Path(options.config_path)
+              << "\n";
   }
   const auto loaded =
       has_effective_config

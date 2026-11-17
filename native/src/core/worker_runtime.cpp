@@ -114,9 +114,17 @@ void WorkerRuntime::ObserveShow() {
     // A failed COM query is not a show state: keep the last good sample so the
     // failed poll cannot look like a slide change or a show end. Only a real
     // sample may update last_show_/last_slide_.
+    last_com_failed_ = true;
     Handle(MakeFailure(now, FailureKind::Transient, FailureSource::Com,
                        ComFailureDetail(show)));
     return;
+  }
+  if (last_com_failed_) {
+    // Spec 3.6: one success after a run of failures closes the error window.
+    // Emitted only on the failure-to-success edge, and the machine keeps this
+    // path journal-free, so healthy polling stays quiet.
+    last_com_failed_ = false;
+    Handle(MakeComHealthy(now));
   }
   if (show.active != last_show_.active) {
     Handle(show.active ? MakeShowStarted(now) : MakeShowEnded(now));

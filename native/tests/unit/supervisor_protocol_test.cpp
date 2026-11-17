@@ -8,12 +8,17 @@
 
 using htmlppt::Crc32;
 using htmlppt::DecodeFrame;
+using htmlppt::DecodeHeartbeatPayload;
 using htmlppt::DecodeStatus;
 using htmlppt::Duration;
 using htmlppt::EncodeFrame;
+using htmlppt::EncodeHeartbeatPayload;
 using htmlppt::FakeClock;
 using htmlppt::Frame;
 using htmlppt::FrameType;
+using htmlppt::HeartbeatPayload;
+using htmlppt::kProgressNotStarted;
+using htmlppt::ProgressTracker;
 using htmlppt::SequenceTracker;
 
 namespace {
@@ -98,6 +103,58 @@ HTMLPPT_TEST_CASE(decode_rejects_oversized_payload) {
   const auto decoded = DecodeFrame(malicious);
   HTMLPPT_CHECK(decoded.status == DecodeStatus::TooLarge);
   HTMLPPT_CHECK_EQ(decoded.consumed, htmlppt::kFrameHeaderSize);
+}
+
+HTMLPPT_TEST_CASE(heartbeat_payload_round_trip) {
+  HeartbeatPayload payload;
+  payload.state = 7;
+  payload.progress = 0x0102030405060708ull;
+  const auto encoded = EncodeHeartbeatPayload(payload);
+  HTMLPPT_CHECK_EQ(encoded.size(), htmlppt::kHeartbeatPayloadSize);
+  const auto decoded = DecodeHeartbeatPayload(encoded);
+  HTMLPPT_CHECK(decoded.has_value());
+  HTMLPPT_CHECK_EQ(decoded->state, std::uint8_t{7});
+  HTMLPPT_CHECK_EQ(decoded->progress, std::uint64_t{0x0102030405060708ull});
+}
+
+HTMLPPT_TEST_CASE(heartbeat_payload_rejects_wrong_size) {
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(
+                     std::span<const std::uint8_t>()).has_value());
+  const std::vector<std::uint8_t> one_byte{1};
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(one_byte).has_value());
+}
+
+HTMLPPT_TEST_CASE(progress_tracker_detects_unchanged_progress) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(tracker.observe(0, clock.now()));
+  clock.advance(Duration{1999});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(!tracker.observe(0, clock.now()));
+  clock.advance(Duration{1});
+  HTMLPPT_CHECK(tracker.stalled(clock.now(), Duration{2000}));
+}
+
+HTMLPPT_TEST_CASE(progress_tracker_advancing_progress_is_healthy) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  tracker.observe(0, clock.now());
+  clock.advance(Duration{1500});
+  HTMLPPT_CHECK(tracker.observe(1, clock.now()));
+  clock.advance(Duration{1500});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+}
+
+// Startup heartbeats carry the sentinel and no loop progress: they must not
+// make the tracker look stalled before the worker's loop even starts.
+HTMLPPT_TEST_CASE(progress_tracker_startup_sentinel_is_not_a_stall) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  HTMLPPT_CHECK(!tracker.observe(kProgressNotStarted, clock.now()));
+  clock.advance(Duration{5000});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(!tracker.has_progress());
 }
 
 HTMLPPT_TEST_CASE(sequence_tracker_detects_stall) {

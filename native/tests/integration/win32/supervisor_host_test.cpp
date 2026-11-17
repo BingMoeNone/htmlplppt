@@ -168,7 +168,12 @@ std::vector<std::uint32_t> WpsProcessIds() {
 class WpsTestProcesses {
  public:
   WpsTestProcesses() : before_(WpsProcessIds()) {}
-  ~WpsTestProcesses() {
+  ~WpsTestProcesses() { TerminateNew(); }
+
+  // Terminates every WPS process that appeared after this tracker was created,
+  // leaving instances that already existed (the operator's) alone. Safe to call
+  // more than once.
+  void TerminateNew() {
     for (const auto id : WpsProcessIds()) {
       if (std::find(before_.begin(), before_.end(), id) != before_.end()) {
         continue;
@@ -270,6 +275,73 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   DWORD exit_code = 0;
   GetExitCodeProcess(supervisor.process(), &exit_code);
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
+// I3: a worker that sends Cleanup and exits 0 has ended the run by itself; the
+// supervisor must journal that and exit 0 rather than request a dump and
+// restart the worker (which would reopen the deck and restart the show). Taking
+// the worker's WPS presentation away drives the state machine into SafeMode,
+// the production machine-driven end.
+HTMLPPT_TEST_CASE(win32_supervisor_clean_worker_exit_is_terminal) {
+  if (!WpsInstalled()) {
+    std::cout << "SKIP: WPS not installed\n";
+    return;
+  }
+  WpsTestProcesses wps_processes;
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  const std::string run_id = RunId();
+  JobHandle job;
+  ProcessHandle supervisor;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(supervisor.LaunchSuspended(
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
+  HTMLPPT_CHECK(supervisor.Resume());
+  HANDLE stop = WaitForStopEvent(
+      htmlppt::SupervisorStopEventName(run_id), 5000);
+  HTMLPPT_CHECK(stop != nullptr);
+
+  // Wait until the worker opened the deck and started the real show, so it owns
+  // a WPS instance the test can take away.
+  bool saw_show_start = false;
+  for (int i = 0; i < 150; ++i) {
+    auto blackbox = SharedBlackbox::Open(
+        htmlppt::SupervisorBlackboxName(run_id));
+    if (blackbox != nullptr) {
+      for (const auto& record : blackbox->Snapshot()) {
+        if (std::string(record.detail).find("start show") != std::string::npos) {
+          saw_show_start = true;
+          break;
+        }
+      }
+    }
+    if (saw_show_start) break;
+    Sleep(100);
+  }
+  HTMLPPT_CHECK(saw_show_start);
+
+  // Killing WPS makes every COM QueryShow() fail; the COM error window expires
+  // after 2 s and the machine enters SafeMode, so the session sends Cleanup and
+  // exits 0.
+  wps_processes.TerminateNew();
+
+  const bool exited = supervisor.WaitForExit(20000);
+  if (!exited) {
+    // Best-effort teardown so a failing case does not leak a running run.
+    SetEvent(stop);
+    supervisor.WaitForExit(5000);
+    supervisor.Terminate();
+  }
+  CloseHandle(stop);
+  HTMLPPT_CHECK(exited);
+  DWORD exit_code = 0;
+  GetExitCodeProcess(supervisor.process(), &exit_code);
+  HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(journal.find("clean exit") != std::string::npos);
+  HTMLPPT_CHECK(journal.find("Worker restart") == std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }
@@ -451,6 +523,20 @@ HTMLPPT_TEST_CASE(worker_rejects_plan_with_foreign_run_id) {
   std::cerr.rdbuf(previous);
   HTMLPPT_CHECK_EQ(rc, 1);
   HTMLPPT_CHECK(captured.str().find("does not match") != std::string::npos);
+
+  // Minor 11: when the supervisor's baked config is present, --worker must say
+  // it is preferring that file over the --config it was given.
+  {
+    std::ofstream baked(state_dir / L"worker-config.json", std::ios::binary);
+    baked << ReadTextFile(inputs.config);
+  }
+  std::ostringstream override_captured;
+  previous = std::cerr.rdbuf(override_captured.rdbuf());
+  const int override_rc = htmlppt::RunWorker(options);
+  std::cerr.rdbuf(previous);
+  HTMLPPT_CHECK_EQ(override_rc, 1);
+  HTMLPPT_CHECK(override_captured.str().find("instead of --config") !=
+                std::string::npos);
 
   std::error_code fs_error;
   std::filesystem::remove_all(state_dir, fs_error);
