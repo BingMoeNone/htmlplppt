@@ -27,6 +27,7 @@ void WorkerRuntime::Start() {
 
 bool WorkerRuntime::Step() {
   if (done_) return false;
+  const bool was_faulted = machine_.state() == State::Faulted;
   // Unlatch a rate-limited Faulted return retry before ObserveEdge() can see
   // the still-renamed title.
   AllowReturnRetry();
@@ -44,6 +45,13 @@ bool WorkerRuntime::Step() {
       machine_.state() == State::Exited || machine_.state() == State::SafeMode;
   if (done_) return false;
   ports_.clock.sleep_until(ports_.clock.now() + host_.poll_interval);
+  if (!was_faulted && machine_.state() == State::Faulted) {
+    // A fault observed in this Step cannot be retried before the next one. The
+    // window opens after this iteration's bounded idle wait, so the earliest
+    // retry is one full return_retry_interval of loop time after the faulting
+    // Step completes.
+    last_return_retry_ = ports_.clock.now();
+  }
   return true;
 }
 
@@ -106,7 +114,6 @@ void WorkerRuntime::ObserveEdge() {
         if (window.id != *selected) continue;
         if (IsReturnTitle(window.title)) {
           return_sent_ = true;
-          last_return_retry_ = now;
           Handle(MakeReturnRequested(now));
           return;
         }
@@ -138,9 +145,9 @@ void WorkerRuntime::AllowReturnRetry() {
     return;
   }
   // Unlatch so the next ObserveEdge() may report the still-renamed title once
-  // and the machine can retry. The interval is measured from the previous
-  // emission (recorded in ObserveEdge), so a wedged WPS is retried at most once
-  // per return_retry_interval instead of on every poll.
+  // and the machine can retry. The window opened after the faulting Step, so a
+  // wedged WPS is retried at most once per return_retry_interval instead of on
+  // every poll, and never within the Step that observed the fault.
   return_sent_ = false;
 }
 
@@ -153,6 +160,13 @@ void WorkerRuntime::Execute(const Action& action) {
   // non-blocking form, and FocusWps keeps the controller's retry loop. The
   // bounded poll interval governs the loop's idle wait at the end of Step(),
   // not an in-flight action.
+  //
+  // A failing action re-enters the machine (Execute -> Handle -> Dispatch) in
+  // the middle of this batch; the outer batch then continues, so a later
+  // [ResumeShow, FocusWps] pair still focuses after the failed resume. That
+  // recursion is safe only because the machine's failure handlers do not
+  // re-emit the same retrying action immediately (they schedule a retry,
+  // escalate, or enter Faulted).
   switch (action.kind) {
     case ActionKind::CoverFadeIn:
       cover_.FadeIn();

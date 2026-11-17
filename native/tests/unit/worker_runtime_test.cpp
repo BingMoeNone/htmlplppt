@@ -11,6 +11,7 @@
 using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
+using htmlppt::WorkerHostConfig;
 using htmlppt::test::HLiveAtSlide1;
 using htmlppt::test::HTriggeredAtSlide1;
 using htmlppt::test::MakeResolvedTarget;
@@ -187,9 +188,9 @@ HTMLPPT_TEST_CASE(worker_runtime_return_title_enters_and_stays_in_returning) {
 // ReturnRequested, so the renamed title must be reportable again after the
 // ReturnResume timeout. Without re-arming, Faulted would be a stuck state.
 //
-// The page keeps the renamed title, so the retry is rate-limited to one per
-// return_retry_interval; the step right after entering Faulted must not leave
-// it, and the step after the interval must.
+// The page keeps the renamed title, so the retry is rate-limited: the window
+// opens after the Step that observed the fault, one Step just inside the
+// boundary must not leave Faulted, and the Step on the boundary must retry.
 //
 // cover_max_hold is tuned below the 300 ms cover fade: at the default 10 s the
 // frame after the advance emits CoverHold first (ObserveCover runs before Tick)
@@ -197,6 +198,9 @@ HTMLPPT_TEST_CASE(worker_runtime_return_title_enters_and_stays_in_returning) {
 // never fire. Keeping the fade unfinished makes the timeout reachable at the
 // runtime level, which is the path under test.
 HTMLPPT_TEST_CASE(worker_runtime_reports_return_again_after_faulted) {
+  // Pin the spec default so a change cannot hide behind the test's own use of
+  // h.host.return_retry_interval.
+  HTMLPPT_CHECK_EQ(WorkerHostConfig{}.return_retry_interval, Duration{2000});
   WorkerHarness h;
   h.config.startup_ignore = Duration{0};
   h.config.cover_max_hold = Duration{100};
@@ -221,10 +225,11 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_again_after_faulted) {
   h.advance(h.config.cover_max_hold + Duration{1});
   h.runtime.Step();                             // ReturnResume timeout -> Faulted
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
-  h.runtime.Step();                             // inside the interval: no retry
+  h.advance(h.host.return_retry_interval - Duration{1});
+  h.runtime.Step();                             // one tick inside: no retry
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
-  h.advance(h.host.return_retry_interval);
-  h.runtime.Step();                             // interval elapsed: retry
+  h.advance(Duration{1});
+  h.runtime.Step();                             // boundary reached: retry
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
 }
 
@@ -247,6 +252,7 @@ HTMLPPT_TEST_CASE(worker_runtime_exits_show_then_resumes_on_return) {
   h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
   h.runtime.Step();                             // CoverHold -> ReturnCoverOut + ResumeShow
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ReturnCoverOut);
+  HTMLPPT_CHECK_EQ(h.presentation.resume_slides.size(), 1u);
   HTMLPPT_CHECK_EQ(h.presentation.resume_slides.back(), 1);
 }
 

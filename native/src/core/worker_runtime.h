@@ -99,7 +99,8 @@ class WorkerRuntime {
   // return_retry_interval.
   bool ready_sent_ = false;
   bool return_sent_ = false;
-  // When the last ReturnRequested was emitted; AllowReturnRetry() measures the
+  // When the current Faulted retry window opened: after the bounded idle wait
+  // of the Step that observed the fault. AllowReturnRetry() measures
   // return_retry_interval from this point.
   ClockPoint last_return_retry_{};
   std::optional<std::string> pending_stop_;
