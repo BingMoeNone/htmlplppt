@@ -76,10 +76,18 @@ class FakePresentationHost final : public PresentationHost {
   ShowState QueryShow() override { return show; }
   HostResult ExitShow() override {
     ++exit_show_calls;
+    if (fail_next_exit) {
+      fail_next_exit = false;
+      return Failed();
+    }
     return {};
   }
   HostResult ResumeShow(int slide) override {
     resume_slides.push_back(slide);
+    if (fail_next_resume) {
+      fail_next_resume = false;
+      return Failed();
+    }
     return {};
   }
   HostResult FocusShow() override { return {}; }
@@ -89,6 +97,18 @@ class FakePresentationHost final : public PresentationHost {
   int start_show_calls = 0;
   int exit_show_calls = 0;
   std::vector<int> resume_slides;
+  // Rejects the next ExitShow/ResumeShow call; consumed after one use so a
+  // retry sees a working host again.
+  bool fail_next_exit = false;
+  bool fail_next_resume = false;
+
+ private:
+  static HostResult Failed() {
+    HostResult result;
+    result.status = HostStatus::Failed;
+    result.detail = "fake presentation failure";
+    return result;
+  }
 };
 
 // Records overlay calls and the last opacity the controller applied.

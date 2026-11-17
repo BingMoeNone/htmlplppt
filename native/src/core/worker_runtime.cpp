@@ -140,6 +140,10 @@ void WorkerRuntime::Dispatch(const std::vector<Action>& actions) {
 }
 
 void WorkerRuntime::Execute(const Action& action) {
+  // An action may block up to its controller/COM timeout: WPS COM has no
+  // non-blocking form, and FocusWps keeps the controller's retry loop. The
+  // bounded poll interval governs the loop's idle wait at the end of Step(),
+  // not an in-flight action.
   switch (action.kind) {
     case ActionKind::CoverFadeIn:
       cover_.FadeIn();
@@ -165,13 +169,36 @@ void WorkerRuntime::Execute(const Action& action) {
       ready_sent_ = false;
       return_sent_ = false;
       break;
+    case ActionKind::ExitShow: {
+      const HostResult result = ports_.presentation.ExitShow();
+      if (!result.ok()) {
+        // RetryOperation::ExitShow owns the next attempt and its backoff.
+        Handle(MakeFailure(ports_.clock.now(), FailureKind::Transient,
+                           FailureSource::Other, "exit show failed"));
+      }
+      break;
+    }
+    case ActionKind::ResumeShow:
+    case ActionKind::RestoreShow: {
+      // ResumeShow ensures the show runs, focuses and jumps; RestoreShow is the
+      // same operation after a switch failure. A failure leaves no safe path
+      // back into the show, so report it as a return failure and let the
+      // machine enter Faulted with its operator diagnostic.
+      const HostResult result = ports_.presentation.ResumeShow(action.slide);
+      if (!result.ok()) {
+        Handle(MakeFailure(ports_.clock.now(), FailureKind::Return,
+                           FailureSource::Other, "resume show failed"));
+      }
+      break;
+    }
+    case ActionKind::FocusEdge:
+      if (edge_pid_ != 0) focus_.TryFocusEdge(edge_.pid());
+      break;
+    case ActionKind::FocusWps:
+      focus_.FocusWps(host_.wps_pids, host_.screen);
+      break;
     // Kinds owned by later tasks. They are journaled rather than ignored so a
     // missing case stays visible instead of vanishing in a default branch.
-    case ActionKind::ExitShow:
-    case ActionKind::ResumeShow:
-    case ActionKind::RestoreShow:
-    case ActionKind::FocusEdge:
-    case ActionKind::FocusWps:
     case ActionKind::EnterSafeMode:
     case ActionKind::LegacyFallback:
     case ActionKind::StopHelperThreads:
