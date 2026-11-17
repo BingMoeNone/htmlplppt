@@ -144,3 +144,40 @@ HTMLPPT_TEST_CASE(config_editor_save_is_atomic_and_clears_dirty) {
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }
+
+HTMLPPT_TEST_CASE(config_editor_apply_edit_updates_all_fields_at_once) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  htmlppt::TargetEdit edit;
+  edit.slide = 4;
+  edit.label = "Live";
+  edit.html = "page2.html";
+  edit.enabled = false;
+  std::string error;
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  const auto row = model.rows()[0];
+  HTMLPPT_CHECK_EQ(row.slide, 4);
+  HTMLPPT_CHECK_EQ(row.label, std::string{"Live"});
+  HTMLPPT_CHECK_EQ(row.html, std::string{"page2.html"});
+  HTMLPPT_CHECK(!row.enabled);
+  HTMLPPT_CHECK(model.dirty());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_apply_edit_rejects_bad_input) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  htmlppt::TargetEdit edit;
+  edit.slide = 0;
+  std::string error;
+  HTMLPPT_CHECK(!model.ApplyEdit(0, edit, &error));
+  HTMLPPT_CHECK(!error.empty());
+  edit.slide = 1;
+  edit.html.clear();
+  HTMLPPT_CHECK(!model.ApplyEdit(0, edit, &error));
+  edit.html = "page2.html";
+  HTMLPPT_CHECK(!model.ApplyEdit(5, edit, &error));
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}

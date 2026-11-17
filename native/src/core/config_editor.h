@@ -12,6 +12,16 @@
 
 namespace htmlppt {
 
+// The editable fields of one target, as the UI dialog collects them. An empty
+// assets_mode leaves the target's own assets block (or its absence) untouched.
+struct TargetEdit {
+  int slide = 1;
+  std::string label;
+  std::string html;
+  bool enabled = true;
+  std::string assets_mode;
+};
+
 // Testable half of the config UI (design spec 9.5): the Win32 view is a thin
 // skin over this model. It edits the *effective* profile (Config::active), which
 // is what ConfigToJson writes, so Save() produces a runnable config.
@@ -39,6 +49,8 @@ class ConfigEditorModel {
   bool SetHtml(std::size_t index, std::string html, std::string* error);
   bool SetLabel(std::size_t index, std::string label, std::string* error);
   bool SetEnabled(std::size_t index, bool enabled, std::string* error);
+  // One dialog result -> one dirty transition and one error path.
+  bool ApplyEdit(std::size_t index, const TargetEdit& edit, std::string* error);
   bool AddTarget(int slide, std::string html, std::string* error);
   bool RemoveTarget(std::size_t index, std::string* error);
 

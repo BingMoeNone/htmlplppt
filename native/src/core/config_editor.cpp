@@ -77,6 +77,32 @@ bool ConfigEditorModel::SetEnabled(std::size_t index, bool enabled,
   return true;
 }
 
+bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
+                                  std::string* error) {
+  if (!CheckIndex(index, target_count(), error)) return false;
+  if (edit.slide < 1) {
+    if (error != nullptr) *error = "slide must be >= 1";
+    return false;
+  }
+  if (edit.html.empty()) {
+    if (error != nullptr) *error = "html must not be empty";
+    return false;
+  }
+  TargetConfig& target = config_.active.targets[index];
+  target.slide = edit.slide;
+  target.label = edit.label;
+  target.html = edit.html;
+  target.enabled = edit.enabled;
+  if (!edit.assets_mode.empty()) {
+    // An explicit mode makes the target own its assets block; otherwise the
+    // global stage mode keeps applying.
+    target.assets.mode = edit.assets_mode;
+    target.assets_set = true;
+  }
+  dirty_ = true;
+  return true;
+}
+
 bool ConfigEditorModel::AddTarget(int slide, std::string html,
                                   std::string* error) {
   if (slide < 1) {
