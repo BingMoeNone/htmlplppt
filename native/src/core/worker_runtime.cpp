@@ -55,6 +55,7 @@ void WorkerRuntime::Start() {
 
 bool WorkerRuntime::Step() {
   if (done_) return false;
+  const ClockPoint step_start = ports_.clock.now();
   const bool was_faulted = machine_.state() == State::Faulted;
   // Unlatch a rate-limited Faulted return retry before ObserveEdge() can see
   // the still-renamed title.
@@ -78,7 +79,10 @@ bool WorkerRuntime::Step() {
   SyncSnapshot();
   done_ =
       machine_.state() == State::Exited || machine_.state() == State::SafeMode;
-  if (done_) return false;
+  if (done_) {
+    step_stats_.Add(std::chrono::duration_cast<Duration>(ports_.clock.now() - step_start));
+    return false;
+  }
   // Never idle past the machine's next deadline: a timeout must not be pushed
   // out by a whole poll interval. A deadline that is already due belongs to
   // Tick(); sleeping to it would busy-loop instead of waiting.
@@ -102,6 +106,7 @@ bool WorkerRuntime::Step() {
     // Step completes.
     last_return_retry_ = ports_.clock.now();
   }
+  step_stats_.Add(std::chrono::duration_cast<Duration>(ports_.clock.now() - step_start));
   return true;
 }
 
@@ -125,7 +130,9 @@ void WorkerRuntime::ObserveShow() {
                        FailureSource::Com, detail));
     return;
   }
+  const ClockPoint com_start = ports_.clock.now();
   const ShowState show = ports_.presentation.QueryShow();
+  com_stats_.Add(std::chrono::duration_cast<Duration>(ports_.clock.now() - com_start));
   const ClockPoint now = ports_.clock.now();
   if (show.status == HostStatus::Busy ||
       show.status == HostStatus::Unavailable ||

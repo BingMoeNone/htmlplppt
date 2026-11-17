@@ -35,7 +35,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 
 | # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 11 | 触发到全黑 `[实机]` | 翻页并计时（录屏或日志时间戳差） | p99 < 350 ms（当前实现为 20 ms 轮询 + 300 ms 淡入） |
+| 11 | 触发到全黑 `[实机]` | `set HTMLPPT_BENCHMARK=1` 运行后看 `benchmark.txt` | step p99 与 com p99 有实测数值；触发到全黑 p99 < 350 ms |
 | 12 | 空闲 CPU | 任务管理器观察运行中的 watchdog | 空闲 < 1%（当前 100 ms 轮询档） |
 
 ## 四、可观测性
@@ -61,7 +61,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 
 - 睡眠/唤醒、显示器热插拔、DPI 变化后的**定时器重算**（覆盖窗口已在 `WM_DISPLAYCHANGE`、`WM_DPICHANGED`、`WM_POWERBROADCAST` 时重新铺满并置顶，但截止时间不重新校准）。
 - 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
-- `--benchmark` 与 p99/CPU 指标输出（性能项只能人工观测）。
+- CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
 - `supervisor-loss`、`sleep-resume`、`multi-monitor` 三个故障开关（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny` 已可用，见 `native/README.md` 的 Fault injection）。
 - `focus.strategy`、`display.monitor`、`edge.prewarmProfile` 仍只解析不生效（`tree` 的 `include`/`exclude` glob 已实现）。
 - 配置 UI（§9）：`ConfigEditorModel` 已实现并有单测（增删目标、校验、原子保存），Win32 视图与自动映射向导未实现。

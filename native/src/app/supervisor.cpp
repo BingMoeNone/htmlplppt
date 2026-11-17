@@ -1007,6 +1007,27 @@ int RunWorker(const SupervisorRunOptions& options) {
     AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, 0,
                            "safe mode: worker entered SafeMode");
   }
+  // --benchmark: report the loop and COM latencies next to the worker config, so
+  // --diagnostics collects them and the acceptance doc's numbers are evidence.
+  if (std::getenv("HTMLPPT_BENCHMARK") != nullptr) {
+    const auto report_path =
+        std::filesystem::path(options.config_path).parent_path() /
+        "benchmark.txt";
+    std::ofstream report(report_path, std::ios::binary);
+    const auto& steps = runtime.step_stats();
+    const auto& com = runtime.com_stats();
+    report << "htmlppt-watchdog benchmark\n"
+           << "run " << run_id << "\n"
+           << "steps " << steps.count() << " p50 " << steps.P50().count()
+           << "ms p99 " << steps.P99().count() << "ms max "
+           << steps.Max().count() << "ms\n"
+           << "com " << com.count() << " p50 " << com.P50().count()
+           << "ms p99 " << com.P99().count() << "ms max " << com.Max().count()
+           << "ms\n";
+    std::cerr << "benchmark: steps p50 " << steps.P50().count() << "ms p99 "
+              << steps.P99().count() << "ms; com p50 " << com.P50().count()
+              << "ms p99 " << com.P99().count() << "ms\n";
+  }
   if (!session_error.empty()) {
     std::cerr << "warning: " << session_error << "\n";
   }

@@ -610,3 +610,11 @@ HTMLPPT_TEST_CASE(worker_runtime_edge_slow_fault_delays_readiness) {
   h.runtime.Step();  // ShowEnded -> Live
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
 }
+HTMLPPT_TEST_CASE(worker_runtime_records_latency_samples) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  for (int i = 0; i < 5; ++i) h.runtime.Step();
+  HTMLPPT_CHECK(h.runtime.step_stats().count() >= 5);
+  HTMLPPT_CHECK(h.runtime.com_stats().count() >= 5);
+}

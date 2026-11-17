@@ -52,3 +52,4 @@ demo/watcher.lock
 demo/watch-log.txt
 demo/*.owner
 demo/*.err
+demo/benchmark.txt

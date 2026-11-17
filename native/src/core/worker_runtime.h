@@ -13,6 +13,7 @@
 #include "core/edge_controller.h"
 #include "core/faults.h"
 #include "core/focus_controller.h"
+#include "core/latency_stats.h"
 #include "core/presentation_host.h"
 #include "core/state_machine.h"
 #include "core/state_machine_types.h"
@@ -71,6 +72,9 @@ class WorkerRuntime : public WorkerDriver {
   void HandleSupervisorLost(std::string detail) override;
   const StateSnapshot& snapshot() const override { return snapshot_; }
   const std::vector<std::string>& journal() const { return journal_; }
+  // --benchmark instrumentation: per-step and per-COM-query latencies.
+  const LatencyStats& step_stats() const { return step_stats_; }
+  const LatencyStats& com_stats() const { return com_stats_; }
 
  private:
   void ObserveShow();
@@ -126,6 +130,9 @@ class WorkerRuntime : public WorkerDriver {
   // itself, so a repeated stop cannot run or report the cleanup twice.
   bool cleanup_done_ = false;
   bool done_ = false;
+  // --benchmark samples, bounded by the histogram's ring.
+  LatencyStats step_stats_;
+  LatencyStats com_stats_;
 };
 
 } // namespace htmlppt

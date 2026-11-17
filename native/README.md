@@ -297,6 +297,15 @@ $env:HTMLPPT_FAULTS = 'edge-slow'
 native\build\htmlppt-watchdog.exe --supervisor --config demo\watcher.json --state-dir demo\state --run-id demo
 ```
 
+`HTMLPPT_BENCHMARK=1` (worker environment) makes the worker write
+`benchmark.txt` next to `worker-config.json` with per-step and per-COM-query
+p50/p99/max latencies, so a real run's numbers are evidence rather than a guess:
+
+```text
+steps 118 p50 31ms p99 140ms max 233ms
+com   118 p50  3ms p99   9ms max  19ms
+```
+
 The cover window also re-covers on `WM_DISPLAYCHANGE`, `WM_DPICHANGED` and
 `WM_POWERBROADCAST` resume: the loop's wait pumps messages, so a topology change
 or resume reaches the overlay immediately instead of waiting for the next COM
