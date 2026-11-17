@@ -317,15 +317,44 @@ call. A resume also re-bases every pending deadline by the measured suspend gap
 pile of expired timers; a display change updates the reference metrics used for
 show-window scoring.
 
-### Config editor
+### Config editor (`--config-ui`)
 
-`core/config_editor` is the testable half of the spec 9.5 UI: it edits the
-effective profile, validates through the same resolver a run uses (so a duplicate
-slide is reported against the offending target), and saves atomically -- a
-temporary sibling file replaces the target only after a complete write, so a
-failed save never truncates the config. `rows()` also reports the effective asset
-mode per target. The Win32 view and the auto-mapping wizard are not built yet;
-this model is what they will sit on.
+```powershell
+native\build\htmlppt-watchdog.exe --config-ui --config watcher.json
+```
+
+Windows only. Add `--deck-info deck-info.json` on a machine without WPS, exactly
+like `--validate`. The window is a thin Win32 view over `core/config_editor`,
+which edits the effective profile, validates through the same resolver a run
+uses, and saves atomically.
+
+1. The table lists one row per effective target: slide, label, HTML, assets
+   mode, and the resolver's state. An error row carries its first issue in the
+   STATE column.
+2. Selecting a row fills the right-hand pane: slide, label, HTML, an assets
+   mode (`inherit` clears the target's own block so the stage mode applies), and
+   the enabled switch. Edit the fields and press **Apply**; the status line
+   reports `applied`, or the first blocking reason when the refresh leaves Save
+   closed.
+3. **Add** appends a target with a placeholder HTML, **Remove** asks for
+   confirmation and drops the selected target, and **Validate** re-runs the
+   resolver and shows the first issue -- including a config-wide error such as a
+   missing deck, which has no row of its own.
+4. **Save** stays disabled while the model is clean or blocked by an error. It
+   writes a sibling temporary file and only then replaces the config, copying
+   the previous contents to `<name>.bak`; a failed write never truncates the
+   config. The gate closes again once the save succeeds.
+5. Closing with unsaved edits asks Yes/No/Cancel. Yes saves first -- only while
+   the Save gate is open, so a blocked config is never persisted -- and closes
+   only when the save succeeds; a failed save stays open and shows the reason.
+   No discards the edits and closes, and Cancel keeps the window and its edits.
+   The window declares a minimum size and follows `WM_DPICHANGED`, so the pane
+   and its Apply button never cover the status line.
+
+A missing or broken config is not fatal: the window opens with the loader's
+first issue in the status line, so the file can be repaired in place instead of
+losing the window. The auto-mapping wizard from spec 9.5 is still not built; the
+editor sits on `ConfigEditorModel` so it can be added later.
 
 ### Threading model
 

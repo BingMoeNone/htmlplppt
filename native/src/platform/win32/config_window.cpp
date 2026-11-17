@@ -38,6 +38,17 @@ constexpr int kToolbarGap = 8;
 constexpr int kDetailWidth = 300;
 constexpr int kDetailMargin = 12;
 
+// The pane's Apply button sits below the fields at this offset, with a small
+// bottom margin before the status line. A window smaller than the sum below
+// would clip the pane, so WM_GETMINMAXINFO refuses to shrink past it.
+constexpr int kPaneApplyTop = 328;
+constexpr int kPaneApplyHeight = 28;
+constexpr int kPaneBottomMargin = 8;
+constexpr int kMinClientWidth = 560;
+constexpr int kMinClientHeight =
+    kToolbarHeight + kPaneApplyTop + kPaneApplyHeight + kPaneBottomMargin +
+    kStatusHeight;
+
 // The model carries UTF-8; the list control stores UTF-16. Widen as a real
 // UTF-8 -> UTF-16 conversion so non-ASCII labels and paths survive intact.
 std::wstring Widen(const std::string& utf8) {
@@ -64,6 +75,10 @@ std::wstring TextOf(HWND control) {
 }
 
 } // namespace
+
+bool ShouldCloseWindow(bool dirty, bool answer_save) {
+  return !dirty || answer_save;
+}
 
 bool ParseTargetEditFields(const std::wstring& slide_text,
                            const std::wstring& html,
@@ -175,6 +190,16 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
       CW_USEDEFAULT, CW_USEDEFAULT, options.width, options.height, nullptr,
       nullptr, GetModuleHandleW(nullptr), this);
   if (handle_ == nullptr) return false;
+  // The options are 96-DPI logical units. Scale the initial size to the DPI of
+  // the monitor the window opened on before creating and laying out children.
+  dpi_ = GetDpiForWindow(handle_);
+  if (dpi_ == 0) dpi_ = 96;
+  const int scaled_width = Scale(options.width);
+  const int scaled_height = Scale(options.height);
+  if (scaled_width != options.width || scaled_height != options.height) {
+    SetWindowPos(handle_, nullptr, 0, 0, scaled_width, scaled_height,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
   CreateChildren();
   RECT client{};
   GetClientRect(handle_, &client);
@@ -216,7 +241,7 @@ void ConfigWindow::CreateChildren() {
     LVCOLUMNW column{};
     column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
     column.pszText = const_cast<wchar_t*>(headings[i]);
-    column.cx = widths[i];
+    column.cx = Scale(widths[i]);
     column.iSubItem = i;
     ListView_InsertColumn(list_view_, i, &column);
   }
@@ -270,35 +295,44 @@ void ConfigWindow::CreateChildren() {
   SetSaveEnabled(false);
 }
 
+int ConfigWindow::Scale(int value) const {
+  return MulDiv(value, static_cast<int>(dpi_), 96);
+}
+
 void ConfigWindow::Layout(int width, int height) {
   if (handle_ == nullptr || list_view_ == nullptr || status_view_ == nullptr) {
     return;
   }
   // Toolbar band across the top; the list and the detail pane start below it.
+  const int toolbar_height = Scale(kToolbarHeight);
+  const int button_height = Scale(kToolbarButtonHeight);
+  const int button_width = Scale(kToolbarButtonWidth);
   HWND toolbar[] = {add_button_, remove_button_, save_button_, validate_button_};
-  int toolbar_x = kToolbarMargin;
+  int toolbar_x = Scale(kToolbarMargin);
   for (HWND button : toolbar) {
     if (button == nullptr) continue;
-    MoveWindow(button, toolbar_x, (kToolbarHeight - kToolbarButtonHeight) / 2,
-               kToolbarButtonWidth, kToolbarButtonHeight, TRUE);
-    toolbar_x += kToolbarButtonWidth + kToolbarGap;
+    MoveWindow(button, toolbar_x, (toolbar_height - button_height) / 2,
+               button_width, button_height, TRUE);
+    toolbar_x += button_width + Scale(kToolbarGap);
   }
 
-  const int list_width = width > kDetailWidth ? width - kDetailWidth : 0;
-  const int body_top = kToolbarHeight;
-  const int body_height = height - kStatusHeight - kToolbarHeight;
+  const int detail_width = Scale(kDetailWidth);
+  const int status_height = Scale(kStatusHeight);
+  const int list_width = width > detail_width ? width - detail_width : 0;
+  const int body_top = toolbar_height;
+  const int status_top = height - status_height;
+  const int body_height = status_top - body_top;
   MoveWindow(list_view_, 0, body_top, list_width,
              body_height > 0 ? body_height : 0, TRUE);
-  MoveWindow(status_view_, 0, height - kStatusHeight, width, kStatusHeight,
-             TRUE);
+  MoveWindow(status_view_, 0, status_top, width, status_height, TRUE);
 
-  const int pane_left = width > kDetailWidth ? width - kDetailWidth : 0;
-  const int field_left = pane_left + kDetailMargin;
-  const int field_width = kDetailWidth - 2 * kDetailMargin;
+  const int pane_left = width > detail_width ? width - detail_width : 0;
+  const int field_left = pane_left + Scale(kDetailMargin);
+  const int field_width = detail_width - 2 * Scale(kDetailMargin);
   const auto place = [&](HWND control, int top, int control_height) {
     if (control == nullptr) return;
-    MoveWindow(control, field_left, body_top + top, field_width, control_height,
-               TRUE);
+    MoveWindow(control, field_left, body_top + Scale(top), field_width,
+               Scale(control_height), TRUE);
   };
   place(detail_slide_label_, 8, 16);
   place(detail_slide_edit_, 24, 24);
@@ -311,7 +345,16 @@ void ConfigWindow::Layout(int width, int height) {
   place(detail_assets_combo_, 168, 120);
   place(detail_enabled_check_, 296, 24);
   if (detail_apply_button_ != nullptr) {
-    MoveWindow(detail_apply_button_, field_left, body_top + 328, 90, 28, TRUE);
+    // Anchored above the status line as well as below the fields: a
+    // programmatic resize can shrink the window below WM_GETMINMAXINFO's
+    // minimum, and the Apply button must still not cover the status text.
+    const int apply_height = Scale(kPaneApplyHeight);
+    const int desired_top = body_top + Scale(kPaneApplyTop);
+    const int lowest_top = status_top - apply_height - Scale(kPaneBottomMargin);
+    int apply_top = desired_top < lowest_top ? desired_top : lowest_top;
+    if (apply_top < body_top) apply_top = body_top;
+    MoveWindow(detail_apply_button_, field_left, apply_top, Scale(90),
+               apply_height, TRUE);
   }
 }
 
@@ -444,9 +487,9 @@ void ConfigWindow::ApplyDetail() {
   if (!edit_handler_) return;
   const DetailFields fields = detail_fields();
   std::wstring error;
-  if (edit_handler_(fields, &error)) {
-    SetStatus(L"applied");
-  } else {
+  if (!edit_handler_(fields, &error)) {
+    // The handler owns the success status: only it knows whether the refreshed
+    // config is still blocked. The view only reports a rejection.
     SetStatus(error);
   }
 }
@@ -475,6 +518,52 @@ void ConfigWindow::SetSaveEnabled(bool enabled) {
   save_enabled_ = enabled;
   if (save_button_ != nullptr) {
     EnableWindow(save_button_, enabled ? TRUE : FALSE);
+  }
+}
+
+void ConfigWindow::SetDirty(bool dirty) { dirty_ = dirty; }
+
+void ConfigWindow::SetClosePromptHandler(std::function<int()> handler) {
+  close_prompt_handler_ = std::move(handler);
+}
+
+int ConfigWindow::ConfirmClose() {
+  if (close_prompt_handler_) return close_prompt_handler_();
+  if (handle_ == nullptr) return IDCANCEL;
+  return MessageBoxW(handle_, L"Save the changes before closing?",
+                     L"htmlppt config", MB_YESNOCANCEL | MB_ICONWARNING);
+}
+
+bool ConfigWindow::SaveBeforeClose() {
+  // The Save button is gated off while the config has a blocking error, and the
+  // close prompt must not sneak an unrunnable config past that gate. The status
+  // line already names the first blocking reason from the last refresh.
+  if (!save_enabled_) return false;
+  std::wstring error;
+  if (!save_handler_ || !save_handler_(&error)) {
+    SetStatus(error.empty() ? L"cannot save before closing" : error);
+    return false;
+  }
+  return true;
+}
+
+void ConfigWindow::OnClose() {
+  if (!dirty_) {
+    DestroyWindow(handle_);
+    return;
+  }
+  const int answer = ConfirmClose();
+  if (answer == IDNO) {
+    // Discard the edits and close without touching the file.
+    DestroyWindow(handle_);
+    return;
+  }
+  if (answer != IDYES) return;  // Cancel keeps the window and its edits.
+  // Save first; a failed save must leave the window open with the reason in
+  // the status line.
+  const bool saved = SaveBeforeClose();
+  if (ShouldCloseWindow(dirty_, saved)) {
+    DestroyWindow(handle_);
   }
 }
 
@@ -610,8 +699,44 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_SIZE:
       Layout(static_cast<int>(LOWORD(lparam)), static_cast<int>(HIWORD(lparam)));
       return 0;
+    case WM_DPICHANGED: {
+      // The suggested rect in lparam is already in the new DPI's physical
+      // pixels; apply it and re-scale every layout metric to the new DPI.
+      const UINT new_dpi = HIWORD(wparam);
+      if (new_dpi != 0) dpi_ = new_dpi;
+      const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+      if (suggested != nullptr) {
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      RECT client{};
+      if (GetClientRect(hwnd, &client) != 0) {
+        Layout(client.right - client.left, client.bottom - client.top);
+      }
+      return 0;
+    }
+    case WM_GETMINMAXINFO: {
+      // DefWindowProc fills the maximize defaults; only raise the minimum
+      // tracking size so the toolbar, the pane's Apply button, and the status
+      // line always fit while the user drags a border.
+      DefWindowProcW(hwnd, message, wparam, lparam);
+      auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+      if (info == nullptr) return 0;
+      RECT minimum{0, 0, Scale(kMinClientWidth), Scale(kMinClientHeight)};
+      const DWORD style =
+          static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+      const DWORD ex_style =
+          static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+      if (AdjustWindowRectExForDpi(&minimum, style, FALSE, ex_style, dpi_) != 0) {
+        info->ptMinTrackSize.x = minimum.right - minimum.left;
+        info->ptMinTrackSize.y = minimum.bottom - minimum.top;
+      }
+      return 0;
+    }
     case WM_CLOSE:
-      DestroyWindow(hwnd);
+      OnClose();
       return 0;
     case WM_COMMAND: {
       if (HIWORD(wparam) != BN_CLICKED) {

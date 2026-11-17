@@ -60,7 +60,11 @@ if (WIN32)
   file(GLOB HTMLPPT_WIN32_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/win32/*.cpp")
   add_library(htmlppt_win32 STATIC ${HTMLPPT_WIN32_SOURCES})
-  target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX UNICODE _UNICODE)
+  # Target platform is Windows 10/11 (the manifest requires PerMonitorV2), but
+  # the default WINVER is Windows 7, which hides GetDpiForWindow and
+  # AdjustWindowRectExForDpi. Raise it so the DPI-aware editor can call them.
+  target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX UNICODE _UNICODE
+    WINVER=0x0A00 _WIN32_WINNT=0x0A00)
   target_link_libraries(htmlppt_win32 PUBLIC htmlppt_core dbghelp ole32
     oleaut32 shell32 comctl32)
   htmlppt_enable_warnings(htmlppt_win32)

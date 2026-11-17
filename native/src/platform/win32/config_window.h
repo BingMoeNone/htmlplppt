@@ -29,7 +29,7 @@ struct DetailFields {
   bool enabled = true;
 };
 
-// The window cannot parse or apply an edit; Task 3 installs this seam, which
+// The window cannot parse or apply an edit; the app installs this seam, which
 // receives the raw pane fields and reports an error on rejection.
 using DetailEditHandler =
     std::function<bool(const DetailFields& fields, std::wstring* error)>;
@@ -42,6 +42,12 @@ using ToolbarHandler = std::function<bool(std::wstring* error)>;
 // Remove carries the selected row's model index (DisplayRow::index).
 using RemoveHandler =
     std::function<bool(std::size_t index, std::wstring* error)>;
+
+// The close policy: a window with no pending edits always closes; a dirty one
+// only when the user answered the close prompt with Save and that save went
+// through (answer_save). Cancel and a failed save keep the window and its edits
+// open.
+bool ShouldCloseWindow(bool dirty, bool answer_save);
 
 // Converts the detail pane's raw text into one model edit. The slide must parse
 // as a whole number (an empty field is an error); html and label are encoded
@@ -72,7 +78,7 @@ class ConfigWindow {
   bool Create(const ConfigWindowOptions& options);
   // Runs until WM_QUIT; returns the quit code.
   int RunMessageLoop();
-  // Posts WM_CLOSE (the window may refuse while dirty; see Task 8).
+  // Posts WM_CLOSE; a dirty window prompts first and may refuse to close.
   bool Close();
   HWND handle() const { return handle_; }
   HWND list_view() const { return list_view_; }
@@ -91,7 +97,7 @@ class ConfigWindow {
   // False when there is no selection, so the pane must not be written through.
   bool detail_enabled() const;
 
-  // Task 3 installs the edit handler; the view itself never touches Config.
+  // The app installs the edit handler; the view itself never touches Config.
   void SetEditHandler(DetailEditHandler handler);
   // Reports selection changes with the selected row's model index
   // (DisplayRow::index), or -1 when nothing is selected. A refresh that clears
@@ -99,14 +105,15 @@ class ConfigWindow {
   // target that no longer exists. The window is only a view: the handler must
   // not assume it can keep the HWND alive past WM_DESTROY.
   void SetSelectionHandler(std::function<void(int)> handler);
-  // Forwards the pane fields to the installed handler, if any; the status line
-  // shows "applied" or the handler's error text.
+  // Forwards the pane fields to the installed handler, if any. On success the
+  // handler owns the status line (it reports "applied" or the blocking reason
+  // the refresh found); on failure the view shows the handler's error text.
   void ApplyDetail();
   // The Apply button handle; the test seam for the WM_COMMAND route.
   HWND apply_button() const { return detail_apply_button_; }
 
-  // Toolbar seams (Task 4). The view only forwards: RunConfigUi installs the
-  // model calls. Each handler rebuilds the rows and the Save gate itself.
+  // Toolbar seams. The view only forwards: RunConfigUi installs the model
+  // calls. Each handler rebuilds the rows and the Save gate itself.
   void SetAddHandler(ToolbarHandler handler);
   void SetRemoveHandler(RemoveHandler handler);
   void SetSaveHandler(ToolbarHandler handler);
@@ -123,23 +130,45 @@ class ConfigWindow {
   void SetSaveEnabled(bool enabled);
   bool save_enabled() const { return save_enabled_; }
 
+  // Mirrors ConfigEditorModel::dirty() so WM_CLOSE can decide whether to ask
+  // before closing. The app updates this after every action, next to the Save
+  // gate.
+  void SetDirty(bool dirty);
+  bool dirty() const { return dirty_; }
+  // The close prompt asks MessageBoxW(MB_YESNOCANCEL); tests replace this so a
+  // headless run never blocks on a modal dialog. Returns IDYES (save), IDNO
+  // (discard), or IDCANCEL (keep the window). "Save" only runs the save handler
+  // while the Save gate is open, so a blocked config is never persisted.
+  void SetClosePromptHandler(std::function<int()> handler);
+
   // Toolbar button handles; the test seams for the WM_COMMAND routes.
   HWND add_button() const { return add_button_; }
   HWND remove_button() const { return remove_button_; }
   HWND save_button() const { return save_button_; }
   HWND validate_button() const { return validate_button_; }
 
+  // The layout DPI (96 = 100%). The initial window size and every layout
+  // metric scale with it; tests derive their expectations from this instead of
+  // assuming 96.
+  UINT dpi() const { return dpi_; }
+
  private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam);
   LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   void CreateChildren();
+  // One 96-DPI logical unit in the window's current layout DPI.
+  int Scale(int value) const;
   void Layout(int width, int height);
   void FillDetail(const DisplayRow& row);
   void ClearDetail();
   void UpdateDetailEnabled();
   void NotifySelection();
   bool ConfirmRemove();
+  // WM_CLOSE: destroy when clean, otherwise ask and save, discard, or stay.
+  void OnClose();
+  int ConfirmClose();
+  bool SaveBeforeClose();
   void AddTarget();
   void RemoveSelectedTarget();
   void SaveConfig();
@@ -175,7 +204,10 @@ class ConfigWindow {
   ToolbarHandler save_handler_;
   ToolbarHandler validate_handler_;
   std::function<bool()> remove_confirm_handler_;
+  std::function<int()> close_prompt_handler_;
   bool save_enabled_ = false;
+  bool dirty_ = false;
+  UINT dpi_ = 96;
 };
 
 } // namespace htmlppt

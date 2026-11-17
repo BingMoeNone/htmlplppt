@@ -63,16 +63,17 @@ int RunConfigUi(const std::filesystem::path& config_path,
     return 1;
   }
 
-  // Recomputes the rows and the Save gate after every action, and returns the
-  // first blocking message: a target row's error when there is one, otherwise
-  // the config-wide resolver error that has no row of its own (a missing or
-  // invalid deck). Empty means the config is clean.
+  // Recomputes the rows, the Save gate, and the dirty flag after every action,
+  // and returns the first blocking message: a target row's error when there is
+  // one, otherwise the config-wide resolver error that has no row of its own (a
+  // missing or invalid deck). Empty means the config is clean.
   const auto refresh = [&window, &model, deck_info]() -> std::wstring {
     const std::vector<DisplayRow> rows =
         model.DisplayRows(deck_info, ResolveOptions{});
     window.SetRows(rows);
     const bool blocked = model.HasBlockingError(deck_info, ResolveOptions{});
     window.SetSaveEnabled(model.dirty() && !blocked);
+    window.SetDirty(model.dirty());
     if (!blocked) return {};
     for (const auto& row : rows) {
       if (row.state == "error") return Widen(row.issue);
@@ -93,7 +94,7 @@ int RunConfigUi(const std::filesystem::path& config_path,
   });
 
   window.SetEditHandler(
-      [&model, &selected_index,
+      [&window, &model, &selected_index,
        refresh](const DetailFields& fields, std::wstring* error) {
         TargetEdit edit;
         std::wstring parse_error;
@@ -111,8 +112,11 @@ int RunConfigUi(const std::filesystem::path& config_path,
           return false;
         }
         // The view never writes Config: after a successful edit, recompute the
-        // rows and the Save gate here. ApplyDetail reports "applied" itself.
-        refresh();
+        // rows, the Save gate, and the dirty flag here. This handler is the one
+        // owner of the edit's status line: it reports "applied", or the first
+        // blocking reason when the refresh left Save closed.
+        const std::wstring reason = refresh();
+        window.SetStatus(reason.empty() ? L"applied" : reason);
         return true;
       });
 

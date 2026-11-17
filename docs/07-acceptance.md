@@ -55,7 +55,18 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 | 18 | 旧 `stop-live.vbs` 停止新实例 | 运行中双击 `scripts/stop-live.vbs` | **当前不通过**：见“未实现”一节 |
 | 19 | 旧日志阅读习惯 | 查看 `watch-log.txt` | 仍是人类可读行，JSONL 不替代它 |
 
-## 六、未实现（验收时会失败）
+## 六、配置 UI（§9）
+
+没有 WPS 的机器加 `--deck-info deck-info.json`（与 `--validate` 相同）。
+
+| # | 项目 | 命令 | 通过判据 |
+|---|---|---|---|
+| 20 | 缺失配置也能打开 | `native\build\htmlppt-watchdog.exe --config-ui --config missing\watcher.json` | 窗口照常打开而不是退出；状态栏为 `cannot load <path>: <第一条问题>`，列表为空，可直接在窗口里修复 |
+| 21 | 编辑并保存 | 打开有效配置，选中一行，改 LABEL/HTML 后 Apply，再点 Save | 列表与状态栏反映新值；目标文件是新的原子写入结果，旧内容保留为 `<name>.bak`；保存成功后 Save 按钮变灰（模型不再 dirty） |
+| 22 | 有错时禁止保存 | 把一行的 slide 改成与另一行重复后 Apply；再用一个 deck 缺失的配置试全局错误 | 状态栏显示首个错误（包括没有对应行的全局错误），Save 按钮置灰，文件不会被写入 |
+| 23 | 关闭提示 | 修改后直接关闭窗口，在 Yes/No/Cancel 提示里分别操作 | Yes：保存成功后关闭；保存失败则保留窗口并把错误写进状态栏。No：不保存直接关闭。Cancel：保留窗口与编辑内容 |
+
+## 七、未实现（验收时会失败）
 
 这些条目在规格里存在但代码尚未接线，验收时**不应勾选**：
 
@@ -64,4 +75,4 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
 - 故障开关已全部可用（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny`、`supervisor-loss`、`sleep-resume`、`multi-monitor`），见 `native/README.md` 的 Fault injection。
 - `display.monitor`、`focus.strategy`、`edge.prewarmProfile` 已接线（选屏、激活链选择、Edge 预热）；`tree` 的 `include`/`exclude` glob 已实现。
-- 配置 UI（§9）：`ConfigEditorModel` 已实现并有单测（增删目标、校验、原子保存），Win32 视图与自动映射向导未实现。
+- 配置 UI（§9）：`--config-ui` 编辑器（列表、详情、工具栏、Save 门禁、原子保存 + `.bak`、关闭提示、DPI 重排）已实现；自动映射向导仍未实现。

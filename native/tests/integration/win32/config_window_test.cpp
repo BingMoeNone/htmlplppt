@@ -34,6 +34,28 @@ HTMLPPT_TEST_CASE(win32_config_window_creates_and_closes) {
 
 #include "core/config_editor.h"
 
+namespace {
+
+// Scales one 96-DPI layout unit to `dpi`.
+int Scaled(int value, UINT dpi) {
+  return MulDiv(value, static_cast<int>(dpi), 96);
+}
+
+// Drains the message queue until a posted WM_CLOSE has destroyed the window.
+void PumpUntilDestroyed(HWND hwnd) {
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(hwnd) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+}
+
+} // namespace
+
 HTMLPPT_TEST_CASE(win32_config_window_shows_the_target_rows) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;
@@ -60,7 +82,10 @@ HTMLPPT_TEST_CASE(win32_config_window_shows_the_target_rows) {
   ListView_GetItemText(window.list_view(), 0, 0, text, 128);
   HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"3"));
   ListView_GetItemText(window.list_view(), 1, 4, text, 128);
-  HTMLPPT_CHECK(std::wstring(text).rfind(L"error", 0) == 0);
+  // compare(0, 5, ...) is the same "starts with error" check as
+  // wstring(text).rfind(L"error", 0) == 0; GCC 16 mis-folds the temporary
+  // string built for rfind under -O3/-Werror.
+  HTMLPPT_CHECK(std::wstring(text).compare(0, 5, L"error") == 0);
 
   window.SetStatus(L"2 target(s)");
   wchar_t status[64] = {};
@@ -313,11 +338,14 @@ HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
 
   htmlppt::DetailFields captured;
   int calls = 0;
+  // The installed handler owns the success status: it is the one that knows
+  // whether the refresh left a blocking error, so it writes "applied" itself.
   window.SetEditHandler(
       [&](const htmlppt::DetailFields& fields, std::wstring* error) {
         captured = fields;
         ++calls;
         if (error != nullptr) error->clear();
+        window.SetStatus(L"applied");
         return true;
       });
   HTMLPPT_CHECK(window.apply_button() != nullptr);
@@ -336,6 +364,36 @@ HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
   GetWindowTextW(window.status_view(), status, 64);
   HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"applied"));
 
+  // A blocking reason reported by the handler must survive the click: the view
+  // must not clobber it with a blanket "applied".
+  window.SetEditHandler(
+      [&](const htmlppt::DetailFields&, std::wstring* error) {
+        ++calls;
+        if (error != nullptr) error->clear();
+        window.SetStatus(L"applied - save blocked by: deck must not be empty");
+        return true;
+      });
+  click_apply();
+  HTMLPPT_CHECK_EQ(calls, 2);
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(
+      std::wstring(status),
+      std::wstring(L"applied - save blocked by: deck must not be empty"));
+
+  // A handler that writes no success status leaves the previous text alone;
+  // the view adds nothing of its own.
+  window.SetStatus(L"previous");
+  window.SetEditHandler(
+      [&](const htmlppt::DetailFields&, std::wstring* error) {
+        ++calls;
+        if (error != nullptr) error->clear();
+        return true;
+      });
+  click_apply();
+  HTMLPPT_CHECK_EQ(calls, 3);
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"previous"));
+
   // A rejected edit reports the handler's error text.
   window.SetEditHandler(
       [](const htmlppt::DetailFields&, std::wstring* error) {
@@ -350,7 +408,7 @@ HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
   // No handler installed: the same click is a no-op, not a crash.
   window.SetEditHandler(nullptr);
   click_apply();
-  HTMLPPT_CHECK_EQ(calls, 1);
+  HTMLPPT_CHECK_EQ(calls, 3);
   GetWindowTextW(window.status_view(), status, 64);
   HTMLPPT_CHECK_EQ(std::wstring(status),
                    std::wstring(L"html must not be empty"));
@@ -626,6 +684,176 @@ HTMLPPT_TEST_CASE(win32_config_window_reports_the_selected_model_index) {
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
+HTMLPPT_TEST_CASE(win32_should_close_window_honours_dirty_and_answer) {
+  HTMLPPT_CHECK(htmlppt::ShouldCloseWindow(false, false));
+  HTMLPPT_CHECK(!htmlppt::ShouldCloseWindow(true, false));
+  HTMLPPT_CHECK(htmlppt::ShouldCloseWindow(true, true));
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_close_policy_prompts_only_when_dirty) {
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+
+  // A clean window closes without asking and without saving.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    HTMLPPT_CHECK(!window.dirty());
+    int prompts = 0;
+    int saves = 0;
+    window.SetClosePromptHandler([&prompts] {
+      ++prompts;
+      return IDCANCEL;
+    });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) error->clear();
+      return true;
+    });
+    HTMLPPT_CHECK(window.Close());
+    PumpUntilDestroyed(window.handle());
+    HTMLPPT_CHECK(window.handle() == nullptr);
+    HTMLPPT_CHECK_EQ(prompts, 0);
+    HTMLPPT_CHECK_EQ(saves, 0);
+  }
+
+  // Cancel keeps the window and its edits, and never runs the save handler.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    HTMLPPT_CHECK(window.dirty());
+    window.SetDirty(false);
+    HTMLPPT_CHECK(!window.dirty());
+    window.SetDirty(true);
+    int prompts = 0;
+    int saves = 0;
+    window.SetClosePromptHandler([&prompts] {
+      ++prompts;
+      return IDCANCEL;
+    });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) error->clear();
+      return true;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() != nullptr);
+    HTMLPPT_CHECK_EQ(prompts, 1);
+    HTMLPPT_CHECK_EQ(saves, 0);
+    // Leave the window clean so the destructor (not WM_CLOSE) tears it down.
+    window.SetDirty(false);
+  }
+
+  // No discards the edits and closes without saving.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    int saves = 0;
+    window.SetClosePromptHandler([] { return IDNO; });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) error->clear();
+      return true;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() == nullptr);
+    HTMLPPT_CHECK_EQ(saves, 0);
+  }
+
+  // Yes saves and closes once the save succeeded. A dirty, error-free model is
+  // exactly the state with the Save gate open.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    window.SetSaveEnabled(true);
+    int saves = 0;
+    window.SetClosePromptHandler([] { return IDYES; });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) error->clear();
+      return true;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() == nullptr);
+    HTMLPPT_CHECK_EQ(saves, 1);
+  }
+
+  // The close prompt respects the Save gate: a dirty config with a blocking
+  // error is not persisted, so Yes keeps the window and never saves.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    window.SetSaveEnabled(false);
+    window.SetStatus(L"slide 5 is already mapped by target 1");
+    int saves = 0;
+    window.SetClosePromptHandler([] { return IDYES; });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) error->clear();
+      return true;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() != nullptr);
+    HTMLPPT_CHECK_EQ(saves, 0);
+    wchar_t status[64] = {};
+    GetWindowTextW(window.status_view(), status, 64);
+    HTMLPPT_CHECK_EQ(std::wstring(status),
+                     std::wstring(L"slide 5 is already mapped by target 1"));
+    window.SetDirty(false);
+  }
+
+  // A failed save keeps the dirty window open and shows why.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    window.SetSaveEnabled(true);
+    int saves = 0;
+    window.SetClosePromptHandler([] { return IDYES; });
+    window.SetSaveHandler([&saves](std::wstring* error) {
+      ++saves;
+      if (error != nullptr) *error = L"cannot write watcher.json";
+      return false;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() != nullptr);
+    HTMLPPT_CHECK_EQ(saves, 1);
+    wchar_t status[64] = {};
+    GetWindowTextW(window.status_view(), status, 64);
+    HTMLPPT_CHECK_EQ(std::wstring(status),
+                     std::wstring(L"cannot write watcher.json"));
+    // Answer No to discard on teardown.
+    window.SetClosePromptHandler([] { return IDNO; });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() == nullptr);
+  }
+
+  // "Yes" without a save handler cannot honour the answer and keeps the window.
+  {
+    htmlppt::ConfigWindow window;
+    HTMLPPT_CHECK(window.Create(options));
+    window.SetDirty(true);
+    window.SetSaveEnabled(true);
+    int prompts = 0;
+    window.SetClosePromptHandler([&prompts] {
+      ++prompts;
+      return IDYES;
+    });
+    SendMessageW(window.handle(), WM_CLOSE, 0, 0);
+    HTMLPPT_CHECK(window.handle() != nullptr);
+    HTMLPPT_CHECK_EQ(prompts, 1);
+    wchar_t status[64] = {};
+    GetWindowTextW(window.status_view(), status, 64);
+    HTMLPPT_CHECK_EQ(std::wstring(status),
+                     std::wstring(L"cannot save before closing"));
+    window.SetDirty(false);
+  }
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;
@@ -634,25 +862,125 @@ HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
 
   SendMessageW(window.handle(), WM_SIZE, SIZE_RESTORED, MAKELPARAM(600, 400));
 
+  const UINT dpi = window.dpi();
+  HTMLPPT_CHECK(dpi >= 96);
+
   RECT list_rect{};
   HTMLPPT_CHECK(GetWindowRect(window.list_view(), &list_rect) != 0);
   MapWindowPoints(nullptr, window.handle(),
                   reinterpret_cast<POINT*>(&list_rect), 2);
   // The toolbar owns a 36 px band across the top, so the list starts below it.
   HTMLPPT_CHECK_EQ(list_rect.left, 0);
-  HTMLPPT_CHECK_EQ(list_rect.top, 36);
+  HTMLPPT_CHECK_EQ(list_rect.top, Scaled(36, dpi));
   // The detail pane owns a fixed 300 px right-hand column.
-  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600 - 300);
-  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top, 400 - 24 - 36);
+  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600 - Scaled(300, dpi));
+  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top,
+                   400 - Scaled(24, dpi) - Scaled(36, dpi));
 
   RECT status_rect{};
   HTMLPPT_CHECK(GetWindowRect(window.status_view(), &status_rect) != 0);
   MapWindowPoints(nullptr, window.handle(),
                   reinterpret_cast<POINT*>(&status_rect), 2);
   HTMLPPT_CHECK_EQ(status_rect.left, 0);
-  HTMLPPT_CHECK_EQ(status_rect.top, 400 - 24);
+  HTMLPPT_CHECK_EQ(status_rect.top, 400 - Scaled(24, dpi));
   HTMLPPT_CHECK_EQ(status_rect.right - status_rect.left, 600);
-  HTMLPPT_CHECK_EQ(status_rect.bottom - status_rect.top, 24);
+  HTMLPPT_CHECK_EQ(status_rect.bottom - status_rect.top, Scaled(24, dpi));
+
+  // Even below the window's minimum (a programmatic resize bypasses the
+  // tracking size), the Apply button is bottom-anchored above the status line.
+  RECT apply_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.apply_button(), &apply_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&apply_rect), 2);
+  HTMLPPT_CHECK(apply_rect.bottom <= status_rect.top);
+  HTMLPPT_CHECK(apply_rect.left >= 600 - Scaled(300, dpi));
+  HTMLPPT_CHECK(apply_rect.right <= 600);
+
+  // The window declares a minimum tracking size that fits the toolbar, the
+  // whole detail pane, and the status line.
+  MINMAXINFO minimum{};
+  SendMessageW(window.handle(), WM_GETMINMAXINFO, 0,
+               reinterpret_cast<LPARAM>(&minimum));
+  HTMLPPT_CHECK(minimum.ptMinTrackSize.x >= Scaled(560, dpi));
+  HTMLPPT_CHECK(minimum.ptMinTrackSize.y >= Scaled(424, dpi));
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.width = 900;
+  options.height = 560;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+
+  const UINT initial = window.dpi();
+  HTMLPPT_CHECK(initial >= 96);
+  // The initial size is expressed in 96-DPI units and scaled to the window's
+  // own DPI.
+  RECT created{};
+  HTMLPPT_CHECK(GetWindowRect(window.handle(), &created) != 0);
+  HTMLPPT_CHECK_EQ(created.right - created.left, Scaled(900, initial));
+  HTMLPPT_CHECK_EQ(created.bottom - created.top, Scaled(560, initial));
+
+  // A DPI change moves the window onto the suggested rect and re-lays the
+  // controls out at the new DPI.
+  RECT suggested{40, 40, 40 + 1000, 40 + 700};
+  SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(144, 144),
+               reinterpret_cast<LPARAM>(&suggested));
+  HTMLPPT_CHECK_EQ(window.dpi(), UINT{144});
+  RECT moved{};
+  HTMLPPT_CHECK(GetWindowRect(window.handle(), &moved) != 0);
+  HTMLPPT_CHECK_EQ(moved.left, 40);
+  HTMLPPT_CHECK_EQ(moved.top, 40);
+  HTMLPPT_CHECK_EQ(moved.right - moved.left, 1000);
+  HTMLPPT_CHECK_EQ(moved.bottom - moved.top, 700);
+
+  RECT client{};
+  HTMLPPT_CHECK(GetClientRect(window.handle(), &client) != 0);
+  const int width = client.right - client.left;
+  const int height = client.bottom - client.top;
+  HTMLPPT_CHECK(width > 0);
+  HTMLPPT_CHECK(height > 0);
+  const UINT dpi = window.dpi();
+
+  RECT list_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.list_view(), &list_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&list_rect), 2);
+  HTMLPPT_CHECK_EQ(list_rect.left, 0);
+  HTMLPPT_CHECK_EQ(list_rect.top, Scaled(36, dpi));
+  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, width - Scaled(300, dpi));
+  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top,
+                   height - Scaled(24, dpi) - Scaled(36, dpi));
+
+  RECT status_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.status_view(), &status_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&status_rect), 2);
+  HTMLPPT_CHECK_EQ(status_rect.left, 0);
+  HTMLPPT_CHECK_EQ(status_rect.top, height - Scaled(24, dpi));
+  HTMLPPT_CHECK_EQ(status_rect.right - status_rect.left, width);
+  HTMLPPT_CHECK_EQ(status_rect.bottom - status_rect.top, Scaled(24, dpi));
+
+  RECT apply_rect{};
+  HTMLPPT_CHECK(GetWindowRect(window.apply_button(), &apply_rect) != 0);
+  MapWindowPoints(nullptr, window.handle(),
+                  reinterpret_cast<POINT*>(&apply_rect), 2);
+  HTMLPPT_CHECK(apply_rect.bottom <= status_rect.top);
+  HTMLPPT_CHECK(apply_rect.left >= width - Scaled(300, dpi));
+  HTMLPPT_CHECK(apply_rect.right <= width);
 
   window.Close();
   const DWORD deadline = GetTickCount() + 5000;
