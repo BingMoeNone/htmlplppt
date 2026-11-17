@@ -220,3 +220,31 @@ HTMLPPT_TEST_CASE(config_editor_save_with_backup_leaves_the_file_on_failure) {
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }
+HTMLPPT_TEST_CASE(config_editor_display_rows_mark_the_failing_target) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(model.AddTarget(1, "page2.html", &error));  // duplicate slide 1
+  const auto deck = MakeDeck();
+  const auto rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK_EQ(rows.size(), std::size_t{2});
+  // The resolver flags the later duplicate against its own path; the first
+  // mapping stays valid.
+  HTMLPPT_CHECK_EQ(rows[0].state, std::string{"resolved"});
+  HTMLPPT_CHECK_EQ(rows[1].state, std::string{"error"});
+  HTMLPPT_CHECK(rows[1].issue.find("already mapped") != std::string::npos);
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_display_rows_keep_a_clean_config_clean) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto deck = MakeDeck();
+  const auto rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK_EQ(rows.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(rows[0].state, std::string{"resolved"});
+  HTMLPPT_CHECK(rows[0].issue.empty());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}

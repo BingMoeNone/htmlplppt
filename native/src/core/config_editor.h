@@ -22,6 +22,20 @@ struct TargetEdit {
   std::string assets_mode;
 };
 
+// One table row for the UI: the editable fields plus the validation state the
+// window renders in its STATE column.
+struct DisplayRow {
+  std::size_t index = 0;
+  int slide = 0;
+  std::string label;
+  std::string html;
+  std::string assets_mode;
+  // "resolved", "disabled", or "error".
+  std::string state;
+  // First error for this target, empty when the row is clean.
+  std::string issue;
+};
+
 // Testable half of the config UI (design spec 9.5): the Win32 view is a thin
 // skin over this model. It edits the *effective* profile (Config::active), which
 // is what ConfigToJson writes, so Save() produces a runnable config.
@@ -41,6 +55,9 @@ class ConfigEditorModel {
   const Config& config() const { return config_; }
   // One row per effective target, in config order.
   std::vector<Row> rows() const;
+  // Same, plus the per-target validation state from the real resolver.
+  std::vector<DisplayRow> DisplayRows(const DeckInfo* deck,
+                                      ResolveOptions options) const;
   std::size_t target_count() const { return config_.active.targets.size(); }
   // True once an edit changed the model and Save() has not been called.
   bool dirty() const { return dirty_; }

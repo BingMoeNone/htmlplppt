@@ -77,6 +77,36 @@ bool ConfigEditorModel::SetEnabled(std::size_t index, bool enabled,
   return true;
 }
 
+std::vector<DisplayRow> ConfigEditorModel::DisplayRows(
+    const DeckInfo* deck, ResolveOptions options) const {
+  const ResolveResult resolved = ResolveTargets(config_, deck, options);
+  std::vector<DisplayRow> rows;
+  const auto base = this->rows();
+  rows.reserve(base.size());
+  for (std::size_t index = 0; index < base.size(); ++index) {
+    DisplayRow row;
+    row.index = index;
+    row.slide = base[index].slide;
+    row.label = base[index].label;
+    row.html = base[index].html;
+    row.assets_mode = base[index].assets_mode;
+    const std::string prefix = "targets[" + std::to_string(index) + "]";
+    for (const auto& issue : resolved.issues) {
+      if (issue.severity != IssueSeverity::Error) continue;
+      if (issue.path.rfind(prefix, 0) != 0) continue;
+      row.issue = issue.message;
+      break;
+    }
+    if (!row.issue.empty()) {
+      row.state = "error";
+    } else {
+      row.state = base[index].enabled ? "resolved" : "disabled";
+    }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
 bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
                                   std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
