@@ -26,6 +26,9 @@ std::filesystem::path MakeDir() {
   std::filesystem::create_directories(dir, error);
   std::ofstream(dir / "page1.html") << "<html></html>";
   std::ofstream(dir / "page2.html") << "<html></html>";
+  // MakeConfig points at deck.pptx; the resolver reports a global error when it
+  // is missing, which HasBlockingError must see.
+  std::ofstream(dir / "deck.pptx") << "";
   return dir;
 }
 
@@ -342,6 +345,23 @@ HTMLPPT_TEST_CASE(config_editor_inherit_clears_an_explicit_assets_block) {
   HTMLPPT_CHECK(rows[0].assets_explicit);
   HTMLPPT_CHECK_EQ(rows[0].assets_mode, std::string{"direct"});
   std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_blocks_save_for_a_global_error) {
+  const auto dir = MakeDir();
+  // The deck error is on path "deck", not on a target row: an empty deck must
+  // still block a save.
+  Config cleared = MakeConfig(dir);
+  cleared.active.deck.clear();
+  ConfigEditorModel cleared_model(cleared);
+  HTMLPPT_CHECK(cleared_model.HasBlockingError(nullptr, htmlppt::ResolveOptions{}));
+
+  // A deck path that does not exist is the same class of global error.
+  std::error_code fs_error;
+  std::filesystem::remove(dir / "deck.pptx", fs_error);
+  ConfigEditorModel missing_model(MakeConfig(dir));
+  HTMLPPT_CHECK(missing_model.HasBlockingError(nullptr, htmlppt::ResolveOptions{}));
   std::filesystem::remove_all(dir, fs_error);
 }
 

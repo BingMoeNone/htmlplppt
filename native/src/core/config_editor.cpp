@@ -195,10 +195,14 @@ std::vector<ConfigIssue> ConfigEditorModel::Validate(
 
 bool ConfigEditorModel::HasBlockingError(const DeckInfo* deck,
                                          ResolveOptions options) const {
-  // The displayed state is the UI's contract, so the gate reads the same rows
-  // the user sees instead of re-deriving the rule from the raw issues.
-  for (const auto& row : DisplayRows(deck, options)) {
-    if (row.state == "error") return true;
+  // The gate mirrors Validate(): any resolver error blocks a save, whether it
+  // belongs to a target row or to the config as a whole (a missing or empty
+  // deck). A row is in the "error" state exactly when its own target has an
+  // Error issue, so scanning every error with one resolver call covers the row
+  // cases too and cannot disagree with the STATE column.
+  const ResolveResult resolved = ResolveTargets(config_, deck, options);
+  for (const auto& issue : resolved.issues) {
+    if (issue.severity == IssueSeverity::Error) return true;
   }
   return false;
 }

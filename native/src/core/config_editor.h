@@ -84,8 +84,9 @@ class ConfigEditorModel {
   std::vector<ConfigIssue> Validate(const DeckInfo* deck,
                                     ResolveOptions options) const;
 
-  // True when at least one row is in the "error" state, i.e. saving now would
-  // persist a config that cannot run. A disabled target is not an error.
+  // True when validation reports any error, per-target or global (an empty or
+  // missing deck, say), i.e. saving now would persist a config that cannot run.
+  // A disabled target is not an error.
   bool HasBlockingError(const DeckInfo* deck, ResolveOptions options) const;
 
   std::string ToJson() const;
