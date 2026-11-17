@@ -15,6 +15,7 @@ using htmlppt::ClockPoint;
 using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
+using htmlppt::WindowInfo;
 using htmlppt::WorkerHostConfig;
 using htmlppt::test::HLiveAtSlide1;
 using htmlppt::test::HTriggeredAtSlide1;
@@ -535,4 +536,36 @@ HTMLPPT_TEST_CASE(worker_runtime_cleanup_journals_distinct_steps) {
   // Both steps still name the cause, but under distinct labels: two identical
   // "stop requested" lines used to make the log look like a double stop.
   HTMLPPT_CHECK_EQ(count("stop requested: supervisor stop"), 2);
+}
+// Spec 11.2: SafeMode must hide the cover, leave the slideshow and hand WPS back
+// to the operator, not leave a full-screen show behind a hidden cover.
+HTMLPPT_TEST_CASE(worker_runtime_safe_mode_restores_the_operator_view) {
+  WorkerHarness h;
+  h.host.wps_pids = {42};
+  WindowInfo wps_window;
+  wps_window.id = 7;
+  wps_window.pid = 42;
+  wps_window.class_name = "screenClass";
+  wps_window.title = "deck - WPS Office";
+  wps_window.visible = true;
+  wps_window.ws_popup = true;
+  wps_window.has_min_box = false;
+  wps_window.has_max_box = false;
+  h.windows.windows = {wps_window};
+  h.rebuild();
+
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();  // Warming -> Monitoring
+
+  h.presentation.show = MakeShowState(HostStatus::Unavailable, false, 0);
+  for (int i = 0; i < 40 && h.runtime.snapshot().state != State::SafeMode; ++i) {
+    h.advance(Duration{100});
+    h.runtime.Step();
+  }
+
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::SafeMode);
+  HTMLPPT_CHECK_EQ(h.presentation.exit_show_calls, 1);
+  HTMLPPT_CHECK(!h.windows.activate_calls.empty());
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "safe mode"));
 }

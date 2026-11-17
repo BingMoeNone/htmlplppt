@@ -518,6 +518,15 @@ HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
+  // Spec 11.2: SafeMode must also leave the slideshow, hand WPS back to the
+  // operator, and leave a diagnostic behind -- not just hide the cover.
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::ExitShow));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+  // The screen is uncovered first, so the operator never sees a stuck black
+  // screen while the show exits.
+  HTMLPPT_CHECK_EQ(actions.front().kind, ActionKind::CoverHide);
+  HTMLPPT_CHECK_EQ(actions.back().kind, ActionKind::Diagnostic);
 }
 
 HTMLPPT_TEST_CASE(state_machine_stop_requested_cleans_up_and_exits) {

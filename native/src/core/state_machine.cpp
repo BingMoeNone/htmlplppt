@@ -665,8 +665,15 @@ std::vector<Action> StateMachine::HandleStructuralFailure(std::string detail) {
   actions.push_back({ActionKind::KillEdge, slide, "structural failure"});
   actions.push_back(
       {ActionKind::Journal, slide, "structural failure: " + detail});
+  // Spec 11.2: entering SafeMode must leave the slideshow and hand WPS back to
+  // the operator instead of leaving a full-screen show behind the hidden cover,
+  // and must leave a diagnostic record. The cover is hidden first so the
+  // operator never stares at a black screen while these run.
+  actions.push_back({ActionKind::ExitShow, slide, "safe mode: exit show"});
+  actions.push_back({ActionKind::FocusWps, slide, "safe mode: restore WPS"});
   actions.push_back(
       {ActionKind::EnterSafeMode, slide, "structural failure"});
+  actions.push_back({ActionKind::Diagnostic, slide, "safe mode: " + detail});
   if (policy == OnFailurePolicy::Legacy) {
     actions.push_back(
         {ActionKind::LegacyFallback, slide, "structural failure"});

@@ -879,6 +879,13 @@ int RunWorker(const SupervisorRunOptions& options) {
   std::string session_error;
   const int code = RunWorkerSession(runtime, client, *blackbox, session_config,
                                     &session_error);
+  if (runtime.snapshot().state == State::SafeMode) {
+    // The machine's Diagnostic action is journal-only (the runtime has no
+    // blackbox port); record it here so --status and the diagnostics package
+    // show why the run ended in SafeMode.
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, 0,
+                           "safe mode: worker entered SafeMode");
+  }
   if (!session_error.empty()) {
     std::cerr << "warning: " << session_error << "\n";
   }

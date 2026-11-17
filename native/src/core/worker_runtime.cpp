@@ -252,8 +252,13 @@ void WorkerRuntime::Execute(const Action& action) {
       cover_.Hide();
       break;
     case ActionKind::Journal:
-    case ActionKind::Diagnostic:
       AppendJournal(action.detail);
+      break;
+    case ActionKind::Diagnostic:
+      // Diagnostics are the records an operator or a post-mortem tool reads
+      // first, so they carry a stable prefix instead of looking like a journal
+      // step.
+      AppendJournal("diagnostic: " + action.detail);
       break;
     case ActionKind::LaunchEdge:
       LaunchEdge(action.slide);
