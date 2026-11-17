@@ -1,53 +1,67 @@
-# 绔埌绔獙鏀舵竻鍗?
-瀵瑰簲璁捐瑙勬牸 搂11.2锛堥獙鏀舵爣鍑嗭級涓?搂11.3锛堝吋瀹归獙鏀讹級銆傛瘡鏉＄粰鍑?*楠岃瘉鍛戒护**鍜?*閫氳繃鍒ゆ嵁**锛?鏍?`[瀹炴満]` 鐨勬潯鐩繀椤诲湪瑁呮湁 WPS + Edge 鐨勭洰鏍囨満涓婃墽琛岋紝鍏朵綑鍙湪浠绘剰 Windows 鏈哄櫒涓婂仛銆?
-鍑嗗锛?
+# 端到端验收清单
+
+对应设计规格 §11.2（验收标准）与 §11.3（兼容验收）。每条给出**验证命令**和**通过判据**；
+标 `[实机]` 的条目必须在装有 WPS + Edge 的目标机上执行，其余可在任意 Windows 机器上做。
+
+准备：
+
 ```powershell
 python demo/make_deck.py
 native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 ```
 
-## 涓€銆佽涓?
-| # | 椤圭洰 | 鍛戒护 | 閫氳繃鍒ゆ嵁 |
+## 一、行为
+
+| # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 1 | deck/HTML/婕旂ず娴佺▼闆朵慨鏀?| 鐢ㄧ幇鏈?deck 涓?`templates/live-page.html` 璺戜竴娆?| 瑙﹀彂銆佽繑鍥炰笌 VBS 鐗堣鎰熶竴鑷达紝HTML 鏂囦欢鏈淇敼 |
-| 2 | 鏃ф爣蹇椾笌鏃ュ織璇嶅彲璇嗗埆 `[瀹炴満]` | 杩愯涓?`Get-Content demo\watch-log.txt -Tail 5`锛沗Test-Path demo\watcher.lock` | 杩愯鏈熷瓨鍦?`watcher.lock`锛沗watch-log.txt` 鍚惎鍔?瑙﹀彂/杩斿洖/cleanup 琛?|
-| 3 | `--stop` 鍋滄骞舵竻鐞?`[瀹炴満]` | `--supervisor ...` 鍚庡彟寮€缁堢 `--stop` | 閫€鍑虹爜 0锛涙斁鏄犵獥鍙ｆ暟 0锛沗%TEMP%\htmlppt-<run-id>` 琚垹闄わ紱`watcher.lock` 琚垹闄?|
-| 4 | 鍚岀洰褰曞崟瀹炰緥 | 鍚?`--state-dir` 璧风浜屼釜 supervisor | 绗簩涓珛鍗抽€€鍑哄苟鎻愮ず宸插湪杩愯 |
-| 5 | 涓嶅悓鐩綍鍙苟琛?| 涓や釜 state-dir銆佷袱涓?run-id 鍚屾椂璺?| 浜掍笉褰卞搷锛沗--stop` 涓€涓笉褰卞搷鍙︿竴涓?|
+| 1 | deck/HTML/演示流程零修改 | 用现有 deck 与 `templates/live-page.html` 跑一次 | 触发、返回与 VBS 版观感一致，HTML 文件未被修改 |
+| 2 | 旧标志与日志词可识别 `[实机]` | 运行中 `Get-Content demo\watch-log.txt -Tail 5`；`Test-Path demo\watcher.lock` | 运行期存在 `watcher.lock`；`watch-log.txt` 含启动/触发/返回/cleanup 行 |
+| 3 | `--stop` 停止并清理 `[实机]` | `--supervisor ...` 后另开终端 `--stop` | 退出码 0；放映窗口数 0；`%TEMP%\htmlppt-<run-id>` 被删除；`watcher.lock` 被删除 |
+| 4 | 同目录单实例 | 同 `--state-dir` 起第二个 supervisor | 第二个立即退出并提示已在运行 |
+| 5 | 不同目录可并行 | 两个 state-dir、两个 run-id 同时跑 | 互不影响；`--stop` 一个不影响另一个 |
 
-## 浜屻€侀煣鎬?
-| # | 椤圭洰 | 鍛戒护 | 閫氳繃鍒ゆ嵁 |
+## 二、韧性
+
+| # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 6 | 浠绘剰闃舵鏉€ worker `[瀹炴満]` | 杩愯涓?`Stop-Process -Name htmlppt-watchdog -Id <worker>` | supervisor 閲嶅惎 worker锛宍journal.jsonl` 鏈?restart 璁板綍锛屾棤娈嬬暀榛戝満/Edge |
-| 7 | COM 鍗℃鎭㈠ | 杩愯涓 WPS 鏃犲搷搴旓紙鎸傝捣杩涚▼锛?| 12 s 鍐?dump + 閲嶅惎鎴栬繘鍏?SafeMode锛沗--status` 鍙鐘舵€佽縼绉?|
-| 8 | Edge 鍐峰惎鍔ㄦ參 `[瀹炴満]` | 姝ｅ父瑙﹀彂 | 榛戝満淇濇寔鍒?`edge ready`锛屼笉闇茬紪杈戝櫒 |
-| 9 | 杩炵画宕╂簝瓒呴绠?| 鍙嶅鏉€ worker 瓒呰繃棰勭畻 | 杩涘叆 SafeMode锛涢粦鍦洪殣钘忋€佹斁鏄犻€€鍑恒€乄PS 鍙敤锛沗--status` 鍑虹幇 `[SafeMode]` |
-| 10 | 鐫＄湢/鍞ら啋 `[瀹炴満]` | 杩愯涓潯鐪犲啀鍞ら啋 | 鏃犻粦灞忔畫鐣欙紱鐘舵€佺户缁垨瀹夊叏閫€鍑猴紙瑙佲€滄湭瀹炵幇鈥濅竴鑺傦級 |
+| 6 | 任意阶段杀 worker `[实机]` | 运行中 `Stop-Process -Name htmlppt-watchdog -Id <worker>` | supervisor 重启 worker，`journal.jsonl` 有 restart 记录，无残留黑场/Edge |
+| 7 | COM 卡死恢复 | `set HTMLPPT_FAULTS=com-hang` 后运行 | 2 s 错误窗口到期后进入 SafeMode（或重启）；`--status` 可见状态迁移 |
+| 8 | Edge 冷启动慢 `[实机]` | `set HTMLPPT_FAULTS=edge-slow` 后触发 | 黑场保持到 `edge ready`，不露编辑器；3 s 内不判定就绪 |
+| 9 | 连续崩溃超预算 | 反复杀 worker 超过预算 | 进入 SafeMode；黑场隐藏、放映退出、WPS 可用；`--status` 出现 `[SafeMode]` |
+| 9b | 故障开关可见 | `set HTMLPPT_FAULTS=edge-slow` 后启动 | `--status` 出现 `faults: edge-slow`；注入运行在日志中可见 |
+| 10 | 睡眠/唤醒 `[实机]` | 运行中睡眠再唤醒 | 覆盖窗口重新铺满并置顶，无黑屏残留（截止时间不重新校准，见第六节） |
 
-## 涓夈€佹€ц兘
+## 三、性能
 
-| # | 椤圭洰 | 鍛戒护 | 閫氳繃鍒ゆ嵁 |
+| # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 11 | 瑙﹀彂鍒板叏榛?`[瀹炴満]` | 缈婚〉骞惰鏃讹紙褰曞睆鎴栨棩蹇楁椂闂存埑宸級 | p99 < 350 ms锛堝綋鍓嶅疄鐜颁负 20 ms 杞 + 300 ms 娣″叆锛?|
-| 12 | 绌洪棽 CPU | 浠诲姟绠＄悊鍣ㄨ瀵熻繍琛屼腑鐨?watchdog | 绌洪棽 < 1%锛堝綋鍓?100 ms 杞妗ｏ級 |
+| 11 | 触发到全黑 `[实机]` | 翻页并计时（录屏或日志时间戳差） | p99 < 350 ms（当前实现为 20 ms 轮询 + 300 ms 淡入） |
+| 12 | 空闲 CPU | 任务管理器观察运行中的 watchdog | 空闲 < 1%（当前 100 ms 轮询档） |
 
-## 鍥涖€佸彲瑙傛祴鎬?
-| # | 椤圭洰 | 鍛戒护 | 閫氳繃鍒ゆ嵁 |
+## 四、可观测性
+
+| # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 13 | 鐘舵€?run-id/PID/鏈€鍚庝簨浠?| `--status --run-id <id> --state-dir <dir>` | 棣栬鍚?`state <Name> pid <n>` 涓?`last event ...` |
-| 14 | 璇婃柇鍖?| `--diagnostics --run-id <id> --state-dir <dir> --out diag` | 鐢熸垚 `manifest.txt`銆乯ournal銆亀atch-log銆乸lan/config锛涙湁 dump 鏃朵竴骞舵敹闆?|
-| 15 | 宕╂簝 dump | `--dump-helper <pid> <path>` 鎴栫湡瀹炲穿婧?| 鐢熸垚 `.dmp`锛岃瘖鏂寘浼氭敹闆?|
+| 13 | 状态/run-id/PID/最后事件 | `--status --run-id <id> --state-dir <dir>` | 首行含 `state <Name> pid <n>` 与 `last event ...` |
+| 14 | 诊断包 | `--diagnostics --run-id <id> --state-dir <dir> --out diag` | 生成 `manifest.txt`、journal、watch-log、plan/config；有 dump 时一并收集 |
+| 15 | 崩溃 dump | `--dump-helper <pid> <path>` 或真实崩溃 | 生成 `.dmp`，诊断包会收集 |
 
-## 浜斻€佸吋瀹归獙鏀讹紙搂11.3锛?
-| # | 椤圭洰 | 鍛戒护 | 閫氳繃鍒ゆ嵁 |
+## 五、兼容验收（§11.3）
+
+| # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 16 | 鐜版湁 HTML 涓嶆敼鍔?| 鐢?`templates/stepwise-demo.html` 鎴栫幇鍦洪〉闈?| 椤甸潰鏃犻渶淇敼鍗冲彲鐢?|
-| 17 | legacy CONFIG 鈫?JSON | `--print-config` 瀵规瘮 `watch-live-content.vbs` 鐨?CONFIG | 鐩爣椤点€丠TML銆乸rofile銆佹爣绛句竴鑷?|
-| 18 | 鏃?`stop-live.vbs` 鍋滄鏂板疄渚?| 杩愯涓弻鍑?`scripts/stop-live.vbs` | **褰撳墠涓嶉€氳繃**锛氳鈥滄湭瀹炵幇鈥濅竴鑺?|
-| 19 | 鏃ф棩蹇楅槄璇讳範鎯?| 鏌ョ湅 `watch-log.txt` | 浠嶆槸浜虹被鍙琛岋紝JSONL 涓嶆浛浠ｅ畠 |
+| 16 | 现有 HTML 不改动 | 用 `templates/stepwise-demo.html` 或现场页面 | 页面无需修改即可用 |
+| 17 | legacy CONFIG → JSON | `--print-config` 对比 `watch-live-content.vbs` 的 CONFIG | 目标页、HTML、profile、标签一致 |
+| 18 | 旧 `stop-live.vbs` 停止新实例 | 运行中双击 `scripts/stop-live.vbs` | **当前不通过**：见“未实现”一节 |
+| 19 | 旧日志阅读习惯 | 查看 `watch-log.txt` | 仍是人类可读行，JSONL 不替代它 |
 
-## 鍏€佹湭瀹炵幇锛堥獙鏀舵椂浼氬け璐ワ級
+## 六、未实现（验收时会失败）
 
-杩欎簺鏉＄洰鍦ㄨ鏍奸噷瀛樺湪浣嗕唬鐮佸皻鏈帴绾匡紝楠屾敹鏃?*涓嶅簲鍕鹃€?*锛?
-- 鐫＄湢/鍞ら啋銆佹樉绀哄櫒鐑彃鎷斻€丏PI 鍙樺寲鍚庣殑**瀹氭椂鍣ㄩ噸绠?*锛堣鐩栫獥鍙ｅ凡鍦?`WM_DISPLAYCHANGE`/`WM_DPICHANGED`/`WM_POWERBROADCAST` 鏃堕噸鏂伴摵婊″苟缃《锛屼絾鎴鏃堕棿涓嶉噸鏂版牎鍑嗭級銆?- 鏃?`stop-live.vbs` 涓?`--stop` 浜掓搷浣滐紙鏂板疄鐜板彧鍐?`watcher.lock`锛屼笉鐩戝惉鍏跺垹闄わ級銆?- `--benchmark` 涓?p99/CPU 鎸囨爣杈撳嚭锛堟€ц兘椤瑰彧鑳戒汉宸ヨ娴嬶級銆?- `supervisor-loss`銆乣sleep-resume`銆乣multi-monitor` 涓変釜鏁呴殰寮€鍏筹紙`com-hang`銆乣com-462`銆乣edge-slow`銆乣cover-hang`銆乣focus-deny` 宸插彲鐢紝瑙?`native/README.md` 鐨?Fault injection锛夈€?- `tree` 妯″紡鐨?`include`/`exclude` glob锛沗focus.strategy`銆乣display.monitor`銆乣edge.prewarmProfile` 浠嶅彧瑙ｆ瀽涓嶇敓鏁堛€?- 閰嶇疆 UI锛埪?锛夈€?
-| 9b | 故障注入可用 | `set HTMLPPT_FAULTS=edge-slow` 后启动 | `--status` 出现 `faults: edge-slow`；注入运行在日志中可见 |
+这些条目在规格里存在但代码尚未接线，验收时**不应勾选**：
+
+- 睡眠/唤醒、显示器热插拔、DPI 变化后的**定时器重算**（覆盖窗口已在 `WM_DISPLAYCHANGE`、`WM_DPICHANGED`、`WM_POWERBROADCAST` 时重新铺满并置顶，但截止时间不重新校准）。
+- 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
+- `--benchmark` 与 p99/CPU 指标输出（性能项只能人工观测）。
+- `supervisor-loss`、`sleep-resume`、`multi-monitor` 三个故障开关（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny` 已可用，见 `native/README.md` 的 Fault injection）。
+- `tree` 模式的 `include`/`exclude` glob；`focus.strategy`、`display.monitor`、`edge.prewarmProfile` 仍只解析不生效。
+- 配置 UI（§9）。
