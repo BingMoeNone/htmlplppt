@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <limits>
+
 #include "platform/win32/cover_overlay_win32.h"
 
 using htmlppt::Win32CoverOverlay;
@@ -40,8 +42,25 @@ HTMLPPT_TEST_CASE(win32_cover_overlay_shows_layered_topmost_window) {
 
   RECT rect{};
   HTMLPPT_CHECK(GetWindowRect(hwnd, &rect) != 0);
-  HTMLPPT_CHECK(rect.right - rect.left > 0);
-  HTMLPPT_CHECK(rect.bottom - rect.top > 0);
+  HTMLPPT_CHECK_EQ(rect.left, GetSystemMetrics(SM_XVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(rect.top, GetSystemMetrics(SM_YVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(rect.right - rect.left,
+                   GetSystemMetrics(SM_CXVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(rect.bottom - rect.top,
+                   GetSystemMetrics(SM_CYVIRTUALSCREEN));
+
+  SetWindowPos(hwnd, nullptr, 10, 20, 300, 200,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  HTMLPPT_CHECK(SendMessageW(hwnd, WM_DISPLAYCHANGE, 0, 0) == 0);
+  RECT resized{};
+  HTMLPPT_CHECK(GetWindowRect(hwnd, &resized) != 0);
+  HTMLPPT_CHECK_EQ(resized.left, GetSystemMetrics(SM_XVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(resized.top, GetSystemMetrics(SM_YVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(resized.right - resized.left,
+                   GetSystemMetrics(SM_CXVIRTUALSCREEN));
+  HTMLPPT_CHECK_EQ(resized.bottom - resized.top,
+                   GetSystemMetrics(SM_CYVIRTUALSCREEN));
+  HTMLPPT_CHECK((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
   overlay.Hide();
 }
 
@@ -53,6 +72,8 @@ HTMLPPT_TEST_CASE(win32_cover_overlay_updates_and_clamps_opacity) {
   HTMLPPT_CHECK_EQ(LayeredAlpha(hwnd), 128);
   HTMLPPT_CHECK(overlay.SetOpacity(1.5));
   HTMLPPT_CHECK_EQ(LayeredAlpha(hwnd), 255);
+  HTMLPPT_CHECK(overlay.SetOpacity(std::numeric_limits<double>::quiet_NaN()));
+  HTMLPPT_CHECK_EQ(LayeredAlpha(hwnd), 0);
   HTMLPPT_CHECK(overlay.SetOpacity(-1.0));
   HTMLPPT_CHECK_EQ(LayeredAlpha(hwnd), 0);
   overlay.Hide();

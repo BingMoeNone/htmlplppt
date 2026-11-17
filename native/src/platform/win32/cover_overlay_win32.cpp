@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <memory>
 #include <utility>
 
 namespace htmlppt {
@@ -14,63 +15,130 @@ constexpr UINT kShowMessage = WM_APP + 1;
 constexpr UINT kHideMessage = WM_APP + 2;
 constexpr UINT kOpacityMessage = WM_APP + 3;
 constexpr UINT kTopMostMessage = WM_APP + 4;
+constexpr DWORD kStartupWaitMilliseconds = 5000;
+constexpr DWORD kShutdownWaitMilliseconds = 2000;
+constexpr UINT kSendTimeoutMilliseconds = 100;
 constexpr wchar_t kOverlayClass[] = L"HtmlpptCoverOverlay";
 std::atomic<HWND> g_overlay_hwnd{nullptr};
 
 } // namespace
 
+struct Win32CoverOverlay::State {
+  std::atomic<HWND> hwnd{nullptr};
+  std::atomic<DWORD> thread_id{0};
+  std::atomic<bool> stop{false};
+  bool visible = false;
+  HANDLE ready_event = nullptr;
+  HANDLE exit_event = nullptr;
+
+  ~State() {
+    if (ready_event != nullptr) CloseHandle(ready_event);
+    if (exit_event != nullptr) CloseHandle(exit_event);
+  }
+};
+
 Win32CoverOverlay::Win32CoverOverlay() {
-  ready_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (ready_event_ == nullptr) return;
-  thread_ = std::thread(&Win32CoverOverlay::ThreadMain, this);
-  WaitForSingleObject(ready_event_, 5000);
+  auto state = std::make_shared<State>();
+  state->ready_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  state->exit_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (state->ready_event == nullptr || state->exit_event == nullptr) {
+    state.reset();
+    return;
+  }
+  state_ = std::move(state);
+  thread_ = std::thread(&Win32CoverOverlay::ThreadMain, state_);
+  if (WaitForSingleObject(state_->ready_event, kStartupWaitMilliseconds) !=
+      WAIT_OBJECT_0) {
+    state_->stop.store(true);
+    const DWORD id = state_->thread_id.load();
+    if (id != 0) PostThreadMessageW(id, WM_QUIT, 0, 0);
+  }
 }
 
 Win32CoverOverlay::~Win32CoverOverlay() {
-  if (thread_.joinable()) {
-    const DWORD id = thread_id_.load();
-    if (id != 0) PostThreadMessageW(id, WM_QUIT, 0, 0);
-    thread_.join();
+  if (state_ == nullptr) {
+    if (thread_.joinable()) thread_.join();
+    return;
   }
-  if (ready_event_ != nullptr) CloseHandle(ready_event_);
+  state_->stop.store(true);
+  const DWORD id = state_->thread_id.load();
+  if (id != 0) PostThreadMessageW(id, WM_QUIT, 0, 0);
+  if (WaitForSingleObject(state_->exit_event, kShutdownWaitMilliseconds) ==
+      WAIT_OBJECT_0) {
+    if (thread_.joinable()) thread_.join();
+  } else if (thread_.joinable()) {
+    // Never TerminateThread: the worker keeps its own shared state alive and
+    // never touches the overlay object after detaching.
+    thread_.detach();
+  }
+  state_.reset();
+}
+
+HWND Win32CoverOverlay::hwnd() const {
+  return state_ != nullptr ? state_->hwnd.load() : nullptr;
 }
 
 bool Win32CoverOverlay::Show() {
-  const HWND hwnd = hwnd_.load();
-  if (hwnd == nullptr) return false;
-  return SendMessageW(hwnd, kShowMessage, 0, 0) != 0;
+  const HWND window = hwnd();
+  if (window == nullptr) return false;
+  DWORD_PTR result = 0;
+  return SendMessageTimeoutW(window, kShowMessage, 0, 0, SMTO_ABORTIFHUNG,
+                             kSendTimeoutMilliseconds, &result) != 0 &&
+         result != 0;
 }
 
 void Win32CoverOverlay::Hide() {
-  const HWND hwnd = hwnd_.load();
-  if (hwnd != nullptr) SendMessageW(hwnd, kHideMessage, 0, 0);
+  const HWND window = hwnd();
+  if (window == nullptr) return;
+  DWORD_PTR result = 0;
+  SendMessageTimeoutW(window, kHideMessage, 0, 0, SMTO_ABORTIFHUNG,
+                      kSendTimeoutMilliseconds, &result);
 }
 
 bool Win32CoverOverlay::SetOpacity(double opacity) {
-  const HWND hwnd = hwnd_.load();
-  if (hwnd == nullptr) return false;
-  if (opacity < 0.0) opacity = 0.0;
+  const HWND window = hwnd();
+  if (window == nullptr) return false;
+  if (!(opacity >= 0.0)) opacity = 0.0;
   if (opacity > 1.0) opacity = 1.0;
   const BYTE alpha = static_cast<BYTE>(opacity * 255.0 + 0.5);
-  return SendMessageW(hwnd, kOpacityMessage, alpha, 0) != 0;
+  DWORD_PTR result = 0;
+  return SendMessageTimeoutW(window, kOpacityMessage, alpha, 0,
+                             SMTO_ABORTIFHUNG, kSendTimeoutMilliseconds,
+                             &result) != 0 &&
+         result != 0;
 }
 
 void Win32CoverOverlay::ReassertTopMost() {
-  const HWND hwnd = hwnd_.load();
-  if (hwnd != nullptr) SendMessageW(hwnd, kTopMostMessage, 0, 0);
+  const HWND window = hwnd();
+  if (window == nullptr) return;
+  DWORD_PTR result = 0;
+  SendMessageTimeoutW(window, kTopMostMessage, 0, 0, SMTO_ABORTIFHUNG,
+                      kSendTimeoutMilliseconds, &result);
 }
 
-void Win32CoverOverlay::ThreadMain() {
-  thread_id_.store(GetCurrentThreadId());
+void Win32CoverOverlay::ThreadMain(std::shared_ptr<State> state) {
+  // Force creation of this thread's message queue before publishing the
+  // thread id, so a shutdown post can never be lost.
+  MSG probe{};
+  PeekMessageW(&probe, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+  state->thread_id.store(GetCurrentThreadId());
+
   WNDCLASSW window_class{};
   window_class.lpfnWndProc = &Win32CoverOverlay::WindowProc;
   window_class.hInstance = GetModuleHandleW(nullptr);
   // IDC_ARROW; the SDK macro is ANSI in non-UNICODE builds.
   window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-  window_class.hbrBackground = CreateSolidBrush(RGB(0, 0, 0));
   window_class.lpszClassName = kOverlayClass;
+  if (state->stop.load()) {
+    SetEvent(state->ready_event);
+    SetEvent(state->exit_event);
+    return;
+  }
+  window_class.hbrBackground = CreateSolidBrush(RGB(0, 0, 0));
   if (RegisterClassW(&window_class) == 0) {
-    SetEvent(ready_event_);
+    DeleteObject(window_class.hbrBackground);
+    SetEvent(state->ready_event);
+    SetEvent(state->exit_event);
     return;
   }
 
@@ -78,34 +146,38 @@ void Win32CoverOverlay::ThreadMain() {
       WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
           WS_EX_TRANSPARENT | WS_EX_TOPMOST,
       kOverlayClass, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
-      window_class.hInstance, this);
+      window_class.hInstance, state.get());
   if (hwnd == nullptr) {
     UnregisterClassW(kOverlayClass, window_class.hInstance);
     DeleteObject(window_class.hbrBackground);
-    SetEvent(ready_event_);
+    SetEvent(state->ready_event);
+    SetEvent(state->exit_event);
     return;
   }
 
   SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
-  hwnd_.store(hwnd);
+  state->hwnd.store(hwnd);
   g_overlay_hwnd.store(hwnd);
   const HWINEVENTHOOK hook = SetWinEventHook(
       EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
       &Win32CoverOverlay::ForegroundEvent, 0, 0, WINEVENT_OUTOFCONTEXT);
-  SetEvent(ready_event_);
+  SetEvent(state->ready_event);
 
   MSG message{};
-  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-    TranslateMessage(&message);
-    DispatchMessageW(&message);
+  if (!state->stop.load()) {
+    while (!state->stop.load() && GetMessageW(&message, nullptr, 0, 0) > 0) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
   }
 
   if (hook != nullptr) UnhookWinEvent(hook);
   g_overlay_hwnd.store(nullptr);
-  hwnd_.store(nullptr);
+  state->hwnd.store(nullptr);
   DestroyWindow(hwnd);
   UnregisterClassW(kOverlayClass, window_class.hInstance);
   DeleteObject(window_class.hbrBackground);
+  SetEvent(state->exit_event);
 }
 
 void Win32CoverOverlay::ResizeToVirtualScreen(HWND hwnd) {
@@ -126,19 +198,19 @@ LRESULT CALLBACK Win32CoverOverlay::WindowProc(HWND hwnd, UINT message,
                                               WPARAM wparam, LPARAM lparam) {
   if (message == WM_NCCREATE) {
     auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    auto* self = reinterpret_cast<Win32CoverOverlay*>(create->lpCreateParams);
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    auto* state = static_cast<State*>(create->lpCreateParams);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
     return TRUE;
   }
-  auto* self = reinterpret_cast<Win32CoverOverlay*>(
+  auto* state = reinterpret_cast<State*>(
       GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (self != nullptr) {
-    return self->HandleMessage(hwnd, message, wparam, lparam);
+  if (state != nullptr) {
+    return HandleMessage(*state, hwnd, message, wparam, lparam);
   }
   return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
-LRESULT Win32CoverOverlay::HandleMessage(HWND hwnd, UINT message,
+LRESULT Win32CoverOverlay::HandleMessage(State& state, HWND hwnd, UINT message,
                                          WPARAM wparam, LPARAM lparam) {
   switch (message) {
     case WM_NCHITTEST:
@@ -157,25 +229,25 @@ LRESULT Win32CoverOverlay::HandleMessage(HWND hwnd, UINT message,
       SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       ApplyTopMost(hwnd);
-      visible_ = true;
+      state.visible = true;
       return TRUE;
     case kHideMessage:
       ShowWindow(hwnd, SW_HIDE);
-      visible_ = false;
+      state.visible = false;
       return TRUE;
     case kOpacityMessage:
-      if (!visible_) return FALSE;
+      if (!state.visible) return FALSE;
       return SetLayeredWindowAttributes(hwnd, 0,
                                         static_cast<BYTE>(wparam),
                                         LWA_ALPHA) != 0
                  ? TRUE
                  : FALSE;
     case kTopMostMessage:
-      if (visible_) ApplyTopMost(hwnd);
+      if (state.visible) ApplyTopMost(hwnd);
       return TRUE;
     case WM_DISPLAYCHANGE:
       ResizeToVirtualScreen(hwnd);
-      if (visible_) ApplyTopMost(hwnd);
+      if (state.visible) ApplyTopMost(hwnd);
       return 0;
     case WM_CLOSE:
       return 0;
