@@ -934,6 +934,22 @@ int RunWorker(const SupervisorRunOptions& options) {
     compat->WriteLock(UtcTimestamp());
   };
   bool pipe_alive = true;
+  // Spec 11.3: stop-live.vbs deletes watcher.lock instead of sending a frame.
+  // The session polls this at the loop cadence; the check itself is throttled so
+  // a tight loop does not stat the file 50 times a second.
+  std::atomic<std::int64_t> last_lock_check_ms{0};
+  if (!compat_dir.empty()) {
+    const auto lock_path = compat_dir / std::string(kLockFile);
+    session_config.external_stop = [lock_path, &last_lock_check_ms] {
+      const auto now_ms = NowMs();
+      if (now_ms - last_lock_check_ms.load(std::memory_order_relaxed) < 500) {
+        return false;
+      }
+      last_lock_check_ms.store(now_ms, std::memory_order_relaxed);
+      std::error_code error;
+      return !std::filesystem::exists(lock_path, error);
+    };
+  }
   session_config.initial_sequence = RunWithStartupHeartbeats(
       client, *blackbox, session_config, startup, &pipe_alive);
   if (!pipe_alive) {

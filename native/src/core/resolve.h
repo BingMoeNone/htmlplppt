@@ -40,6 +40,10 @@ struct ResolvedTarget {
   std::string assets_root;
   // 0 means no cap. From assets.maxBytes.
   std::int64_t assets_max_bytes = 0;
+  // tree-mode filters from assets.include / assets.exclude. A non-empty include
+  // whitelists; exclude always wins.
+  std::vector<std::string> assets_include;
+  std::vector<std::string> assets_exclude;
 };
 
 struct ResolveResult {

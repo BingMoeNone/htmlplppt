@@ -112,3 +112,27 @@ HTMLPPT_TEST_CASE(staging_max_bytes_aborts_instead_of_truncating) {
   std::error_code error;
   std::filesystem::remove_all(dir, error);
 }
+
+HTMLPPT_TEST_CASE(staging_tree_mode_applies_include_and_exclude_globs) {
+  const auto dir = MakeTempDir("htmlppt-staging-globs");
+  const auto root = dir / "assets";
+  WriteFile(root / "page.html", "<html></html>");
+  WriteFile(root / "css" / "style.css", "body{}");
+  WriteFile(root / "js" / "app.js", "console.log(1)");
+  WriteFile(root / "img" / "logo.png", "png");
+
+  auto target = MakeTarget(root / "page.html", "tree", root);
+  target.assets_include = {"**/*.css", "**/*.png"};
+  target.assets_exclude = {"img/**"};
+  const auto outcome = StageTargetHtml(target, dir / "stage", 0);
+
+  HTMLPPT_CHECK(outcome.staged);
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(dir / "stage" / "css" /
+                                                 "style.css"));
+  // Not whitelisted.
+  HTMLPPT_CHECK(!std::filesystem::exists(dir / "stage" / "js" / "app.js"));
+  // Exclude wins over include.
+  HTMLPPT_CHECK(!std::filesystem::exists(dir / "stage" / "img" / "logo.png"));
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}

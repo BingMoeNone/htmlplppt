@@ -20,6 +20,9 @@ namespace htmlppt {
 namespace {
 
 constexpr char kStopReason[] = "supervisor stop";
+// Spec 11.3: stop-live.vbs removes watcher.lock; the worker treats the removal
+// as the same request, so old tooling keeps working.
+constexpr char kLegacyStopReason[] = "legacy stop: watcher.lock removed";
 constexpr char kLossDetail[] = "supervisor pipe closed";
 
 std::int64_t NowMs() {
@@ -236,6 +239,7 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // no sleep of its own.
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
                             published_progress, send_mutex);
+  bool external_stop_sent = false;
   while (!driver.done()) {
     if (pipe_alive) {
       const auto command = channel.Receive(Duration{0});
@@ -253,6 +257,13 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
     if (heartbeat.broken() && !loss_reported) {
       pipe_alive = false;
       report_loss(kLossDetail);
+    }
+    // Spec 11.3: the legacy stop script deletes watcher.lock instead of sending
+    // a frame. Latch it so the stop reason is journalled once.
+    if (!external_stop_sent && config.external_stop &&
+        config.external_stop()) {
+      external_stop_sent = true;
+      driver.RequestStop(kLegacyStopReason);
     }
     if (driver.done()) break;
     const bool keep_going = driver.Step();

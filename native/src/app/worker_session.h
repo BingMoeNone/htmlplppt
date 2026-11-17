@@ -30,6 +30,10 @@ struct WorkerSessionConfig {
   // block or touch COM: the worker uses it to refresh the legacy watcher.lock
   // so VBS-era tooling still sees a live run.
   std::function<void()> on_heartbeat;
+  // Polled once per loop iteration; true means an external stop is requested
+  // (spec 11.3: the legacy stop-live.vbs deletes watcher.lock). It must be
+  // cheap -- the session throttles by calling it at the loop cadence only.
+  std::function<bool()> external_stop;
 };
 
 // Rejects a plan written for a different run, such as a stale worker-plan.json

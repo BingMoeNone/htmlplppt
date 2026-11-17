@@ -453,6 +453,8 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     resolved.assets_mode = assets_mode;
     resolved.assets_root = std::move(assets_root);
     resolved.assets_max_bytes = target.assets.max_bytes;
+    resolved.assets_include = target.assets.include;
+    resolved.assets_exclude = target.assets.exclude;
 
     const std::string stage = target.stage_name.empty()
                                   ? AutoStageName(ordinal, resolved.html_path)

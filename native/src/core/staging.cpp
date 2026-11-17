@@ -29,6 +29,50 @@ bool CopyFile(const std::filesystem::path& from,
   return true;
 }
 
+// Glob match for the tree-mode filters: '*' (and '**') match any run including
+// '/', '?' matches one character. Iterative backtracking keeps it cheap.
+bool GlobMatch(std::string_view pattern, std::string_view text) {
+  std::size_t pattern_index = 0;
+  std::size_t text_index = 0;
+  std::size_t star = std::string_view::npos;
+  std::size_t mark = 0;
+  while (text_index < text.size()) {
+    if (pattern_index < pattern.size() &&
+        (pattern[pattern_index] == '?' ||
+         pattern[pattern_index] == text[text_index])) {
+      ++pattern_index;
+      ++text_index;
+    } else if (pattern_index < pattern.size() &&
+               pattern[pattern_index] == '*') {
+      star = pattern_index++;
+      mark = text_index;
+    } else if (star != std::string_view::npos) {
+      pattern_index = star + 1;
+      text_index = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pattern_index < pattern.size() && pattern[pattern_index] == '*') {
+    ++pattern_index;
+  }
+  return pattern_index == pattern.size();
+}
+
+// Exclude always wins; an empty include whitelists everything.
+bool PassesFilters(std::string_view relative,
+                   const std::vector<std::string>& include,
+                   const std::vector<std::string>& exclude) {
+  for (const auto& pattern : exclude) {
+    if (GlobMatch(pattern, relative)) return false;
+  }
+  if (include.empty()) return true;
+  for (const auto& pattern : include) {
+    if (GlobMatch(pattern, relative)) return true;
+  }
+  return false;
+}
+
 } // namespace
 
 StageOutcome StageTargetHtml(const ResolvedTarget& target,
@@ -96,6 +140,11 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
       if (entry.path() == source) continue;  // already staged as stage_name
       const auto relative = std::filesystem::relative(entry.path(), root, code);
       if (code) continue;
+      const std::string relative_text = relative.generic_string();
+      if (!PassesFilters(relative_text, target.assets_include,
+                         target.assets_exclude)) {
+        continue;
+      }
       const auto bytes = FileSize(entry.path());
       if (max_bytes > 0 &&
           copied + bytes > static_cast<std::uint64_t>(max_bytes)) {

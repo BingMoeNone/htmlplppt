@@ -396,7 +396,9 @@ legacy watcher already handles.
 - `file` (default): the HTML is copied to
   `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and Edge opens that copy.
 - `tree`: the same, plus the whole `assets.root` tree (default: the HTML's
-  folder), preserving relative paths, capped by `assets.maxBytes` (0 = no cap).
+  folder), preserving relative paths, filtered by `assets.include` /
+  `assets.exclude` globs (a non-empty include whitelists; exclude always wins;
+  `*` and `**` match across `/`), and capped by `assets.maxBytes` (0 = no cap).
 - `direct`: Edge opens the resolved source path in place, with no copy.
 
 Staging runs when the cover is fading in. A missing source or an over-cap tree

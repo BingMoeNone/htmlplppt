@@ -483,3 +483,53 @@ HTMLPPT_TEST_CASE(worker_session_slow_step_is_not_reported_hung) {
 }
 
 #endif // _WIN32
+
+// Spec 11.3: the legacy stop-live.vbs deletes watcher.lock. The session must
+// treat that as a stop request with its own reason, journalled once.
+HTMLPPT_TEST_CASE(worker_session_external_stop_requests_a_stop) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+
+  std::atomic<bool> client_ok{false};
+  std::atomic<bool> saw_cleanup{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) {
+        saw_cleanup = true;
+        return;
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  config.external_stop = [] { return true; };
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(saw_cleanup.load());
+  HTMLPPT_CHECK_EQ(driver.request_stop_calls, 1);
+  HTMLPPT_CHECK_EQ(driver.stop_reasons.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(driver.stop_reasons.front(),
+                   std::string{"legacy stop: watcher.lock removed"});
+}

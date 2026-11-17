@@ -73,9 +73,28 @@ bool ReadString(const json& object, const char* key, const std::string& path,
   return true;
 }
 
-bool ReadInt64(const json& object, const char* key, const std::string& path,
-               std::int64_t* out, std::string* error) {
+bool ReadStringArray(const json& object, const char* key,
+                     const std::string& path,
+                     std::vector<std::string>* out, std::string* error) {
   const auto it = object.find(key);
+  if (it == object.end() || it->is_null()) return true;
+  if (!it->is_array()) {
+    SetError(error, path + ": expected an array");
+    return false;
+  }
+  out->clear();
+  for (const auto& item : *it) {
+    if (!item.is_string()) {
+      SetError(error, path + ": expected an array of strings");
+      return false;
+    }
+    out->push_back(item.get<std::string>());
+  }
+  return true;
+}
+
+bool ReadInt64(const json& object, const char* key, const std::string& path,
+               std::int64_t* out, std::string* error) {  const auto it = object.find(key);
   if (it == object.end() || it->is_null()) return true;
   if (!it->is_number_integer()) {
     SetError(error, path + ": expected an integer");
@@ -252,6 +271,14 @@ bool ReadResolvedTarget(const json& value, const std::string& path,
       return false;
     }
   }
+  if (!ReadStringArray(value, "assetsInclude", path + ".assetsInclude",
+                       &target->assets_include, error)) {
+    return false;
+  }
+  if (!ReadStringArray(value, "assetsExclude", path + ".assetsExclude",
+                       &target->assets_exclude, error)) {
+    return false;
+  }
   target->state = target->slide > 0 ? ResolveState::Resolved
                                     : ResolveState::Disabled;
   return true;
@@ -294,6 +321,8 @@ nlohmann::ordered_json ResolvedTargetToJson(const ResolvedTarget& target) {
   result["assetsMode"] = target.assets_mode;
   result["assetsRoot"] = target.assets_root;
   result["assetsMaxBytes"] = target.assets_max_bytes;
+  result["assetsInclude"] = target.assets_include;
+  result["assetsExclude"] = target.assets_exclude;
   return result;
 }
 
