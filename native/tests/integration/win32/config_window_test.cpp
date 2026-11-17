@@ -90,19 +90,54 @@ HTMLPPT_TEST_CASE(win32_config_window_binds_selection_to_the_detail_pane) {
   std::vector<htmlppt::DisplayRow> rows(2);
   rows[0].index = 0; rows[0].slide = 3; rows[0].label = "Live";
   rows[0].html = "page.html"; rows[0].assets_mode = "file";
-  rows[0].state = "resolved";
+  rows[0].state = "error"; rows[0].issue = "slide 3 is already mapped";
+  rows[0].enabled = false; rows[0].assets_explicit = false;
   rows[1].index = 1; rows[1].slide = 5; rows[1].html = "two.html";
-  rows[1].state = "resolved";
+  rows[1].state = "resolved"; rows[1].assets_mode = "tree";
+  rows[1].assets_explicit = true;
   window.SetRows(rows);
+
+  HWND enabled_check =
+      FindWindowExW(window.handle(), nullptr, L"BUTTON", L"Enabled");
+  HWND assets_combo =
+      FindWindowExW(window.handle(), nullptr, L"COMBOBOX", nullptr);
+  HTMLPPT_CHECK(enabled_check != nullptr);
+  HTMLPPT_CHECK(assets_combo != nullptr);
+
+  // A disabled target with an error stays disabled and keeps the error in the
+  // STATE column.
+  wchar_t state_text[128] = {};
+  ListView_GetItemText(window.list_view(), 0, 4, state_text, 128);
+  HTMLPPT_CHECK(std::wstring(state_text).rfind(L"error", 0) == 0);
 
   window.SelectRow(0);
   auto fields = window.detail_fields();
   HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"3"));
   HTMLPPT_CHECK_EQ(fields.html, std::wstring(L"page.html"));
+  HTMLPPT_CHECK(!fields.enabled);
+  HTMLPPT_CHECK_EQ(SendMessageW(enabled_check, BM_GETCHECK, 0, 0),
+                   BST_UNCHECKED);
+  // Inherited assets show "inherit", not the effective stage mode.
+  int selection =
+      static_cast<int>(SendMessageW(assets_combo, CB_GETCURSEL, 0, 0));
+  HTMLPPT_CHECK_EQ(selection, 0);
+  wchar_t asset_text[32] = {};
+  SendMessageW(assets_combo, CB_GETLBTEXT, static_cast<WPARAM>(selection),
+               reinterpret_cast<LPARAM>(asset_text));
+  HTMLPPT_CHECK_EQ(std::wstring(asset_text), std::wstring(L"inherit"));
 
   window.SelectRow(1);
   fields = window.detail_fields();
   HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"5"));
+  HTMLPPT_CHECK(fields.enabled);
+  HTMLPPT_CHECK_EQ(SendMessageW(enabled_check, BM_GETCHECK, 0, 0), BST_CHECKED);
+  // An explicit assets block shows its effective mode.
+  selection = static_cast<int>(SendMessageW(assets_combo, CB_GETCURSEL, 0, 0));
+  HTMLPPT_CHECK_EQ(selection, 3);
+  SendMessageW(assets_combo, CB_GETLBTEXT, static_cast<WPARAM>(selection),
+               reinterpret_cast<LPARAM>(asset_text));
+  HTMLPPT_CHECK_EQ(std::wstring(asset_text), std::wstring(L"tree"));
+
   // A cleared selection disables the pane instead of writing to a stale index.
   window.SelectRow(-1);
   HTMLPPT_CHECK(!window.detail_enabled());
@@ -115,7 +150,8 @@ HTMLPPT_TEST_CASE(win32_config_window_follows_the_list_selection) {
   HTMLPPT_CHECK(window.Create(options));
   std::vector<htmlppt::DisplayRow> rows(2);
   rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
-  rows[0].assets_mode = "file"; rows[0].state = "resolved";
+  rows[0].assets_mode = "file"; rows[0].assets_explicit = true;
+  rows[0].state = "resolved";
   rows[1].index = 7; rows[1].slide = 5; rows[1].html = "two.html";
   rows[1].state = "resolved";
   window.SetRows(rows);

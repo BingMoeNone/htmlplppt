@@ -30,6 +30,11 @@ struct DisplayRow {
   std::string label;
   std::string html;
   std::string assets_mode;
+  // True when the target carries its own assets block; false means the stage
+  // mode applies and the UI presents the mode as inherited.
+  bool assets_explicit = false;
+  // The target's own switch, independent of the validation state below.
+  bool enabled = true;
   // "resolved", "disabled", or "error".
   std::string state;
   // First error for this target, empty when the row is clean.

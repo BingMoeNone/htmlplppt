@@ -303,20 +303,22 @@ void ConfigWindow::FillDetail(const DisplayRow& row) {
   SetWindowTextW(detail_label_edit_, label.c_str());
   const std::wstring html = Widen(row.html);
   SetWindowTextW(detail_html_edit_, html.c_str());
-  const std::wstring assets = Widen(row.assets_mode);
-  int selection = CB_ERR;
-  if (!assets.empty() && detail_assets_combo_ != nullptr) {
-    selection = static_cast<int>(SendMessageW(
-        detail_assets_combo_, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-        reinterpret_cast<LPARAM>(assets.c_str())));
+  // An inherited stage mode is presented as "inherit"; only a target that owns
+  // its assets block shows the effective mode as a choice.
+  int selection = 0;  // "inherit" is the first entry
+  if (row.assets_explicit && detail_assets_combo_ != nullptr) {
+    const std::wstring assets = Widen(row.assets_mode);
+    if (!assets.empty()) {
+      const LRESULT found = SendMessageW(
+          detail_assets_combo_, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+          reinterpret_cast<LPARAM>(assets.c_str()));
+      if (found != CB_ERR) selection = static_cast<int>(found);
+    }
   }
-  if (selection == CB_ERR) selection = 0;  // "inherit" is the first entry
   SendMessageW(detail_assets_combo_, CB_SETCURSEL,
                static_cast<WPARAM>(selection), 0);
-  // DisplayRow has no enabled flag: "disabled" is the state the model reports
-  // for a target it will not serve.
   SendMessageW(detail_enabled_check_, BM_SETCHECK,
-               row.state == "disabled" ? BST_UNCHECKED : BST_CHECKED, 0);
+               row.enabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void ConfigWindow::ClearDetail() {

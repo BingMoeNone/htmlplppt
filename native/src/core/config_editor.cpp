@@ -92,6 +92,8 @@ std::vector<DisplayRow> ConfigEditorModel::DisplayRows(
     row.label = base[index].label;
     row.html = base[index].html;
     row.assets_mode = base[index].assets_mode;
+    row.assets_explicit = config_.active.targets[index].assets_set;
+    row.enabled = base[index].enabled;
     const std::string prefix = "targets[" + std::to_string(index) + "]";
     for (const auto& issue : resolved.issues) {
       if (issue.severity != IssueSeverity::Error) continue;
