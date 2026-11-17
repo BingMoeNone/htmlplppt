@@ -46,3 +46,9 @@ native/build/
 !vendor/pptx/templates/default.pptx
 
 demo/diag/
+
+# Demo compatibility files written next to the config by a run
+demo/watcher.lock
+demo/watch-log.txt
+demo/*.owner
+demo/*.err
