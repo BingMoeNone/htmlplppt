@@ -225,6 +225,63 @@ started, so repeated runs do not accumulate automation instances.
 Windows gate: `htmlppt_core_tests` 284/284, `htmlppt_win32_tests` 61/61 (the
 WPS case is skipped without WPS), CTest 9/9, `-Werror` clean.
 
+## Running the watchdog
+
+The supervisor and the worker are the same EXE. A run needs a config, a state
+directory, and a run id:
+
+```powershell
+native\build\htmlppt-watchdog.exe --supervisor --config watcher.json --state-dir .\state --run-id demo
+```
+
+`--supervisor` requires `--config`. It resolves the config once, with the same
+`--profile`, `--map`, and `--scheduling` overrides `--validate` uses, and
+writes `worker-plan.json` and the effective `worker-config.json` into the state
+directory before anything is launched. The worker is spawned automatically; do
+not run `--worker` by hand. The worker opens the deck in WPS, starts the
+slideshow, and drives the cover, Edge, and show actions while heartbeating its
+state into the shared black box.
+
+From a second shell, inspect the run and stop it:
+
+```powershell
+native\build\htmlppt-watchdog.exe --status --run-id demo --state-dir .\state
+native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir .\state
+```
+
+`--status` prints the last black-box records and the journal path. `--stop`
+sets the stop event and returns after the supervisor has terminated the worker,
+flushed the journal, and closed its handles; the supervisor exits 0 after a
+clean stop. A config or deck that cannot be resolved fails before a worker is
+launched, journals the reason, and exits 1.
+
+WPS Presentation must be installed and the deck must be closed before a run:
+the supervisor reads the deck facts through COM and the worker opens that deck
+and starts the show.
+
+The on-machine check is `scripts/smoke-watchdog.ps1`. It starts a run with the
+run id `smoke`, waits for `worker-plan.json`, polls `--status` once a second
+until a worker state record appears, then runs `--stop` and requires the
+supervisor to exit 0:
+
+```powershell
+pwsh -File scripts/smoke-watchdog.ps1 -Config watcher.json -StateDir .\state -Exe native\build\htmlppt-watchdog.exe
+```
+
+The script targets Windows PowerShell 5.1 and later, so a host without `pwsh`
+can run the same command through `powershell -File` instead.
+
+The script tears the supervisor down and prints the last 20 journal records
+when any step fails. Every wait is bounded by `-HoldSeconds` (default 20). A
+pass means the supervisor resolved the config, launched the worker, and the
+worker published a state record. The check opens a real slideshow, so run it
+only on a machine where that is acceptable; it is not part of `ctest`.
+
+Pass ASCII paths for `--config`, `--state-dir`, and `-StateDir`: the native CLI
+converts path arguments through the ANSI code page, so a non-ASCII path aborts
+the process before the run starts. Deck paths inside the config file may still
+be UTF-8.
+
 ## Cover, focus, Edge, and compatibility core (Plan 5B-1)
 
 `core/cover_timeline` owns fade-in, minimum hold, maximum hold safety, and
