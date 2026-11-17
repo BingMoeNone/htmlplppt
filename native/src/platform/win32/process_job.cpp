@@ -7,9 +7,34 @@
 namespace htmlppt {
 namespace {
 
-std::wstring Quote(const std::wstring& value) {
-  if (value.find_first_of(L" \t\"") == std::wstring::npos) return value;
-  return L"\"" + value + L"\"";
+std::wstring QuoteArgument(const std::wstring& value) {
+  const bool needs_quotes =
+      value.empty() || value.find_first_of(L" \t\"") != std::wstring::npos;
+  std::wstring result;
+  if (needs_quotes) result.push_back(L'"');
+  std::size_t backslashes = 0;
+  for (const wchar_t character : value) {
+    if (character == L'\\') {
+      ++backslashes;
+      continue;
+    }
+    if (character == L'"') {
+      result.append(backslashes * 2 + 1, L'\\');
+      result.push_back(L'"');
+      backslashes = 0;
+      continue;
+    }
+    result.append(backslashes, L'\\');
+    backslashes = 0;
+    result.push_back(character);
+  }
+  if (needs_quotes) {
+    result.append(backslashes * 2, L'\\');
+    result.push_back(L'"');
+  } else {
+    result.append(backslashes, L'\\');
+  }
+  return result;
 }
 
 } // namespace
@@ -87,11 +112,8 @@ bool ProcessHandle::LaunchSuspended(
     JobHandle& job) {
   if (!job.valid()) return false;
   Close();
-  std::wstring command_line = Quote(exe.wstring());
-  for (const auto& arg : args) {
-    command_line += L" ";
-    command_line += Quote(arg);
-  }
+  const std::wstring command_line =
+      BuildWindowsCommandLine(exe, args);
   std::vector<wchar_t> buffer(command_line.begin(), command_line.end());
   buffer.push_back(L'\0');
   STARTUPINFOW startup{};
@@ -138,6 +160,17 @@ bool IsProcessAlive(std::uint32_t pid) {
   const DWORD result = WaitForSingleObject(process, 0);
   CloseHandle(process);
   return result == WAIT_TIMEOUT;
+}
+
+std::wstring BuildWindowsCommandLine(
+    const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments) {
+  std::wstring line = QuoteArgument(executable.wstring());
+  for (const auto& argument : arguments) {
+    line.push_back(L' ');
+    line += QuoteArgument(argument);
+  }
+  return line;
 }
 
 } // namespace htmlppt

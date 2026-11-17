@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -83,6 +84,63 @@ HTMLPPT_TEST_CASE(win32_job_kill_on_close) {
 HTMLPPT_TEST_CASE(win32_is_process_alive_reports_current_process) {
   HTMLPPT_CHECK(IsProcessAlive(GetCurrentProcessId()));
   HTMLPPT_CHECK(!IsProcessAlive(0xFFFFFFFFu));
+}
+
+using htmlppt::BuildWindowsCommandLine;
+
+namespace {
+
+std::vector<std::wstring> ParseCommandLine(const std::wstring& line) {
+  int count = 0;
+  LPWSTR* parsed = CommandLineToArgvW(line.c_str(), &count);
+  if (parsed == nullptr) return {};
+  std::vector<std::wstring> result(parsed, parsed + count);
+  LocalFree(parsed);
+  return result;
+}
+
+} // namespace
+
+HTMLPPT_TEST_CASE(win32_command_line_round_trips_arguments) {
+  const std::filesystem::path exe =
+      L"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe";
+  const std::vector<std::wstring> arguments = {
+      L"--app=file:///C:/demo/page.html",
+      L"plain",
+      L"\x6F22\x5B57",
+  };
+  const std::wstring line = BuildWindowsCommandLine(exe, arguments);
+  const auto parsed = ParseCommandLine(line);
+  HTMLPPT_CHECK_EQ(parsed.size(), std::size_t{4});
+  HTMLPPT_CHECK_EQ(parsed[0], exe.wstring());
+  for (std::size_t i = 0; i < arguments.size(); ++i) {
+    HTMLPPT_CHECK_EQ(parsed[i + 1], arguments[i]);
+  }
+}
+
+HTMLPPT_TEST_CASE(win32_command_line_escapes_quotes_and_backslashes) {
+  const std::filesystem::path exe = L"C:\\Tools\\arg echo.exe";
+  const std::vector<std::wstring> arguments = {
+      L"say \"hi\"",
+      L"C:\\path with space\\",
+      L"plain\\path",
+  };
+  const std::wstring line = BuildWindowsCommandLine(exe, arguments);
+  const auto parsed = ParseCommandLine(line);
+  HTMLPPT_CHECK_EQ(parsed.size(), std::size_t{4});
+  HTMLPPT_CHECK_EQ(parsed[0], exe.wstring());
+  HTMLPPT_CHECK_EQ(parsed[1], arguments[0]);
+  HTMLPPT_CHECK_EQ(parsed[2], arguments[1]);
+  HTMLPPT_CHECK_EQ(parsed[3], arguments[2]);
+}
+
+HTMLPPT_TEST_CASE(win32_command_line_preserves_empty_argument) {
+  const std::wstring line =
+      BuildWindowsCommandLine(L"C:\\helper.exe", {L"", L"x"});
+  const auto parsed = ParseCommandLine(line);
+  HTMLPPT_CHECK_EQ(parsed.size(), std::size_t{3});
+  HTMLPPT_CHECK_EQ(parsed[1], std::wstring());
+  HTMLPPT_CHECK_EQ(parsed[2], std::wstring(L"x"));
 }
 
 #endif // _WIN32

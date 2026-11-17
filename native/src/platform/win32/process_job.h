@@ -65,6 +65,13 @@ class ProcessHandle {
 
 bool IsProcessAlive(std::uint32_t pid);
 
+// Builds a CreateProcessW command line using the CommandLineToArgvW quoting
+// rules. The executable and every argument are quoted only when needed;
+// embedded quotes and trailing backslashes are escaped.
+std::wstring BuildWindowsCommandLine(
+    const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments);
+
 #endif // _WIN32
 
 } // namespace htmlppt
