@@ -107,6 +107,9 @@ if (HTMLPPT_BUILD_TESTS)
   if (WIN32)
     file(GLOB HTMLPPT_WIN32_TEST_SOURCES CONFIGURE_DEPENDS
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/win32/*.cpp")
+    add_executable(htmlppt_win32_arg_echo
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/win32/helper/arg_echo.cpp")
+    htmlppt_enable_warnings(htmlppt_win32_arg_echo)
     add_executable(htmlppt_win32_tests
       ${HTMLPPT_WIN32_TEST_SOURCES}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp")
@@ -114,8 +117,10 @@ if (HTMLPPT_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(htmlppt_win32_tests PRIVATE htmlppt_win32)
     target_compile_definitions(htmlppt_win32_tests PRIVATE
-      "HTMLPPT_EXE_PATH=\"$<TARGET_FILE:htmlppt-watchdog>\"")
-    add_dependencies(htmlppt_win32_tests htmlppt-watchdog)
+      "HTMLPPT_EXE_PATH=\"$<TARGET_FILE:htmlppt-watchdog>\""
+      "HTMLPPT_HELPER_PATH=\"$<TARGET_FILE:htmlppt_win32_arg_echo>\"")
+    add_dependencies(htmlppt_win32_tests htmlppt-watchdog
+      htmlppt_win32_arg_echo)
     htmlppt_enable_warnings(htmlppt_win32_tests)
     add_test(NAME win32_tests COMMAND htmlppt_win32_tests)
     set_tests_properties(win32_tests PROPERTIES TIMEOUT 120)

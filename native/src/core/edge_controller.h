@@ -13,6 +13,9 @@ class EdgeProcess {
   virtual std::uint32_t pid() const = 0;
   virtual bool alive() const = 0;
   virtual void terminate() = 0;
+  // Drops ownership without terminating the process. Returns false when the
+  // platform cannot detach; the controller keeps ownership in that case.
+  virtual bool release() = 0;
 };
 
 class EdgeLauncher {
@@ -24,9 +27,16 @@ class EdgeLauncher {
 class EdgeController {
  public:
   explicit EdgeController(EdgeLauncher& launcher);
+  ~EdgeController();
+
+  EdgeController(const EdgeController&) = delete;
+  EdgeController& operator=(const EdgeController&) = delete;
 
   bool Launch(const EdgeLaunchSpec& spec);
   void Kill();
+  // Detaches the process so it keeps running after this controller is
+  // destroyed. Returns false when detaching failed.
+  bool Release();
   bool active() const;
   std::uint32_t pid() const;
 

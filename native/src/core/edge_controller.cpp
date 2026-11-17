@@ -4,6 +4,8 @@ namespace htmlppt {
 
 EdgeController::EdgeController(EdgeLauncher& launcher) : launcher_(launcher) {}
 
+EdgeController::~EdgeController() { Kill(); }
+
 bool EdgeController::Launch(const EdgeLaunchSpec& spec) {
   if (active()) return false;
   process_ = launcher_.Launch(spec);
@@ -15,6 +17,13 @@ void EdgeController::Kill() {
     process_->terminate();
     process_.reset();
   }
+}
+
+bool EdgeController::Release() {
+  if (process_ == nullptr) return true;
+  if (!process_->release()) return false;
+  process_.reset();
+  return true;
 }
 
 bool EdgeController::active() const {
