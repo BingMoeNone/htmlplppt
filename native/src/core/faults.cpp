@@ -36,13 +36,15 @@ Faults ParseFaults(std::string_view text) {
       faults.cover_hang = true;
     } else if (token == "focus-deny") {
       faults.focus_deny = true;
+    } else if (token == "supervisor-loss") {
+      faults.supervisor_loss = true;
     }
   }
   return faults;
 }
 
 bool HasAnyFault(const Faults& faults) {
-  return faults.com_hang || faults.com_462 || faults.edge_slow ||
+  return faults.com_hang || faults.com_462 || faults.edge_slow || faults.supervisor_loss ||
          faults.cover_hang || faults.focus_deny;
 }
 
@@ -57,6 +59,7 @@ std::string FaultsToString(const Faults& faults) {
   if (faults.edge_slow) add("edge-slow");
   if (faults.cover_hang) add("cover-hang");
   if (faults.focus_deny) add("focus-deny");
+  if (faults.supervisor_loss) add("supervisor-loss");
   return text;
 }
 

@@ -227,6 +227,11 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   };
 
   driver.Start();
+  if (config.inject_supervisor_loss) {
+    // Spec 6.6: report a lost supervisor without breaking the pipe, so the
+    // loss policy (continue by default) is exercised on a real machine.
+    driver.HandleSupervisorLost("injected supervisor loss");
+  }
   std::atomic<int> published_state{static_cast<int>(driver.snapshot().state)};
   // The loop's step counter; it advances only after Step() returns, so a
   // worker wedged inside a COM call keeps heartbeating a frozen value.

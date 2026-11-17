@@ -11,12 +11,13 @@ using htmlppt::ParseFaults;
 
 HTMLPPT_TEST_CASE(faults_parse_every_switch) {
   const Faults faults =
-      ParseFaults("com-hang,com-462, edge-slow cover-hang;focus-deny");
+      ParseFaults("com-hang,com-462, edge-slow cover-hang;focus-deny,supervisor-loss");
   HTMLPPT_CHECK(faults.com_hang);
   HTMLPPT_CHECK(faults.com_462);
   HTMLPPT_CHECK(faults.edge_slow);
   HTMLPPT_CHECK(faults.cover_hang);
   HTMLPPT_CHECK(faults.focus_deny);
+  HTMLPPT_CHECK(faults.supervisor_loss);
 }
 
 HTMLPPT_TEST_CASE(faults_default_to_off_and_ignore_typos) {

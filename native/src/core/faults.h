@@ -14,9 +14,10 @@ struct Faults {
   bool edge_slow = false;  // Edge reports ready late (cold start)
   bool cover_hang = false; // the cover never reaches its hold
   bool focus_deny = false; // activation always fails (no Edge window, no focus)
+  bool supervisor_loss = false;  // the worker is told the supervisor is gone
 };
 
-// Parses a comma- or space-separated list: com-hang, com-462, edge-slow,
+// Parses a comma- or space-separated list: com-hang, com-462, edge-slow, supervisor-loss,
 // cover-hang, focus-deny. Unknown names are ignored so a typo cannot fail a
 // demo run.
 Faults ParseFaults(std::string_view text);

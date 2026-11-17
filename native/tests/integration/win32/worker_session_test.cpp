@@ -533,3 +533,49 @@ HTMLPPT_TEST_CASE(worker_session_external_stop_requests_a_stop) {
   HTMLPPT_CHECK_EQ(driver.stop_reasons.front(),
                    std::string{"legacy stop: watcher.lock removed"});
 }
+HTMLPPT_TEST_CASE(worker_session_injected_supervisor_loss_does_not_stop_the_loop) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+
+  std::atomic<bool> saw_cleanup{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    if (!client.Connect(pipe_name, Duration{3000})) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) {
+        saw_cleanup = true;
+        return;
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  config.inject_supervisor_loss = true;
+  // The injected loss must not end the session: stop it through the driver's own
+  // done() after a few steps.
+  config.external_stop = [&driver] { return driver.step_calls >= 3; };
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK_EQ(driver.lost_calls, 1);
+  HTMLPPT_CHECK_EQ(driver.lost_details.front(), std::string{"injected supervisor loss"});
+  HTMLPPT_CHECK(saw_cleanup.load());
+}

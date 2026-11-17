@@ -933,6 +933,7 @@ int RunWorker(const SupervisorRunOptions& options) {
     last_lock_ms.store(now_ms);
     compat->WriteLock(UtcTimestamp());
   };
+  session_config.inject_supervisor_loss = facts.faults.supervisor_loss;
   bool pipe_alive = true;
   // Spec 11.3: stop-live.vbs deletes watcher.lock instead of sending a frame.
   // The session polls this at the loop cadence; the check itself is throttled so

@@ -62,6 +62,6 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 - 睡眠/唤醒、显示器热插拔、DPI 变化后的**定时器重算**（覆盖窗口已在 `WM_DISPLAYCHANGE`、`WM_DPICHANGED`、`WM_POWERBROADCAST` 时重新铺满并置顶，但截止时间不重新校准）。
 - 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
-- `supervisor-loss`、`sleep-resume`、`multi-monitor` 三个故障开关（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny` 已可用，见 `native/README.md` 的 Fault injection）。
+- `sleep-resume`、`multi-monitor` 两个故障开关（其余六个已可用，见 `native/README.md` 的 Fault injection）。
 - `focus.strategy`、`display.monitor`、`edge.prewarmProfile` 仍只解析不生效（`tree` 的 `include`/`exclude` glob 已实现）。
 - 配置 UI（§9）：`ConfigEditorModel` 已实现并有单测（增删目标、校验、原子保存），Win32 视图与自动映射向导未实现。

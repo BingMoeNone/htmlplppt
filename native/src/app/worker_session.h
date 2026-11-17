@@ -34,6 +34,9 @@ struct WorkerSessionConfig {
   // (spec 11.3: the legacy stop-live.vbs deletes watcher.lock). It must be
   // cheap -- the session throttles by calling it at the loop cadence only.
   std::function<bool()> external_stop;
+  // Spec 6.6 fault injection: tell the driver the supervisor is gone right after
+  // start, without breaking the pipe. The loop must keep running.
+  bool inject_supervisor_loss = false;
 };
 
 // Rejects a plan written for a different run, such as a stale worker-plan.json
