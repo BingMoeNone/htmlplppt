@@ -27,7 +27,15 @@ struct SupervisorAction {
 };
 
 struct SupervisorConfig {
+  // Sequence liveness: the heartbeat helper sends every 200 ms, so a dead
+  // helper is a real defect and 2 s is 10x headroom.
   Duration heartbeat_timeout{2000};
+  // Loop-progress liveness: a bounded blocking COM action (ResumeShow can run
+  // StartShow + FocusShow + JumpTo with retries) can legitimately exceed 2 s,
+  // so progress gets a threshold deliberately above the longest permitted
+  // blocking action. A true hang is therefore recovered in ~12 s, not the
+  // spec's 5 s target; that trade-off avoids killing a healthy slow worker.
+  Duration progress_timeout{12000};
   int max_restarts = 5;
   Duration restart_window{600000};
   std::vector<Duration> backoff{

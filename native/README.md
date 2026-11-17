@@ -145,8 +145,10 @@ stale heartbeats.
 `core/supervisor` is a declarative decision engine. It emits `StartWorker`,
 `RequestDump`, `TerminateWorker`, `RestartWorker`, `EnterSafeMode`,
 `RunLegacyFallback`, and `StopComplete`. It uses a 2 s heartbeat timeout, a
-5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s backoff with
-jitter. `NextDeadline()` exposes the pending restart; `Tick()` dispatches it.
+12 s loop-progress stall timeout (above the longest permitted blocking COM
+action), a 5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s
+backoff with jitter. `NextDeadline()` exposes the pending restart; `Tick()`
+dispatches it.
 The host must call `Tick()` at least every 100 ms (design spec 6.1);
 `NextDeadline()` exposes restart deadlines but not the heartbeat-stall check.
 `Start()` and a late `Started` are ignored while a restart is scheduled; the
@@ -262,7 +264,8 @@ WPS Presentation must be installed and the deck must be closed before a run:
 the supervisor reads the deck facts through COM and the worker opens that deck
 and starts the show. The supervisor's planning step needs a responsive WPS (or
 `--deck-info`), and a wedged WPS is a prerequisite failure, not a watchdog
-failure.
+failure. Hang detection fires after ~12 s of frozen loop progress because 5C
+permits blocking COM actions; a wedged WPS is restarted within that budget.
 
 The on-machine check is `scripts/smoke-watchdog.ps1`. It starts a run with the
 run id `smoke`, waits for `worker-plan.json`, polls `--status` once a second

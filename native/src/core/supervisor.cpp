@@ -90,12 +90,15 @@ std::vector<SupervisorAction> SupervisorCore::Tick() {
   }
   if (worker_running_) {
     // The helper thread keeps the sequence advancing while the loop is stuck in
-    // a call, so progress that stops moving is the hang signal (I2). A missing
-    // heartbeat still falls back to the sequence tracker.
+    // a call, so progress that stops moving is the hang signal (I2). Progress
+    // uses its own, longer timeout: a bounded blocking COM action is not a hang,
+    // and recovering a true hang at ~12 s is preferred to killing a slow but
+    // healthy worker. A missing heartbeat still falls back to the 2 s sequence
+    // tracker.
     const bool sequence_stalled =
         sequence_.stalled(now, config_.heartbeat_timeout);
     const bool progress_stalled =
-        progress_.stalled(now, config_.heartbeat_timeout);
+        progress_.stalled(now, config_.progress_timeout);
     if (sequence_stalled || progress_stalled) {
       return HangActions(now, progress_stalled && !sequence_stalled
                                   ? "worker progress stalled"

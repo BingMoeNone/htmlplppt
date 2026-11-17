@@ -86,10 +86,15 @@ HTMLPPT_TEST_CASE(supervisor_heartbeats_keep_worker_healthy) {
 
 // I2: the helper thread keeps the sequence moving while the worker loop is
 // wedged in a COM call, so an advancing sequence with frozen progress is a
-// hang, not a healthy worker.
+// hang, not a healthy worker. The progress stall is measured against
+// progress_timeout, not the (shorter) heartbeat timeout.
 HTMLPPT_TEST_CASE(supervisor_detects_stalled_worker_progress) {
+  HTMLPPT_CHECK_EQ(SupervisorConfig{}.heartbeat_timeout, Duration{2000});
+  HTMLPPT_CHECK_EQ(SupervisorConfig{}.progress_timeout, Duration{12000});
   FakeClock clock;
-  SupervisorCore core(Config(), clock);
+  auto config = Config();
+  config.progress_timeout = Duration{2000};
+  SupervisorCore core(config, clock);
   core.Start();
   core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
   clock.advance(Duration{1000});
@@ -100,6 +105,25 @@ HTMLPPT_TEST_CASE(supervisor_detects_stalled_worker_progress) {
   HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::TerminateWorker));
   HTMLPPT_CHECK(!core.worker_running());
   HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+// A progress freeze beyond progress_timeout is still a hang even though the
+// sequence is alive and heartbeat_timeout has not passed. A test config keeps
+// the unit case fast.
+HTMLPPT_TEST_CASE(supervisor_progress_timeout_governs_progress_stall) {
+  FakeClock clock;
+  auto config = Config();
+  config.progress_timeout = Duration{100};
+  SupervisorCore core(config, clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{99});
+  HTMLPPT_CHECK(core.Tick().empty());  // sequence and progress both live
+  clock.advance(Duration{1});
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::TerminateWorker));
+  HTMLPPT_CHECK(!core.worker_running());
 }
 
 HTMLPPT_TEST_CASE(supervisor_advancing_worker_progress_is_healthy) {
