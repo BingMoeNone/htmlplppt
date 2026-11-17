@@ -198,6 +198,10 @@ class FakeWindowSystem final : public WindowSystem {
     foreground = id;
     return true;
   }
+  bool ActivateWith(WindowId id, FocusStrategy strategy) override {
+    activate_with_calls.push_back({id, strategy});
+    return Activate(id);
+  }
   bool IsWindow(WindowId id) override {
     for (const auto& window : windows) {
       if (window.id == id) return true;
@@ -207,6 +211,7 @@ class FakeWindowSystem final : public WindowSystem {
 
   std::vector<WindowInfo> windows;
   std::vector<WindowId> activate_calls;
+  std::vector<std::pair<WindowId, FocusStrategy>> activate_with_calls;
   WindowId foreground = 0;
 };
 

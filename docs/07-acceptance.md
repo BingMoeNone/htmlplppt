@@ -63,5 +63,5 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 - 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
 - `sleep-resume`、`multi-monitor` 两个故障开关（其余六个已可用，见 `native/README.md` 的 Fault injection）。
-- `focus.strategy`、`display.monitor`、`edge.prewarmProfile` 仍只解析不生效（`tree` 的 `include`/`exclude` glob 已实现）。
+- `display.monitor`、`focus.strategy`、`edge.prewarmProfile` 已接线（选屏、激活链选择、Edge 预热）；`tree` 的 `include`/`exclude` glob 已实现。
 - 配置 UI（§9）：`ConfigEditorModel` 已实现并有单测（增删目标、校验、原子保存），Win32 视图与自动映射向导未实现。

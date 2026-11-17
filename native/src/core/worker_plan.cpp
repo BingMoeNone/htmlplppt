@@ -406,6 +406,7 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
   host.cover.hold = machine.cover_hold;
   host.cover.max_hold = machine.cover_max_hold;
   host.focus.timeout = machine.focus_timeout;
+  host.focus.strategy = ParseFocusStrategy(config.defaults.focus.strategy);
   host.screen = facts.screen;
   host.wps_pids = facts.wps_pids;
   host.faults = facts.faults;

@@ -8,6 +8,11 @@ namespace htmlppt {
 
 using WindowId = std::uintptr_t;
 
+// How hard the focus layer should try to become foreground (config
+// focus.strategy). Auto is the full multi-stage chain; the other two restrict it
+// to one technique, which is what the spec's strategy switch is for.
+enum class FocusStrategy { Auto, AttachAlt, Switch };
+
 struct WindowRect {
   int left = 0;
   int top = 0;
@@ -47,6 +52,12 @@ class WindowSystem {
   virtual WindowId Foreground() = 0;
   virtual bool IsForeground(WindowId id) = 0;
   virtual bool Activate(WindowId id) = 0;
+  // Strategy-aware activation. Platforms that cannot vary the technique keep the
+  // plain Activate() behaviour.
+  virtual bool ActivateWith(WindowId id, FocusStrategy strategy) {
+    (void)strategy;
+    return Activate(id);
+  }
   virtual bool IsWindow(WindowId id) = 0;
 };
 

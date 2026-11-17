@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 #include "core/clock.h"
@@ -11,7 +12,14 @@ namespace htmlppt {
 struct FocusTiming {
   Duration interval{100};
   Duration timeout{6000};
+  // Which activation chain to use; see FocusStrategy in window_system.h.
+  FocusStrategy strategy = FocusStrategy::Auto;
 };
+
+// Config strings: "auto" (default), "attach-alt", "switch". Unknown values fall
+// back to Auto; config validation rejects them before a run.
+FocusStrategy ParseFocusStrategy(std::string_view text);
+std::string_view FocusStrategyName(FocusStrategy strategy);
 
 class FocusController {
  public:

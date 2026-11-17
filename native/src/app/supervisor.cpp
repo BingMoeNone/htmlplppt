@@ -42,6 +42,7 @@
 #include "platform/win32/process_job.h"
 #include "platform/win32/process_query.h"
 #include "platform/win32/pumping_clock.h"
+#include "platform/win32/screen_win32.h"
 #include "platform/win32/shared_blackbox.h"
 #include "platform/win32/window_system_win32.h"
 #include "platform/win32/wps_host.h"
@@ -856,7 +857,15 @@ int RunWorker(const SupervisorRunOptions& options) {
   facts.temp_dir =
       std::filesystem::temp_directory_path() / ("htmlppt-" + run_id);
   const TempDirGuard temp_guard(facts.temp_dir);
-  facts.screen = PrimaryScreenMetrics();
+  // Spec 8.2 display.monitor: the reference monitor for show-window scoring and
+  // focus. The cover still spans the virtual screen, so every display goes dark.
+  const ScreenSelection screen = SelectScreenMetrics(config.defaults.display.monitor);
+  facts.screen = screen.metrics;
+  if (!screen.error.empty()) {
+    std::cerr << "warning: " << screen.error << "\n";
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0,
+                           "display: " + screen.error);
+  }
   if (const auto edge = FindEdgeExecutable(); edge.has_value()) {
     facts.edge_exe = *edge;
   } else {
@@ -879,6 +888,23 @@ int RunWorker(const SupervisorRunOptions& options) {
     std::size_t wps_pid_count = 0;
   } started;
   const auto startup = [&] {
+    // Spec 8.5 prewarmProfile: initialize every target's Edge profile before
+    // the show needs it. Runs inside the startup heartbeats, so the supervisor
+    // keeps seeing liveness while the browser builds its profile.
+    if (config.defaults.edge.prewarm_profile && !facts.edge_exe.empty()) {
+      std::vector<std::unique_ptr<EdgeProcess>> prewarm;
+      for (const auto& target : plan->targets) {
+        const auto profile =
+            facts.temp_dir / PathFromUtf8(target.edge_profile);
+        auto process = launcher.Launch(
+            MakeEdgePrewarmSpec(facts.edge_exe, profile, config.defaults.edge));
+        if (process != nullptr) prewarm.push_back(std::move(process));
+      }
+      if (!prewarm.empty()) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        for (auto& process : prewarm) process->terminate();
+      }
+    }
     const HostResult launched = wps.Launch(PathFromUtf8(plan->deck_utf8));
     if (!launched.ok()) {
       started.launch_failed = true;

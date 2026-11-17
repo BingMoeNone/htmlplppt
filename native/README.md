@@ -421,6 +421,21 @@ is removed with the run's temp directory.
 `assets` block, and `--stage-mode` overrides that default for the run; a target's
 own `assets` block always wins.
 
+### Display, focus, and prewarm
+
+- `display.monitor` (`"primary"`, `"secondary"`, or a 1-based index) selects the
+  reference monitor for show-window scoring and focus. The cover itself always
+  spans the virtual screen, so every display goes dark; an out-of-range selector
+  falls back to the primary with a `display:` record in the black box.
+- `focus.strategy` (`auto`, `attach-alt`, `switch`) selects the activation chain:
+  `auto` runs the full multi-stage chain (topmost, restore, foreground, switch,
+  thread attach, Alt unlock), `attach-alt` and `switch` restrict it to that one
+  technique. Unknown values are a config error.
+- `edge.prewarmProfile: true` launches each target's Edge profile headless for up
+  to 2 s before the show starts, so the browser's first real launch does not pay
+  the profile-initialization cost. The prewarm processes are terminated and never
+  show a window.
+
 ### Live page contract
 
 `templates/live-page.html` is the reference page. The watchdog watches the Edge

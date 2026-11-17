@@ -263,7 +263,12 @@ FocusConfig ParseFocus(const json& value, const std::string& path,
   CheckKnownKeys(value, {"strategy", "require"}, path, issues);
   if (auto strategy = ReadString(value, "strategy", path, issues)) result.strategy = *strategy;
   if (auto required = ReadBool(value, "require", path, issues)) result.require = *required;
-  if (result.strategy.empty()) AddError(issues, FieldPath(path, "strategy"), "must not be empty");
+  if (result.strategy.empty()) {
+    AddError(issues, FieldPath(path, "strategy"), "must not be empty");
+  } else if (!IsOneOf(result.strategy, {"auto", "attach-alt", "switch"})) {
+    AddError(issues, FieldPath(path, "strategy"),
+             "must be auto, attach-alt, or switch");
+  }
   return result;
 }
 

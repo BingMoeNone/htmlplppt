@@ -3,6 +3,7 @@
 #include <string>
 
 #include "core/config.h"
+#include "core/config_issue.h"
 
 using htmlppt::ConfigLoadResult;
 using htmlppt::IssueSeverity;
@@ -648,4 +649,19 @@ HTMLPPT_TEST_CASE(config_reports_single_html_error) {
   HTMLPPT_CHECK(HasError(empty));
   HTMLPPT_CHECK_EQ(CountIssuesAt(empty, "targets[0].html"), std::size_t{1});
   HTMLPPT_CHECK(HasIssueAtWithMessage(empty, "targets[0].html", "must not be empty"));
+}
+
+HTMLPPT_TEST_CASE(config_rejects_an_unknown_focus_strategy) {
+  const auto bad = htmlppt::LoadConfigFromString(
+      R"({"version":1,"deck":"d.pptx","targets":[{"slide":1,"html":"a.html","focus":{"strategy":"bogus"}}]})",
+      "watcher.json", {});
+  HTMLPPT_CHECK(htmlppt::HasErrorIssue(bad.issues));
+
+  const auto good = htmlppt::LoadConfigFromString(
+      R"({"version":1,"deck":"d.pptx","targets":[{"slide":1,"html":"a.html","focus":{"strategy":"attach-alt"}}]})",
+      "watcher.json", {});
+  HTMLPPT_CHECK(!htmlppt::HasErrorIssue(good.issues));
+  HTMLPPT_CHECK(good.config.has_value());
+  HTMLPPT_CHECK_EQ(good.config->active.targets[0].focus->strategy,
+                   std::string{"attach-alt"});
 }

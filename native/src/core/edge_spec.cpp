@@ -88,4 +88,21 @@ EdgeLaunchSpec MakeEdgeLaunchSpec(const std::filesystem::path& edge_exe,
   return spec;
 }
 
+EdgeLaunchSpec MakeEdgePrewarmSpec(const std::filesystem::path& edge_exe,
+                                   const std::filesystem::path& profile_dir,
+                                   const EdgeConfig& config) {
+  EdgeLaunchSpec spec;
+  spec.executable = edge_exe;
+  spec.profile_dir = profile_dir;
+  spec.url = "about:blank";
+  spec.arguments = config.args.empty() ? DefaultEdgeFlags() : config.args;
+  // Headless: no window, no focus steal, but the browser still initializes the
+  // user-data-dir, which is the slow part of a cold start.
+  spec.arguments.push_back("--headless=new");
+  spec.arguments.push_back("--disable-gpu");
+  spec.arguments.push_back("--user-data-dir=" + Utf8Path(spec.profile_dir));
+  spec.arguments.push_back("about:blank");
+  return spec;
+}
+
 } // namespace htmlppt

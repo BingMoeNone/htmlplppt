@@ -14,8 +14,23 @@ FocusController::FocusController(WindowSystem& windows, Clock& clock,
   }
 }
 
+FocusStrategy ParseFocusStrategy(std::string_view text) {
+  if (text == "attach-alt") return FocusStrategy::AttachAlt;
+  if (text == "switch") return FocusStrategy::Switch;
+  return FocusStrategy::Auto;
+}
+
+std::string_view FocusStrategyName(FocusStrategy strategy) {
+  switch (strategy) {
+    case FocusStrategy::AttachAlt: return "attach-alt";
+    case FocusStrategy::Switch: return "switch";
+    case FocusStrategy::Auto: break;
+  }
+  return "auto";
+}
+
 bool FocusController::FocusWindow(WindowId id) {
-  if (!windows_.Activate(id)) return false;
+  if (!windows_.ActivateWith(id, timing_.strategy)) return false;
   return windows_.IsForeground(id);
 }
 

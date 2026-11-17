@@ -37,6 +37,10 @@ class FakeWindows final : public WindowSystem {
     foreground = id;
     return true;
   }
+  bool ActivateWith(WindowId id, htmlppt::FocusStrategy strategy) override {
+    strategies.push_back(strategy);
+    return Activate(id);
+  }
   bool IsWindow(WindowId id) override {
     for (const auto& window : windows) {
       if (window.id == id) return true;
@@ -48,6 +52,7 @@ class FakeWindows final : public WindowSystem {
   WindowId foreground = 0;
   bool allow_activate = true;
   std::vector<bool> activation_results;
+  std::vector<htmlppt::FocusStrategy> strategies;
   std::size_t activation_index = 0;
   int activation_count = 0;
 };
@@ -167,4 +172,40 @@ HTMLPPT_TEST_CASE(focus_controller_try_focus_edge_does_not_wait_for_a_window) {
   HTMLPPT_CHECK(!controller.TryFocusEdge(100));
   HTMLPPT_CHECK(clock.sleeps().empty());
   HTMLPPT_CHECK_EQ(clock.now(), ClockPoint(Duration{0}));
+}
+
+HTMLPPT_TEST_CASE(focus_controller_uses_the_configured_strategy) {
+  FakeWindows windows;
+  FakeClock clock;
+  WindowInfo window;
+  window.id = 11;
+  window.pid = 42;
+  window.visible = true;
+  window.class_name = "screenClass";
+  window.ws_popup = true;
+  window.has_min_box = false;
+  window.has_max_box = false;
+  window.rect = WindowRect{0, 0, 1920, 1080};
+  windows.windows = {window};
+
+  FocusTiming timing;
+  timing.strategy = htmlppt::FocusStrategy::AttachAlt;
+  FocusController controller(windows, clock, timing);
+  HTMLPPT_CHECK(controller.FocusWps({42}, ScreenMetrics{1920, 1080}));
+  HTMLPPT_CHECK_EQ(windows.strategies.size(), std::size_t{1});
+  HTMLPPT_CHECK(windows.strategies[0] == htmlppt::FocusStrategy::AttachAlt);
+
+  windows.strategies.clear();
+  timing.strategy = htmlppt::FocusStrategy::Switch;
+  FocusController second(windows, clock, timing);
+  HTMLPPT_CHECK(second.FocusWps({42}, ScreenMetrics{1920, 1080}));
+  HTMLPPT_CHECK(windows.strategies[0] == htmlppt::FocusStrategy::Switch);
+}
+
+HTMLPPT_TEST_CASE(focus_strategy_parses_config_strings) {
+  HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("auto") == htmlppt::FocusStrategy::Auto);
+  HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("attach-alt") == htmlppt::FocusStrategy::AttachAlt);
+  HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("switch") == htmlppt::FocusStrategy::Switch);
+  HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("bogus") == htmlppt::FocusStrategy::Auto);
+  HTMLPPT_CHECK_EQ(htmlppt::FocusStrategyName(htmlppt::FocusStrategy::AttachAlt), std::string_view{"attach-alt"});
 }

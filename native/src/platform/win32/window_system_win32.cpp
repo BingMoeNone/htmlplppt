@@ -140,6 +140,47 @@ bool Win32WindowSystem::Activate(WindowId id) {
   return IsForegroundWindow(hwnd);
 }
 
+bool Win32WindowSystem::ActivateWith(WindowId id, FocusStrategy strategy) {
+  const HWND hwnd = ToWindow(id);
+  if (hwnd == nullptr || ::IsWindow(hwnd) == 0) return false;
+  if (IsForegroundWindow(hwnd)) return true;
+  switch (strategy) {
+    case FocusStrategy::Auto:
+      return Activate(id);
+    case FocusStrategy::Switch:
+      // One technique only: the shell's own switch path.
+      SwitchToThisWindow(hwnd, TRUE);
+      return IsForegroundWindow(hwnd);
+    case FocusStrategy::AttachAlt: {
+      // One technique only: attach to the foreground/target threads so the
+      // foreground lock stops refusing SetForegroundWindow.
+      const HWND foreground = GetForegroundWindow();
+      const DWORD foreground_thread =
+          foreground != nullptr ? GetWindowThreadProcessId(foreground, nullptr)
+                                : 0;
+      const DWORD target_thread = GetWindowThreadProcessId(hwnd, nullptr);
+      const DWORD current_thread = GetCurrentThreadId();
+      const bool attached_foreground =
+          foreground_thread != 0 && foreground_thread != current_thread &&
+          AttachThreadInput(current_thread, foreground_thread, TRUE) != 0;
+      const bool attached_target =
+          target_thread != 0 && target_thread != current_thread &&
+          target_thread != foreground_thread &&
+          AttachThreadInput(current_thread, target_thread, TRUE) != 0;
+      SetForegroundWindow(hwnd);
+      SetFocus(hwnd);
+      if (attached_target) {
+        AttachThreadInput(current_thread, target_thread, FALSE);
+      }
+      if (attached_foreground) {
+        AttachThreadInput(current_thread, foreground_thread, FALSE);
+      }
+      return IsForegroundWindow(hwnd);
+    }
+  }
+  return Activate(id);
+}
+
 } // namespace htmlppt
 
 #endif // _WIN32
