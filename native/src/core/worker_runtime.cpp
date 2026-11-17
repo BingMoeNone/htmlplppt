@@ -17,12 +17,12 @@ WorkerRuntime::WorkerRuntime(WorkerPlan plan, StateMachineConfig config,
       edge_(ports_.launcher),
       focus_(ports_.windows, ports_.clock, host_.focus),
       machine_(plan_.machine, std::move(config), ports_.clock) {
-  snapshot_ = machine_.Snapshot();
+  SyncSnapshot();
 }
 
 void WorkerRuntime::Start() {
   Dispatch(machine_.Start());
-  snapshot_ = machine_.Snapshot();
+  SyncSnapshot();
 }
 
 bool WorkerRuntime::Step() {
@@ -36,7 +36,7 @@ bool WorkerRuntime::Step() {
     Handle(MakeStopRequested(ports_.clock.now(), std::move(reason)));
   }
   Dispatch(machine_.Tick());
-  snapshot_ = machine_.Snapshot();
+  SyncSnapshot();
   done_ =
       machine_.state() == State::Exited || machine_.state() == State::SafeMode;
   if (done_) return false;
@@ -85,9 +85,12 @@ void WorkerRuntime::ObserveEdge() {
   if (edge_pid_ == 0) return;
   const ClockPoint now = ports_.clock.now();
   if (!edge_.active()) {
-    // The process is gone before or after readiness: clear the pid first so a
-    // later step cannot report the same closure twice.
+    // The process is gone before or after readiness: clear the whole
+    // observation state first so a later step cannot report the same closure
+    // twice, matching the LaunchEdge/KillEdge reset.
     edge_pid_ = 0;
+    ready_sent_ = false;
+    return_sent_ = false;
     Handle(MakeEdgeClosed(now));
     return;
   }
@@ -118,7 +121,18 @@ void WorkerRuntime::ObserveEdge() {
 
 void WorkerRuntime::Handle(const Event& event) {
   Dispatch(machine_.Handle(event));
+  SyncSnapshot();
+}
+
+void WorkerRuntime::SyncSnapshot() {
   snapshot_ = machine_.Snapshot();
+  if (snapshot_.state == State::Faulted && last_state_ != State::Faulted) {
+    // Faulted exists so a return can be retried on a fresh ReturnRequested.
+    // Re-arm the one-shot signal on entry only: the page keeps the renamed
+    // title until Edge closes, so staying Faulted must not re-emit every poll.
+    return_sent_ = false;
+  }
+  last_state_ = snapshot_.state;
 }
 
 void WorkerRuntime::Dispatch(const std::vector<Action>& actions) {

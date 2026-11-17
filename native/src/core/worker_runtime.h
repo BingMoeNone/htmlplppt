@@ -64,6 +64,7 @@ class WorkerRuntime {
   void ObserveEdge();
   void LaunchEdge(int slide);
   void ReportEdgeLaunchFailure(std::string detail);
+  void SyncSnapshot();
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
@@ -77,6 +78,9 @@ class WorkerRuntime {
   StateMachine machine_;
   std::vector<std::string> journal_;
   StateSnapshot snapshot_;
+  // The machine state as of the previous SyncSnapshot(). The one-shot return
+  // signal is re-armed on the entry into Faulted, never while staying there.
+  State last_state_ = State::Boot;
   ShowState last_show_;
   int last_slide_ = 0;
   // The previous cover tick's phase edges. Hold/done are emitted on a rising

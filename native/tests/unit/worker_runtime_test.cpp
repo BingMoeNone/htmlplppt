@@ -12,6 +12,7 @@ using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
 using htmlppt::test::HTriggeredAtSlide1;
+using htmlppt::test::MakeResolvedTarget;
 using htmlppt::test::MakeShowState;
 using htmlppt::test::MakeTarget;
 using htmlppt::test::MakeWindow;
@@ -129,9 +130,11 @@ HTMLPPT_TEST_CASE(worker_runtime_retries_after_edge_launch_failure) {
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ShowExit);
 }
 
-// B2 core: the page signals return by renaming the Edge window title. The
-// runtime reports it once; the renamed title stays until Edge closes.
-HTMLPPT_TEST_CASE(worker_runtime_reports_return_request_once) {
+// B2 core: the page signals return by renaming the Edge window title. One
+// request moves Live -> Returning and the state then stays Returning while the
+// renamed title is still present (the machine ignores duplicates in Returning
+// by design; the post-Faulted re-arm is covered by the next case).
+HTMLPPT_TEST_CASE(worker_runtime_return_title_enters_and_stays_in_returning) {
   WorkerHarness h = HTriggeredAtSlide1();
   h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
   h.runtime.Step();                             // edge launched
@@ -144,5 +147,43 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_request_once) {
   h.runtime.Step();                             // ReturnRequested -> Returning
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
   h.runtime.Step();                             // same title: no repeat
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+}
+
+// The machine retries a return only by leaving Faulted on a fresh
+// ReturnRequested, so the renamed title must be reportable again after the
+// ReturnResume timeout. Without re-arming, Faulted would be a stuck state.
+//
+// cover_max_hold is tuned below the 300 ms cover fade: at the default 10 s the
+// frame after the advance emits CoverHold first (ObserveCover runs before Tick)
+// and leaves Returning for ReturnCoverOut, so the ReturnResume timeout could
+// never fire. Keeping the fade unfinished makes the timeout reachable at the
+// runtime level, which is the path under test.
+HTMLPPT_TEST_CASE(worker_runtime_reports_return_again_after_faulted) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  h.config.cover_max_hold = Duration{100};
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();                             // Warming -> Monitoring
+  h.presentation.show.slide = 2;                // leave-forward trigger
+  h.runtime.Step();                             // CoverIn + fade in
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // CoverHold -> edge launched
+  h.windows.windows = {MakeWindow(1, h.launcher.pid, "TEF-LIVE-STAGE")};
+  h.runtime.Step();                             // EdgeReady -> ShowExit
+  h.presentation.show = MakeShowState(HostStatus::Ok, false, 0);
+  h.runtime.Step();                             // show ended -> Live
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
+  h.windows.windows = {MakeWindow(1, h.launcher.pid, "TEF-LIVE-RETURN")};
+  h.runtime.Step();                             // ReturnRequested -> Returning
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  h.advance(h.config.cover_max_hold + Duration{1});
+  h.runtime.Step();                             // ReturnResume timeout -> Faulted
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+  h.runtime.Step();                             // title still renamed: retry
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
 }
