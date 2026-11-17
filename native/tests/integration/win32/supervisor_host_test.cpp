@@ -287,6 +287,9 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
                                                  L"worker-config.json"));
   HTMLPPT_CHECK(ReadTextFile(state_dir / L"journal.jsonl")
                     .find("worker plan written") != std::string::npos);
+  // Legacy compatibility mirror: VBS-era tooling finds the run through
+  // watcher.lock next to the config while it is alive.
+  HTMLPPT_CHECK(std::filesystem::exists(state_dir / L"watcher.lock"));
 
   SetEvent(stop);
   CloseHandle(stop);
@@ -294,6 +297,12 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   DWORD exit_code = 0;
   GetExitCodeProcess(supervisor.process(), &exit_code);
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  // On a clean stop the worker removes the flags it owns and flushes its
+  // journal into watch-log.txt, which is what the VBS tooling reads.
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"watcher.lock"));
+  const std::string watch_log = ReadTextFile(state_dir / L"watch-log.txt");
+  HTMLPPT_CHECK(watch_log.find("native watchdog start") != std::string::npos);
+  HTMLPPT_CHECK(watch_log.find("native watchdog stop") != std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }

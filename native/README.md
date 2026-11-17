@@ -299,6 +299,17 @@ it under `%TEMP%\htmlppt-<run-id>` and removes the directory on exit, so the
 state directory holds only `worker-plan.json`, `worker-config.json`, and
 `journal.jsonl`.
 
+### Legacy compatibility mirror
+
+While a run owns the config directory, the worker keeps the VBS-era contract
+alive: it writes `watcher.lock` next to the config file and refreshes it every
+5 s (the legacy watcher treats a lock older than 15 s as stale), appends the
+runtime journal to `watch-log.txt` when it exits, and removes the flag files it
+owns. `stop-live.vbs`-style tooling and the troubleshooting steps in
+`docs/04-reproduce.md` therefore keep working against a native run. A worker
+that is killed leaves the lock behind, which is exactly the stale-lock case the
+legacy watcher already handles.
+
 ### Live page contract
 
 `templates/live-page.html` is the reference page. The watchdog watches the Edge

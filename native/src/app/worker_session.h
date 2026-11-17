@@ -26,6 +26,10 @@ struct WorkerSessionConfig {
   // The last sequence a startup phase already sent, so heartbeat numbers stay
   // strictly increasing across startup and the session.
   std::uint32_t initial_sequence = 0;
+  // Called on the heartbeat thread after each successful send. It must not
+  // block or touch COM: the worker uses it to refresh the legacy watcher.lock
+  // so VBS-era tooling still sees a live run.
+  std::function<void()> on_heartbeat;
 };
 
 // Rejects a plan written for a different run, such as a stale worker-plan.json

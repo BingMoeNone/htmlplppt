@@ -1,6 +1,7 @@
 #include "app/supervisor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -18,6 +19,7 @@
 
 #include "app/worker_session.h"
 #include "core/blackbox.h"
+#include "core/compat_flags.h"
 #include "core/config.h"
 #include "core/config_issue.h"
 #include "core/deck_info.h"
@@ -180,6 +182,41 @@ class TempDirGuard {
 
  private:
   std::filesystem::path path_;
+};
+
+// The legacy flag files live next to the config file, the way the VBS tooling
+// and the reference docs expect. An empty result disables the mirror.
+std::filesystem::path CompatBaseDir(const SupervisorRunOptions& options) {
+  if (options.config_path.empty()) return {};
+  const auto parent = std::filesystem::path(options.config_path).parent_path();
+  return parent.empty() ? std::filesystem::path{} : parent;
+}
+
+// On every RunWorker exit path: flush the runtime journal into the legacy
+// watch-log.txt (the only post-mortem the VBS-era tooling reads) and remove the
+// flag files this worker owns. The lock is left to the supervisor when the
+// worker is killed, matching the "stale lock" rule of the legacy watcher.
+class CompatRunGuard {
+ public:
+  CompatRunGuard(CompatFlags* flags, LegacyLog* log,
+                 const std::vector<std::string>* journal)
+      : flags_(flags), log_(log), journal_(journal) {}
+  ~CompatRunGuard() {
+    if (log_ != nullptr) {
+      if (journal_ != nullptr) {
+        for (const auto& line : *journal_) log_->Append(kWatchLog, line);
+      }
+      log_->Append(kWatchLog, "native watchdog stop");
+    }
+    if (flags_ != nullptr) flags_->DeleteAllOwned();
+  }
+  CompatRunGuard(const CompatRunGuard&) = delete;
+  CompatRunGuard& operator=(const CompatRunGuard&) = delete;
+
+ private:
+  CompatFlags* flags_;
+  LegacyLog* log_;
+  const std::vector<std::string>* journal_;
 };
 
 DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
@@ -763,7 +800,39 @@ int RunWorker(const SupervisorRunOptions& options) {
     started.wps_pid_count = facts.wps_pids.size();
   };
 
+  // Legacy compatibility mirror: the VBS-era tooling looks for watcher.lock and
+  // watch-log.txt next to the config, and stop-*.vbs refuses to run without the
+  // lock. Only the worker touches these files while it owns the run.
+  const auto compat_dir = CompatBaseDir(options);
+  std::optional<CompatFlags> compat;
+  std::optional<LegacyLog> legacy;
+  std::atomic<std::int64_t> last_lock_ms{0};
+  if (!compat_dir.empty()) {
+    std::error_code compat_error;
+    std::filesystem::create_directories(compat_dir, compat_error);
+    compat.emplace(compat_dir,
+                   CompatIdentity{run_id, GetCurrentProcessId(), ""});
+    legacy.emplace(compat_dir);
+    if (!compat->WriteLock(UtcTimestamp())) {
+      std::cerr << "warning: cannot write " << kLockFile << " in "
+                << Utf8Path(compat_dir) << "\n";
+    }
+    legacy->Append(kWatchLog, "native watchdog start run=" + run_id);
+  }
+
   WorkerSessionConfig session_config;
+  // Refresh the lock from the heartbeat thread: the legacy watcher treats a
+  // lock older than 15 s as stale and may delete it.
+  session_config.on_heartbeat = [&compat, &last_lock_ms] {
+    if (!compat.has_value()) return;
+    const auto now_ms =
+        std::chrono::duration_cast<Duration>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    if (now_ms - last_lock_ms.load() < 5000) return;
+    last_lock_ms.store(now_ms);
+    compat->WriteLock(UtcTimestamp());
+  };
   bool pipe_alive = true;
   session_config.initial_sequence = RunWithStartupHeartbeats(
       client, *blackbox, session_config, startup, &pipe_alive);
@@ -806,6 +875,11 @@ int RunWorker(const SupervisorRunOptions& options) {
   WorkerRuntime runtime(
       *plan, machine_config, WorkerPorts{wps, overlay, launcher, windows, clock},
       BuildWorkerHostConfig(config, facts));
+  // Declared after the runtime so the journal is still alive when the guard
+  // flushes it to watch-log.txt.
+  CompatRunGuard compat_guard(compat ? &*compat : nullptr,
+                              legacy ? &*legacy : nullptr,
+                              &runtime.journal());
 
   std::string session_error;
   const int code = RunWorkerSession(runtime, client, *blackbox, session_config,

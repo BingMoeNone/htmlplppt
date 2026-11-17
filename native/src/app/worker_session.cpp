@@ -144,6 +144,7 @@ class HeartbeatSender {
       if (RecordDue(heartbeat_count, config_.blackbox_every)) {
         AppendHeartbeatRecord(blackbox_, sequence, state);
       }
+      if (config_.on_heartbeat) config_.on_heartbeat();
       std::unique_lock<std::mutex> lock(stop_mutex_);
       if (stop_.wait_for(lock, interval_, [this] { return stopping_; })) {
         return;
