@@ -389,6 +389,33 @@ HTMLPPT_TEST_CASE(worker_plan_cover_default_matches_state_machine_config) {
   HTMLPPT_CHECK_EQ(plan.machine.targets[0].cover_max_hold, Duration{9000});
 }
 
+HTMLPPT_TEST_CASE(
+    worker_plan_cover_default_matches_state_machine_config_with_override) {
+  // The supervisor bakes CLI overrides (here --map) into the effective config
+  // it hands the worker. The plan fallback and BuildStateMachineConfig must
+  // still agree, which is why the worker reads that effective config.
+  htmlppt::CliConfigOverrides overrides;
+  overrides.map_overrides[7] = "page5.html";
+  const auto loaded = htmlppt::LoadConfigFromString(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "defaults": { "cover": { "maxHoldMs": 9000 } },
+    "targets": [ { "slide": 3, "html": "page3.html", "label": "Three" } ]
+  })", Fixture().path() / "watcher.json", overrides);
+  HTMLPPT_CHECK(loaded.config.has_value());
+  const Config& config = *loaded.config;
+  const ResolveResult resolved = ResolveTestTargets(config);
+  const WorkerPlan plan = BuildWorkerPlan(config, resolved, 12, "run-1");
+  HTMLPPT_CHECK_EQ(plan.machine.targets.size(), std::size_t{2});
+  for (const auto& target : plan.machine.targets) {
+    HTMLPPT_CHECK_EQ(target.cover_max_hold,
+                     BuildStateMachineConfig(config).cover_max_hold);
+  }
+  // The --map target is the second plan entry and carries the same fallback.
+  HTMLPPT_CHECK_EQ(plan.machine.targets[1].slide, 7);
+  HTMLPPT_CHECK_EQ(plan.machine.targets[1].cover_max_hold, Duration{9000});
+}
+
 HTMLPPT_TEST_CASE(worker_plan_maps_defaults_to_state_machine_config) {
   const StateMachineConfig machine =
       BuildStateMachineConfig(LoadMappingConfig());

@@ -215,4 +215,68 @@ HTMLPPT_TEST_CASE(worker_session_heartbeats_during_slow_startup) {
   server.Close();
 }
 
+HTMLPPT_TEST_CASE(worker_session_heartbeats_during_blocking_step) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::atomic<bool> saw_cleanup{false};
+  std::vector<std::uint32_t> sequences;
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    bool stop_sent = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{20});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Heartbeat) {
+        sequences.push_back(frame->header.sequence);
+        if (!stop_sent && sequences.size() >= 5) {
+          stop_sent = true;
+          if (!client.Send(MakeStop(1))) return;
+        }
+      } else if (frame->header.type == FrameType::Cleanup) {
+        saw_cleanup = true;
+        return;
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  if (channel == nullptr) {
+    peer.join();
+    HTMLPPT_CHECK(channel != nullptr);
+    return;
+  }
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  // One Step blocks far longer than the heartbeat interval; the frames that
+  // arrive meanwhile can only come from the session's heartbeat thread.
+  driver.step_sleep = Duration{200};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(saw_cleanup.load());
+  HTMLPPT_CHECK_EQ(driver.step_calls, 1);
+  HTMLPPT_CHECK(sequences.size() >= std::size_t{5});
+  HTMLPPT_CHECK(StrictlyIncreasing(sequences));
+  HTMLPPT_CHECK(error.empty());
+
+  channel->Close();
+  server.Close();
+}
+
 #endif // _WIN32

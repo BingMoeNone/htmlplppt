@@ -181,7 +181,13 @@ HTMLPPT_TEST_CASE(win32_named_pipe_payload_frames_do_not_desync) {
   });
 
   auto channel = server.Accept(Duration{3000});
-  HTMLPPT_CHECK(channel != nullptr);
+  if (channel == nullptr) {
+    // Join before failing: a joinable thread destroyed during unwinding would
+    // turn a failed Accept into std::terminate.
+    client_thread.join();
+    HTMLPPT_CHECK(channel != nullptr);
+    return;
+  }
   std::vector<std::uint32_t> sequences;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(5);

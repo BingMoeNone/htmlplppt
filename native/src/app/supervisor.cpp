@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -181,9 +182,30 @@ DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
   return loaded;
 }
 
+// Writes BOM-free UTF-8 text, reporting failures without throwing.
+bool WriteTextFile(const std::filesystem::path& path,
+                   const std::string& text, std::string* error) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    *error = "failed to open " + Utf8Path(path) + " for writing";
+    return false;
+  }
+  output << text;
+  if (text.empty() || text.back() != '\n') output.put('\n');
+  output.close();
+  if (!output) {
+    *error = "failed to write " + Utf8Path(path);
+    return false;
+  }
+  return true;
+}
+
 // Resolves the config once and writes the plan the worker will read, so target
-// resolution never runs twice and the two roles cannot disagree. Returns false
-// with a readable message on any failure, before anything is launched.
+// resolution never runs twice and the two roles cannot disagree. The effective
+// config (profile, --map, and the other CLI overrides already applied) is
+// written next to the plan: the worker derives its state machine from that
+// file, so its timings cannot disagree with the plan. Returns false with a
+// readable message on any failure, before anything is launched.
 bool WriteSupervisorPlan(const SupervisorRunOptions& options,
                          const std::string& run_id,
                          const std::filesystem::path& state_dir,
@@ -221,6 +243,11 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
   std::string write_error;
   if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
                            &write_error)) {
+    *error = std::move(write_error);
+    return false;
+  }
+  if (!WriteTextFile(state_dir / "worker-config.json", ConfigToJson(config),
+                     &write_error)) {
     *error = std::move(write_error);
     return false;
   }
@@ -566,14 +593,26 @@ int RunWorker(const SupervisorRunOptions& options) {
 
   // The supervisor resolves the config once and passes it on, so the worker
   // derives the machine timings and the host timings from the same file.
-  if (options.config_path.empty()) {
+  // The supervisor bakes the effective config (selected profile, --map, and
+  // the other CLI overrides) into the state dir, so the worker's machine
+  // timings match the plan it reads. A hand-run worker can still pass --config.
+  const auto effective_config = state_dir / "worker-config.json";
+  std::error_code config_error;
+  const bool has_effective_config =
+      std::filesystem::is_regular_file(effective_config, config_error);
+  const std::filesystem::path config_path =
+      has_effective_config ? effective_config : options.config_path;
+  if (config_path.empty()) {
     std::cerr << "error: --config is required for --worker\n";
     return 1;
   }
-  const auto loaded = LoadConfigFile(options.config_path, options.overrides);
+  const auto loaded =
+      has_effective_config
+          ? LoadConfigFile(config_path, CliConfigOverrides{})
+          : LoadConfigFile(config_path, options.overrides);
   if (!loaded.config.has_value()) {
-    std::cerr << "error: cannot load config " << Utf8Path(options.config_path)
-              << ": " << FirstError(loaded.issues) << "\n";
+    std::cerr << "error: cannot load config " << Utf8Path(config_path) << ": "
+              << FirstError(loaded.issues) << "\n";
     return 1;
   }
   const Config& config = *loaded.config;
@@ -687,13 +726,16 @@ int RunWorker(const SupervisorRunOptions& options) {
   // that drops StartShow must be visible in the blackbox, not just inferred.
   AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0, "start show");
   const auto pid_count = static_cast<std::int64_t>(started.wps_pid_count);
+  // An empty list is a warning, not a failure: some WPS builds expose no
+  // slideshow window class, and the run continues with FocusWps inert.
   AppendWorkerDiagnostic(
-      *blackbox,
-      pid_count == 0 ? BlackboxEvent::Failure : BlackboxEvent::Event,
-      pid_count, "wps pids: " + std::to_string(pid_count));
+      *blackbox, BlackboxEvent::Event, pid_count,
+      pid_count == 0
+          ? std::string{"wps pids: 0 (no slideshow window class)"}
+          : "wps pids: " + std::to_string(pid_count));
   if (pid_count == 0) {
-    std::cerr << "warning: no WPS slideshow window found; focus and return "
-                 "will not target WPS\n";
+    std::cerr << "warning: no WPS slideshow window class found; focus and "
+                 "return will not target WPS\n";
   }
 
   WorkerRuntime runtime(

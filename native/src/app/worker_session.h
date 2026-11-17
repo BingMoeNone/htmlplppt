@@ -44,12 +44,15 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
                                        bool* pipe_alive);
 
 // Runs the session: starts the driver, polls the supervisor pipe with a zero
-// timeout, feeds Stop frames to WorkerDriver::RequestStop, heartbeats
-// snapshot().state, and records the blackbox. A broken pipe is reported once
-// through WorkerDriver::HandleSupervisorLost and does not stop the loop
-// (SupervisorLossPolicy::Continue). Sends a final Cleanup frame while the pipe
-// is alive and returns the exit code. *error names a supervisor loss or an
-// undelivered Cleanup frame; it is diagnostic only and never changes the code.
+// timeout, feeds Stop frames to WorkerDriver::RequestStop, and sends a
+// heartbeat every interval on a helper thread so a blocking Step cannot starve
+// the supervisor. The heartbeat carries the last state the loop published (one
+// step stale at worst) and is the only writer of the blackbox during the loop.
+// A broken pipe is reported once through WorkerDriver::HandleSupervisorLost and
+// does not stop the loop (SupervisorLossPolicy::Continue). Stops the heartbeat
+// thread, then sends a final Cleanup frame while the pipe is alive, and returns
+// the exit code. *error names a supervisor loss or an undelivered Cleanup
+// frame; it is diagnostic only and never changes the code.
 int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
                      SharedBlackbox& blackbox, WorkerSessionConfig config,
                      std::string* error);

@@ -208,15 +208,22 @@ MSVC `/WX` clean.
 
 The same EXE runs as supervisor and worker.
 
-- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job; it expects heartbeats every 200 ms with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
-- `--worker --run-id <id>` connects to the pipe, sends a heartbeat every 200 ms, appends a black-box record every five heartbeats, and exits on a Stop frame or when the pipe breaks.
+- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job. It resolves the config with the CLI overrides applied, writes `worker-plan.json` and the effective `worker-config.json` into the state dir, then launches the worker with that config; it expects heartbeats with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
+- `--worker --run-id <id>` reads the plan and the effective config, opens the deck in WPS, starts the slideshow, and runs the state machine loop, heartbeating the current state while the loop works. It exits on a Stop frame or after a clean state-machine exit; a supervisor loss is reported to the machine and the loop continues.
 - `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
 - `--status --run-id <id> --state-dir <dir>` prints the last black-box records and the journal path.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
 
-Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.
+The WPS end-to-end supervisor case in `htmlppt_win32_tests` starts a real
+slideshow, so it runs only when the `Kwpp.Application` COM ProgID is registered.
+Without WPS it prints `SKIP: WPS not installed` and passes; every other case
+runs on any Windows machine. The case also terminates only the WPS processes it
+started, so repeated runs do not accumulate automation instances.
+
+Windows gate: `htmlppt_core_tests` 284/284, `htmlppt_win32_tests` 61/61 (the
+WPS case is skipped without WPS), CTest 9/9, `-Werror` clean.
 
 ## Cover, focus, Edge, and compatibility core (Plan 5B-1)
 

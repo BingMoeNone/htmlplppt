@@ -4,7 +4,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -69,6 +71,92 @@ void AppendHeartbeatRecord(SharedBlackbox& blackbox, std::uint32_t sequence,
   blackbox.Append(record);
 }
 
+// Sends heartbeats on its own thread for as long as it is alive, so a blocking
+// Start/Step (WPS COM activation, ResumeShow, ExitShow) cannot leave the
+// supervisor's heartbeat window empty. The caller publishes the last state it
+// observed; the sender may therefore carry a state one step stale, which the
+// supervisor only logs. Every send takes `send_mutex`, which the caller also
+// holds for the final Cleanup frame.
+class HeartbeatSender {
+ public:
+  HeartbeatSender(FrameChannel& channel, SharedBlackbox& blackbox,
+                  WorkerSessionConfig config,
+                  const std::atomic<int>& published_state,
+                  std::mutex& send_mutex)
+      : channel_(channel),
+        blackbox_(blackbox),
+        config_(config),
+        published_state_(published_state),
+        send_mutex_(send_mutex),
+        interval_(HeartbeatInterval(config)) {
+    thread_ = std::thread([this] { Run(); });
+  }
+
+  ~HeartbeatSender() { Stop(); }
+
+  HeartbeatSender(const HeartbeatSender&) = delete;
+  HeartbeatSender& operator=(const HeartbeatSender&) = delete;
+
+  // Wakes the sender and joins it; safe to call more than once.
+  void Stop() {
+    {
+      std::lock_guard<std::mutex> lock(stop_mutex_);
+      stopping_ = true;
+    }
+    stop_.notify_all();
+    if (thread_.joinable()) thread_.join();
+  }
+
+  std::uint32_t last_sequence() const {
+    return last_sequence_.load(std::memory_order_relaxed);
+  }
+
+  // True when a heartbeat send failed, which means the supervisor is gone.
+  bool broken() const { return broken_.load(std::memory_order_relaxed); }
+
+ private:
+  void Run() {
+    std::uint32_t sequence = config_.initial_sequence;
+    int heartbeat_count = 0;
+    for (;;) {
+      const State state =
+          static_cast<State>(published_state_.load(std::memory_order_relaxed));
+      ++sequence;
+      last_sequence_.store(sequence, std::memory_order_relaxed);
+      bool sent = false;
+      {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        sent = channel_.Send(MakeHeartbeat(sequence, state));
+      }
+      if (!sent) {
+        broken_.store(true, std::memory_order_relaxed);
+        return;
+      }
+      ++heartbeat_count;
+      if (RecordDue(heartbeat_count, config_.blackbox_every)) {
+        AppendHeartbeatRecord(blackbox_, sequence, state);
+      }
+      std::unique_lock<std::mutex> lock(stop_mutex_);
+      if (stop_.wait_for(lock, interval_, [this] { return stopping_; })) {
+        return;
+      }
+    }
+  }
+
+  FrameChannel& channel_;
+  SharedBlackbox& blackbox_;
+  WorkerSessionConfig config_;
+  const std::atomic<int>& published_state_;
+  std::mutex& send_mutex_;
+  Duration interval_;
+  std::thread thread_;
+  std::mutex stop_mutex_;
+  std::condition_variable stop_;
+  bool stopping_ = false;
+  std::atomic<std::uint32_t> last_sequence_{0};
+  std::atomic<bool> broken_{false};
+};
+
 } // namespace
 
 bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
@@ -89,62 +177,30 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
                                        WorkerSessionConfig config,
                                        const std::function<void()>& startup,
                                        bool* pipe_alive) {
-  const Duration interval = HeartbeatInterval(config);
-  std::atomic<bool> finished{false};
-  // The flag is an output: the caller learns whether the channel survived.
-  std::atomic<bool> alive{true};
-  std::atomic<std::uint32_t> last_sequence{0};
-
-  std::thread heartbeat([&] {
-    std::uint32_t sequence = 0;
-    int heartbeat_count = 0;
-    for (;;) {
-      if (alive.load(std::memory_order_relaxed)) {
-        ++sequence;
-        last_sequence.store(sequence, std::memory_order_relaxed);
-        if (!channel.Send(MakeHeartbeat(sequence, State::Boot))) {
-          alive.store(false, std::memory_order_relaxed);
-        } else {
-          ++heartbeat_count;
-          if (RecordDue(heartbeat_count, config.blackbox_every)) {
-            AppendHeartbeatRecord(blackbox, sequence, State::Boot);
-          }
-        }
-      }
-      if (finished.load(std::memory_order_acquire)) break;
-      std::this_thread::sleep_for(interval);
-    }
-  });
-
+  std::mutex send_mutex;
+  std::atomic<int> published_state{static_cast<int>(State::Boot)};
+  HeartbeatSender heartbeat(channel, blackbox, config, published_state,
+                            send_mutex);
   // The caller keeps the COM apartment: WPS automation objects are created on
   // this thread, and the heartbeat thread only touches the pipe and the box.
-  // The join must happen on every path, including the (unlikely) throwing one,
-  // or the joinable thread would terminate the process.
+  // The sender must be stopped on every path, including a throwing startup.
   try {
     startup();
   } catch (...) {
-    finished.store(true, std::memory_order_release);
-    heartbeat.join();
+    heartbeat.Stop();
     throw;
   }
-  finished.store(true, std::memory_order_release);
-  heartbeat.join();
-  if (pipe_alive != nullptr) {
-    *pipe_alive = alive.load(std::memory_order_relaxed);
-  }
-  return last_sequence.load(std::memory_order_relaxed);
+  heartbeat.Stop();
+  if (pipe_alive != nullptr) *pipe_alive = !heartbeat.broken();
+  return heartbeat.last_sequence();
 }
 
 int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
                      SharedBlackbox& blackbox, WorkerSessionConfig config,
                      std::string* error) {
   if (error != nullptr) error->clear();
-  const Duration interval = HeartbeatInterval(config);
-  std::uint32_t sequence = config.initial_sequence;
-  int heartbeat_count = 0;
   bool pipe_alive = !channel.broken();
   bool loss_reported = false;
-
   const auto report_loss = [&](const char* detail) {
     if (loss_reported) return;
     loss_reported = true;
@@ -153,8 +209,15 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   };
 
   driver.Start();
+  std::atomic<int> published_state{static_cast<int>(driver.snapshot().state)};
+  std::mutex send_mutex;
   if (!pipe_alive) report_loss(kLossDetail);
-  auto last_heartbeat = std::chrono::steady_clock::now();
+  // One heartbeat thread for the whole loop: WorkerDriver::Step() blocks in
+  // WorkerRuntime until the poll interval or the next machine deadline, and a
+  // long COM action inside it must not starve the supervisor. This loop adds
+  // no sleep of its own.
+  HeartbeatSender heartbeat(channel, blackbox, config, published_state,
+                            send_mutex);
   while (!driver.done()) {
     if (pipe_alive) {
       const auto command = channel.Receive(Duration{0});
@@ -169,28 +232,30 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
         report_loss(kLossDetail);
       }
     }
-    if (driver.done()) break;
-    if (!driver.Step()) break;
-
-    const auto now = std::chrono::steady_clock::now();
-    if (!pipe_alive || now - last_heartbeat < interval) continue;
-    last_heartbeat = now;
-    ++sequence;
-    if (!channel.Send(MakeHeartbeat(sequence, driver.snapshot().state))) {
+    if (heartbeat.broken() && !loss_reported) {
       pipe_alive = false;
       report_loss(kLossDetail);
-      continue;
     }
-    ++heartbeat_count;
-    if (RecordDue(heartbeat_count, config.blackbox_every)) {
-      AppendHeartbeatRecord(blackbox, sequence, driver.snapshot().state);
-    }
+    if (driver.done()) break;
+    if (!driver.Step()) break;
+    published_state.store(static_cast<int>(driver.snapshot().state),
+                          std::memory_order_relaxed);
   }
 
+  // Stop the sender before the final Cleanup frame: the two share the send
+  // mutex, and the Cleanup must carry the last sequence.
+  heartbeat.Stop();
+  if (heartbeat.broken()) {
+    pipe_alive = false;
+    report_loss(kLossDetail);
+  }
   // A worker that finished on its own still reports the clean exit so the
   // supervisor can tell a stop from a crash; a dead pipe has no one to tell.
-  if (pipe_alive && !channel.Send(MakeCleanup(++sequence))) {
-    if (error != nullptr) *error = "cleanup frame was not delivered";
+  if (pipe_alive) {
+    std::lock_guard<std::mutex> lock(send_mutex);
+    if (!channel.Send(MakeCleanup(heartbeat.last_sequence() + 1))) {
+      if (error != nullptr) *error = "cleanup frame was not delivered";
+    }
   }
   return 0;
 }

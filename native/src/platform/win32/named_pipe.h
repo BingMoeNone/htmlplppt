@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -50,7 +51,9 @@ class NamedPipeChannel final : public FrameChannel {
   // See the class comment for the timeout/broken() contract.
   std::optional<Frame> Receive(Duration timeout) override;
   void Close() override;
-  bool broken() const override { return broken_; }
+  // Atomic: the worker session sends from a heartbeat thread while the loop
+  // reads, and both can observe the peer going away.
+  bool broken() const override { return broken_.load(); }
 
  private:
   friend class NamedPipeServer;
@@ -59,7 +62,7 @@ class NamedPipeChannel final : public FrameChannel {
   bool WriteExact(const std::uint8_t* buffer, std::size_t size,
                   Duration timeout);
   HANDLE pipe_ = nullptr;
-  bool broken_ = false;
+  std::atomic<bool> broken_{false};
 };
 
 class NamedPipeServer {
@@ -94,14 +97,16 @@ class NamedPipeClient final : public FrameChannel {
   // Same timeout and broken() contract as NamedPipeChannel::Receive.
   std::optional<Frame> Receive(Duration timeout) override;
   void Close() override;
-  bool broken() const override { return broken_; }
+  // Atomic: the worker session sends from a heartbeat thread while the loop
+  // reads, and both can observe the peer going away.
+  bool broken() const override { return broken_.load(); }
 
  private:
   bool ReadExact(std::uint8_t* buffer, std::size_t size, Duration timeout);
   bool WriteExact(const std::uint8_t* buffer, std::size_t size,
                   Duration timeout);
   HANDLE pipe_ = nullptr;
-  bool broken_ = false;
+  std::atomic<bool> broken_{false};
 };
 
 #endif // _WIN32

@@ -3,6 +3,9 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include <objbase.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +20,7 @@
 #include "app/worker_session.h"
 #include "core/worker_plan.h"
 #include "platform/win32/process_job.h"
+#include "platform/win32/process_query.h"
 #include "platform/win32/shared_blackbox.h"
 
 using htmlppt::JobHandle;
@@ -139,6 +143,50 @@ std::string ReadTextFile(const std::filesystem::path& path) {
                      std::istreambuf_iterator<char>());
 }
 
+// True when the WPS Presentation COM class is registered. This is a registry
+// lookup only, so probing never starts WPS (preflight-live.ps1 does the same).
+bool WpsInstalled() {
+  CLSID clsid{};
+  return CLSIDFromProgID(L"Kwpp.Application", &clsid) == S_OK;
+}
+
+std::vector<std::uint32_t> WpsProcessIds() {
+  std::vector<std::uint32_t> ids;
+  // The Presentation host image name differs between WPS builds.
+  for (const wchar_t* name : {L"wps.exe", L"wpp.exe", L"kwpp.exe"}) {
+    for (const auto id : htmlppt::ProcessIdsByName(name)) {
+      ids.push_back(id);
+    }
+  }
+  return ids;
+}
+
+// Terminates only the WPS processes this test started, so repeated runs do not
+// accumulate automation instances and their open deck windows. WPS is started
+// through COM outside the worker's job, so the job does not reach it; instances
+// that already existed (the operator's) are never touched.
+class WpsTestProcesses {
+ public:
+  WpsTestProcesses() : before_(WpsProcessIds()) {}
+  ~WpsTestProcesses() {
+    for (const auto id : WpsProcessIds()) {
+      if (std::find(before_.begin(), before_.end(), id) != before_.end()) {
+        continue;
+      }
+      HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, id);
+      if (process == nullptr) continue;
+      TerminateProcess(process, 1);
+      CloseHandle(process);
+    }
+  }
+
+  WpsTestProcesses(const WpsTestProcesses&) = delete;
+  WpsTestProcesses& operator=(const WpsTestProcesses&) = delete;
+
+ private:
+  std::vector<std::uint32_t> before_;
+};
+
 } // namespace
 
 HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
@@ -159,6 +207,14 @@ HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
 }
 
 HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
+  // This case runs the worker end to end, which opens the deck in real WPS.
+  // Without the WPS Presentation COM class the worker cannot present, so the
+  // case reports a skip instead of failing the suite on machines without WPS.
+  if (!WpsInstalled()) {
+    std::cout << "SKIP: WPS not installed\n";
+    return;
+  }
+  WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
@@ -201,6 +257,10 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   HTMLPPT_CHECK(std::filesystem::is_regular_file(plan_path));
   const std::string plan = ReadTextFile(plan_path);
   HTMLPPT_CHECK(plan.find("\"runId\": \"" + run_id + "\"") != std::string::npos);
+  // The effective config (CLI overrides and profile baked in) is handed to the
+  // worker next to the plan, so its BuildStateMachineConfig matches the plan.
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(state_dir /
+                                                 L"worker-config.json"));
   HTMLPPT_CHECK(ReadTextFile(state_dir / L"journal.jsonl")
                     .find("worker plan written") != std::string::npos);
 
@@ -215,6 +275,7 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
 }
 
 HTMLPPT_TEST_CASE(win32_supervisor_restarts_crashed_worker) {
+  WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
@@ -250,6 +311,7 @@ HTMLPPT_TEST_CASE(win32_supervisor_restarts_crashed_worker) {
 }
 
 HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
+  WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string first_id = RunId();
@@ -277,6 +339,7 @@ HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
 }
 
 HTMLPPT_TEST_CASE(win32_cli_stop) {
+  WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
@@ -305,6 +368,7 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
 }
 
 HTMLPPT_TEST_CASE(win32_cli_status) {
+  WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
   const std::string run_id = RunId();
