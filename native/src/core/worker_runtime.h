@@ -133,6 +133,10 @@ class WorkerRuntime : public WorkerDriver {
   // --benchmark samples, bounded by the histogram's ring.
   LatencyStats step_stats_;
   LatencyStats com_stats_;
+  // Wall time of the previous Step, used to measure a resume gap.
+  ClockPoint last_step_time_{};
+  bool injected_sleep_resume_ = false;
+  bool injected_multi_monitor_ = false;
 };
 
 } // namespace htmlppt

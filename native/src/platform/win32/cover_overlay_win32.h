@@ -31,6 +31,8 @@ class Win32CoverOverlay final : public CoverOverlay {
   void Hide() override;
   bool SetOpacity(double opacity) override;
   void ReassertTopMost() override;
+  bool ConsumeResumeEvent() override;
+  bool ConsumeDisplayChange(ScreenMetrics* metrics) override;
 
   HWND hwnd() const;
 

@@ -38,6 +38,10 @@ Faults ParseFaults(std::string_view text) {
       faults.focus_deny = true;
     } else if (token == "supervisor-loss") {
       faults.supervisor_loss = true;
+    } else if (token == "sleep-resume") {
+      faults.sleep_resume = true;
+    } else if (token == "multi-monitor") {
+      faults.multi_monitor = true;
     }
   }
   return faults;
@@ -45,7 +49,8 @@ Faults ParseFaults(std::string_view text) {
 
 bool HasAnyFault(const Faults& faults) {
   return faults.com_hang || faults.com_462 || faults.edge_slow || faults.supervisor_loss ||
-         faults.cover_hang || faults.focus_deny;
+         faults.cover_hang || faults.focus_deny || faults.sleep_resume ||
+         faults.multi_monitor;
 }
 
 std::string FaultsToString(const Faults& faults) {
@@ -60,6 +65,8 @@ std::string FaultsToString(const Faults& faults) {
   if (faults.cover_hang) add("cover-hang");
   if (faults.focus_deny) add("focus-deny");
   if (faults.supervisor_loss) add("supervisor-loss");
+  if (faults.sleep_resume) add("sleep-resume");
+  if (faults.multi_monitor) add("multi-monitor");
   return text;
 }
 

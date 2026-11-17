@@ -29,7 +29,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 | 8 | Edge 冷启动慢 `[实机]` | `set HTMLPPT_FAULTS=edge-slow` 后触发 | 黑场保持到 `edge ready`，不露编辑器；3 s 内不判定就绪 |
 | 9 | 连续崩溃超预算 | 反复杀 worker 超过预算 | 进入 SafeMode；黑场隐藏、放映退出、WPS 可用；`--status` 出现 `[SafeMode]` |
 | 9b | 故障开关可见 | `set HTMLPPT_FAULTS=edge-slow` 后启动 | `--status` 出现 `faults: edge-slow`；注入运行在日志中可见 |
-| 10 | 睡眠/唤醒 `[实机]` | 运行中睡眠再唤醒 | 覆盖窗口重新铺满并置顶，无黑屏残留（截止时间不重新校准，见第六节） |
+| 10 | 睡眠/唤醒 `[实机]` | 运行中睡眠再唤醒 | 覆盖窗口重新铺满并置顶；日志出现 `power resume: shifted deadlines by <n> ms`，无黑屏残留 |
 
 ## 三、性能
 
@@ -59,9 +59,9 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 
 这些条目在规格里存在但代码尚未接线，验收时**不应勾选**：
 
-- 睡眠/唤醒、显示器热插拔、DPI 变化后的**定时器重算**（覆盖窗口已在 `WM_DISPLAYCHANGE`、`WM_DPICHANGED`、`WM_POWERBROADCAST` 时重新铺满并置顶，但截止时间不重新校准）。
+- 睡眠/唤醒、显示器热插拔、DPI 变化：覆盖窗口会重新铺满并置顶，唤醒后截止时间按休眠间隔平移（`power resume` 日志）；跨屏 DPI 的逐屏重算仍未做。
 - 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
-- `sleep-resume`、`multi-monitor` 两个故障开关（其余六个已可用，见 `native/README.md` 的 Fault injection）。
+- 故障开关已全部可用（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny`、`supervisor-loss`、`sleep-resume`、`multi-monitor`），见 `native/README.md` 的 Fault injection。
 - `display.monitor`、`focus.strategy`、`edge.prewarmProfile` 已接线（选屏、激活链选择、Edge 预热）；`tree` 的 `include`/`exclude` glob 已实现。
 - 配置 UI（§9）：`ConfigEditorModel` 已实现并有单测（增删目标、校验、原子保存），Win32 视图与自动映射向导未实现。

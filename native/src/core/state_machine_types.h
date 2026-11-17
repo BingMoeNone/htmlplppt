@@ -86,6 +86,9 @@ struct Event {
   FailureKind failure = FailureKind::Transient;
   FailureSource failure_source = FailureSource::Other;
   std::string detail;
+  // PowerResume only: the suspend gap measured by the host. Pending deadlines
+  // are shifted by it so a resume does not look like a pile of expired timers.
+  Duration jump{};
 };
 
 struct TargetPlan {
@@ -147,7 +150,7 @@ Event MakeReturnRequested(ClockPoint at);
 Event MakeTimeout(ClockPoint at, TimeoutKind kind);
 Event MakeStopRequested(ClockPoint at, std::string source);
 Event MakeCleanupDone(ClockPoint at);
-Event MakePowerResume(ClockPoint at);
+Event MakePowerResume(ClockPoint at, Duration jump = {});
 Event MakeFailure(ClockPoint at, FailureKind kind, FailureSource source,
                   std::string detail);
 Event MakeSupervisorLost(ClockPoint at, std::string detail);

@@ -289,6 +289,8 @@ so the resilience paths can be exercised on a real machine without wedging WPS:
 | `cover-hang` | the cover never reports its hold, so the machine's cover deadline owns recovery |
 | `focus-deny` | activation always fails, so Edge never becomes ready |
 | `supervisor-loss` | the worker is told the supervisor is gone at start; the loop must continue |
+| `sleep-resume` | injects a 60 s suspend gap and a resume, exercising the deadline shift |
+| `multi-monitor` | injects a display-topology change (half-size reference metrics) |
 
 The worker journals `faults: <list>` into the black box and prints a warning, so
 an injected run is never silent:
@@ -310,7 +312,10 @@ com   118 p50  3ms p99   9ms max  19ms
 The cover window also re-covers on `WM_DISPLAYCHANGE`, `WM_DPICHANGED` and
 `WM_POWERBROADCAST` resume: the loop's wait pumps messages, so a topology change
 or resume reaches the overlay immediately instead of waiting for the next COM
-call.
+call. A resume also re-bases every pending deadline by the measured suspend gap
+(`power resume: shifted deadlines by <n> ms`), so waking up does not look like a
+pile of expired timers; a display change updates the reference metrics used for
+show-window scoring.
 
 ### Config editor
 

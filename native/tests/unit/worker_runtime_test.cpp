@@ -15,6 +15,7 @@ using htmlppt::ClockPoint;
 using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
+using htmlppt::ScreenMetrics;
 using htmlppt::WindowInfo;
 using htmlppt::WindowRect;
 using htmlppt::WorkerHostConfig;
@@ -617,4 +618,37 @@ HTMLPPT_TEST_CASE(worker_runtime_records_latency_samples) {
   for (int i = 0; i < 5; ++i) h.runtime.Step();
   HTMLPPT_CHECK(h.runtime.step_stats().count() >= 5);
   HTMLPPT_CHECK(h.runtime.com_stats().count() >= 5);
+}
+HTMLPPT_TEST_CASE(worker_runtime_handles_resume_and_display_change) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();  // Monitoring
+
+  h.advance(Duration{5000});
+  h.overlay.resume_event = true;
+  h.runtime.Step();
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "power resume"));
+
+  ScreenMetrics metrics;
+  metrics.width = 1280;
+  metrics.height = 720;
+  h.overlay.display_change = metrics;
+  h.runtime.Step();
+  HTMLPPT_CHECK(
+      JournalContains(h.runtime.journal(), "display change: 1280x720"));
+}
+
+HTMLPPT_TEST_CASE(worker_runtime_injects_resume_and_display_faults) {
+  WorkerHarness h;
+  h.host.faults.sleep_resume = true;
+  h.host.faults.multi_monitor = true;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.rebuild();
+  h.Start();
+  h.runtime.Step();
+  HTMLPPT_CHECK(
+      JournalContains(h.runtime.journal(), "fault injected: sleep-resume"));
+  HTMLPPT_CHECK(
+      JournalContains(h.runtime.journal(), "fault injected: multi-monitor"));
 }

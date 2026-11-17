@@ -42,6 +42,8 @@ class StateMachine {
   void Enter(State state);
   void ResetRetries();
   void ClearDeadlines();
+  // PowerResume: move every pending deadline by the suspend gap.
+  void ShiftDeadlines(Duration jump);
   void SetDeadline(TimeoutKind kind, ClockPoint at);
   void ClearDeadline(TimeoutKind kind);
   std::optional<ClockPoint> Deadline(TimeoutKind kind) const;
@@ -59,6 +61,7 @@ class StateMachine {
   std::vector<Action> OnCleanupDone(const Event& event);
   std::vector<Action> OnFailure(const Event& event);
   std::vector<Action> OnSupervisorLost(const Event& event);
+  std::vector<Action> OnPowerResume(const Event& event);
 
   std::vector<Action> BeginTrigger(const TargetPlan& target, ClockPoint at);
   std::vector<Action> BeginReturn(ClockPoint at, bool prepared,

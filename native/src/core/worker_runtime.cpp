@@ -51,11 +51,41 @@ WorkerRuntime::WorkerRuntime(WorkerPlan plan, StateMachineConfig config,
 void WorkerRuntime::Start() {
   Dispatch(machine_.Start());
   SyncSnapshot();
+  last_step_time_ = ports_.clock.now();
 }
 
 bool WorkerRuntime::Step() {
   if (done_) return false;
   const ClockPoint step_start = ports_.clock.now();
+  // Resume and display signals arrive from the overlay's window thread. Handling
+  // them before any observation/tick keeps a clock jump from turning the pending
+  // deadlines into a pile of expired timers.
+  const Duration step_gap = std::chrono::duration_cast<Duration>(step_start - last_step_time_);
+  last_step_time_ = step_start;
+  if (ports_.overlay.ConsumeResumeEvent()) {
+    const Duration jump = step_gap > Duration{2000} ? step_gap : Duration{0};
+    Handle(MakePowerResume(step_start, jump));
+  }
+  ScreenMetrics changed_screen;
+  if (ports_.overlay.ConsumeDisplayChange(&changed_screen)) {
+    host_.screen = changed_screen;
+    AppendJournal("display change: " + std::to_string(changed_screen.width) +
+                  "x" + std::to_string(changed_screen.height));
+  }
+  if (host_.faults.sleep_resume && !injected_sleep_resume_) {
+    injected_sleep_resume_ = true;
+    Handle(MakePowerResume(step_start, Duration{60000}));
+    AppendJournal("fault injected: sleep-resume (60 s gap)");
+  }
+  if (host_.faults.multi_monitor && !injected_multi_monitor_) {
+    injected_multi_monitor_ = true;
+    host_.screen.width = host_.screen.width > 0 ? host_.screen.width / 2 : 1280;
+    host_.screen.height =
+        host_.screen.height > 0 ? host_.screen.height / 2 : 720;
+    AppendJournal("fault injected: multi-monitor (" +
+                  std::to_string(host_.screen.width) + "x" +
+                  std::to_string(host_.screen.height) + ")");
+  }
   const bool was_faulted = machine_.state() == State::Faulted;
   // Unlatch a rate-limited Faulted return retry before ObserveEdge() can see
   // the still-renamed title.

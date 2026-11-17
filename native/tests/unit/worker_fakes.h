@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -128,11 +129,24 @@ class FakeOverlay final : public CoverOverlay {
     return true;
   }
   void ReassertTopMost() override { ++topmost_calls; }
+  bool ConsumeResumeEvent() override {
+    if (!resume_event) return false;
+    resume_event = false;
+    return true;
+  }
+  bool ConsumeDisplayChange(ScreenMetrics* metrics) override {
+    if (!display_change.has_value()) return false;
+    if (metrics != nullptr) *metrics = *display_change;
+    display_change.reset();
+    return true;
+  }
 
   int show_calls = 0;
   int hide_calls = 0;
   int topmost_calls = 0;
   bool visible = false;
+  bool resume_event = false;
+  std::optional<ScreenMetrics> display_change;
   double opacity = 0.0;
 };
 

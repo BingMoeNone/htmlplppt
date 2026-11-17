@@ -45,7 +45,7 @@ std::vector<Action> StateMachine::Handle(const Event& event) {
     case EventKind::CleanupDone:
       return OnCleanupDone(event);
     case EventKind::PowerResume:
-      return Journal("power resume");
+      return OnPowerResume(event);
     case EventKind::ConfigReloaded:
       return Journal("config reload ignored");
     case EventKind::Failure:
@@ -492,6 +492,25 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
       return HandleStructuralFailure(event.detail);
   }
   return BeginRetry(operation, event.at, event.detail);
+}
+
+std::vector<Action> StateMachine::OnPowerResume(const Event& event) {
+  // Spec 11.2: after a resume the steady clock has advanced by the whole suspend
+  // gap, so every pending absolute deadline would look expired and fire at once.
+  // Shift them by the gap instead; the remaining wait is preserved.
+  if (event.jump.count() > 0) {
+    ShiftDeadlines(event.jump);
+  }
+  return Journal("power resume: shifted deadlines by " +
+                 std::to_string(event.jump.count()) + "ms");
+}
+
+void StateMachine::ShiftDeadlines(Duration jump) {
+  for (auto* deadline : {&cover_hold_deadline_, &edge_ready_deadline_,
+                         &edge_live_deadline_, &return_resume_deadline_,
+                         &cover_done_deadline_, &retry_deadline_}) {
+    if (deadline->has_value()) **deadline += jump;
+  }
 }
 
 std::vector<Action> StateMachine::OnSupervisorLost(const Event& event) {

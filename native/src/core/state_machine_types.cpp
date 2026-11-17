@@ -85,10 +85,11 @@ Event MakeCleanupDone(ClockPoint at) {
   return event;
 }
 
-Event MakePowerResume(ClockPoint at) {
+Event MakePowerResume(ClockPoint at, Duration jump) {
   Event event;
   event.kind = EventKind::PowerResume;
   event.at = at;
+  event.jump = jump;
   return event;
 }
 

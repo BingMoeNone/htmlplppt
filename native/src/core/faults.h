@@ -15,6 +15,8 @@ struct Faults {
   bool cover_hang = false; // the cover never reaches its hold
   bool focus_deny = false; // activation always fails (no Edge window, no focus)
   bool supervisor_loss = false;  // the worker is told the supervisor is gone
+  bool sleep_resume = false;     // inject a long suspend gap + resume
+  bool multi_monitor = false;    // inject a display-topology change
 };
 
 // Parses a comma- or space-separated list: com-hang, com-462, edge-slow, supervisor-loss,

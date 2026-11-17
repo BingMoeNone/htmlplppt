@@ -24,6 +24,7 @@ using htmlppt::MakeCoverHold;
 using htmlppt::MakeEdgeClosed;
 using htmlppt::MakeEdgeReady;
 using htmlppt::MakeFailure;
+using htmlppt::MakePowerResume;
 using htmlppt::MakeReturnRequested;
 using htmlppt::MakeShowEnded;
 using htmlppt::MakeShowStarted;
@@ -769,4 +770,18 @@ HTMLPPT_TEST_CASE(state_machine_return_deadlines_honour_the_target_max_hold) {
   const auto cover_done = m.machine->NextDeadline();
   HTMLPPT_CHECK(cover_done.has_value());
   HTMLPPT_CHECK_EQ(*cover_done - m.clock.now(), Duration{1000});
+}
+HTMLPPT_TEST_CASE(state_machine_power_resume_shifts_pending_deadlines) {
+  Machine m;
+  m.TriggerTargetFive();  // CoverIn with a hold deadline pending
+  const auto before = m.machine->NextDeadline();
+  HTMLPPT_CHECK(before.has_value());
+
+  const auto actions =
+      m.machine->Handle(MakePowerResume(m.clock.now(), Duration{60000}));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "power resume"));
+
+  const auto after = m.machine->NextDeadline();
+  HTMLPPT_CHECK(after.has_value());
+  HTMLPPT_CHECK_EQ(*after - *before, Duration{60000});
 }
