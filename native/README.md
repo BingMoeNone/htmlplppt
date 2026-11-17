@@ -257,6 +257,51 @@ Linux gate for these units: 244/244 unit cases, CTest 8/8, `npm test` 3/3.
 The Windows gate (MSVC `/WX`, real `EnumWindows`, layered window, Edge) is
 part of Plan 5B-2.
 
+## Win32 cover, window, focus, and Edge adapters (Plan 5B-2)
+
+`platform/win32/utf8_win32` converts UTF-8 config and argv strings to UTF-16
+with `MB_ERR_INVALID_CHARS`; `platform/win32/process_job` builds
+`CommandLineToArgvW`-compatible command lines and escapes embedded quotes and
+trailing backslashes. Windows argv never passes through the active code page.
+
+`platform/win32/window_system_win32` enumerates top-level windows with PID,
+class, title, rectangle, visibility, topmost/popup, and min/max style flags.
+`Activate` follows the legacy chain: topmost plus restore, `SetForegroundWindow`,
+`SwitchToThisWindow`, `AttachThreadInput` with `BringWindowToTop`, a synthetic
+Alt tap, and a final foreground check. `PrimaryScreenMetrics` supplies the WPS
+ranking screen size. WPS ranking restores the legacy 90 percent fullscreen
+hard gate.
+
+`platform/win32/cover_overlay_win32` owns a dedicated overlay thread with a
+layered topmost `WS_POPUP` window, `WS_EX_NOACTIVATE`, `WS_EX_TOOLWINDOW`, and
+`WS_EX_TRANSPARENT`, covering the virtual screen. `Show`, `Hide`, `SetOpacity`,
+and `ReassertTopMost` are synchronous messages to that thread.
+`EVENT_SYSTEM_FOREGROUND` reasserts topmost while the cover is visible, and
+`WM_DISPLAYCHANGE` recomputes the virtual-screen bounds.
+
+`platform/win32/edge_launcher_win32` launches Edge through `CreateProcessW`
+under a per-launch Job Object with kill-on-close, converting every UTF-8
+argument to UTF-16 first. `Win32EdgeProcess` reports liveness, terminates the
+job, and `release()` clears kill-on-close and closes ownership so a
+return-failure Edge can stay open for manual close. `core/edge_controller`
+now terminates an owned process in its destructor and exposes `Release()`.
+
+`platform/win32/process_query` enumerates processes with
+`CreateToolhelp32Snapshot`, reads command lines through
+`NtQueryInformationProcess(ProcessCommandLineInformation)`, and finds the
+largest visible window for a process whose command line contains an Edge
+profile marker. `FindEdgeExecutable` checks the Program Files, Program Files
+(x86), and LocalAppData Edge locations before `SearchPathW`.
+
+Windows gate: `htmlppt_core_tests` 245/245, `htmlppt_win32_tests` 54/54,
+CTest 9/9, `/WX` clean. The real-Edge case is environment-gated:
+
+```powershell
+$env:HTMLPPT_MANUAL_EDGE = '1'
+C:\Temp\htmlplppt-win\build\Release\htmlppt_win32_tests.exe
+Remove-Item Env:HTMLPPT_MANUAL_EDGE
+```
+
 ## WPS COM host (Plan 5A)
 
 `platform/win32/com_dispatch` provides the STA COM apartment, RAII

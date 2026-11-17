@@ -2517,3 +2517,117 @@ execute Tasks 1-4 with task-level reviews, run Task 5 gates and manual
 acceptance, then run the final whole-branch review. Plan 5C (staging, Edge
 execution flow, compatibility flags/logs, stop entry) follows after 5B-2
 lands.
+
+## As-Built Amendments (2026-11-17)
+
+Plan 5B-2 is complete on branch `worktree-plan-5b-2-win32-adapters`. Tasks 1-4
+were implemented and reviewed; Task 5 ran the full gates, the manual
+acceptance, and this documentation update. The amendments below differ from
+the Task 1-5 code blocks above and are the source of truth for the
+implemented adapters.
+
+Status: done.
+
+Commits:
+
+- `fafe5fa` docs: add Plan 5B-2 win32 adapters implementation plan
+- `959735f` feat: add utf8 and windows command line helpers
+- `6ef3ed2` fix: make edge spec tests platform neutral
+- `a50a0f5` feat: add win32 window system adapter
+- `20dfcdf` feat: add win32 layered cover overlay
+- `3dea235` fix: bound win32 cover overlay shutdown
+- `9172189` feat: add win32 edge launcher and process query
+- Task 5: the documentation commit that adds this section
+  (`docs: record Plan 5B-2 win32 adapters`). The commit hash cannot be
+  embedded in the content it hashes; it is the final commit on the branch and
+  is reported with the task.
+
+Gate counts observed on 2026-11-17:
+
+- Linux (WSL, CMake 4.4.4, `-DHTMLPPT_WERROR=ON`): `htmlppt_core_tests`
+  247/247, CTest 8/8, `npm test` 3/3, `-Werror` clean.
+- Windows (MSVC 19.51.36252.0, Visual Studio 18 2026, x64, Release,
+  `-DHTMLPPT_WERROR=ON`): `htmlppt_core_tests` 245/245,
+  `htmlppt_win32_tests` 54/54, CTest 9/9, `/WX` clean.
+
+Deviations:
+
+1. **Two pre-existing Windows-only `edge_spec_test.cpp` failures**: the
+   plan's Windows CTest 9/9 baseline was stale. Two journal cases are
+   excluded on Windows, but two `edge_spec_test.cpp` assertions compared
+   `std::filesystem::path::string()` against POSIX literals and failed on the
+   backslash separator. Commit `6ef3ed2` makes those assertions compare
+   `std::filesystem::path` and `Utf8Path` values instead. The fix is
+   test-only; no production code changed.
+
+2. **`IDC_ARROW` workaround**: Task 2's test window class and Task 3's
+   overlay class use `LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))` instead
+   of `IDC_ARROW`. This CMake build does not define `UNICODE`, so `IDC_ARROW`
+   expands to the ANSI `MAKEINTRESOURCEA` form, which does not match
+   `LoadCursorW` under `/WX`. Behavior is identical (the standard arrow
+   cursor).
+
+3. **Bounded overlay shutdown**: the Task 3 overlay shutdown was redesigned
+   after review, with the human partner's decision, to satisfy design spec
+   4.8 (no infinite join; every wait is time-bounded). The plan's original
+   unbounded `std::thread::join()` code block is superseded. Thread state
+   moved into `std::shared_ptr<State>`; `PeekMessage` forces the message queue
+   before `thread_id` publication; `stop` is checked before `RegisterClass`
+   and before the message loop; `exit_event` is signaled on every exit path;
+   the destructor sets `stop`, posts `WM_QUIT` when the thread id is known,
+   waits on `exit_event` for 2000 ms, joins on success, and detaches on
+   timeout (never `TerminateThread`); the four public commands use
+   `SendMessageTimeoutW(SMTO_ABORTIFHUNG, 100)`.
+
+4. **No CMake glob changes**: the new sources and tests are picked up by the
+   existing `CONFIGURE_DEPENDS` globs. The only CMake changes were the
+   `shell32` link needed by `process_query` (Task 1) and the
+   `htmlppt_win32_arg_echo` helper target plus the `HTMLPPT_HELPER_PATH`
+   definition in Task 4.
+
+Manual acceptance (Windows host, interactive desktop, Edge
+`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe` installed):
+
+1. Overlay flash: during the suite a visible topmost `HtmlpptCoverOverlay`
+   window at virtual-screen bounds `0,0,2560,1440` was observed; after the
+   suite no overlay window of that class remained.
+2. Real Edge: the environment-gated case ran with `HTMLPPT_MANUAL_EDGE=1`
+   reaching the Windows executable and passed inside the full 54/54 suite. A
+   new `msedge.exe` process created a visible foreground window at
+   `0,0,2560,1440` (fullscreen) and the window was gone after the test.
+3. Leftover check: no process of any image had `htmlppt-manual-` or
+   `htmlppt-marker-` in its command line, no `htmlppt_win32_tests.exe`
+   remained, and no overlay window remained.
+
+The observations were made with a temporary desktop probe executable outside
+the repository (`EnumWindows`, `GetForegroundWindow`, `IsWindowVisible`,
+`GetWindowRect`, and `NtQueryInformationProcess` command-line reads), not by
+human visual inspection; PowerShell and `cmd.exe` were unavailable in the
+worktree-isolated session.
+
+Deferred items:
+
+- Staging file/tree/direct ignore support, the worker business loop, the
+  state-machine wiring, the compatibility flag mirror and legacy logs, and
+  WinEvent-driven slide detection are Plan 5C/5D.
+- Supervisor-side Edge Job wiring is Plan 5D; the real-Edge case proves the
+  launcher and Job ownership only.
+- `SetWinEventHook` failure diagnostics are absent; the overlay silently
+  loses foreground reassertion if the hook cannot be installed.
+- Overlay multi-instance safety is unverified: the foreground hook target is
+  a process-wide `g_overlay_hwnd`, so two overlays in one process would race.
+- Mixed-DPI and multi-monitor scaling were not exercised; the cover uses the
+  virtual-screen rectangle and `WM_DISPLAYCHANGE` only.
+- Task 2-4 review minors: missing 2n+1 backslash-before-quote process_job
+  test; magic `32512` and a missing `<cstdint>` include in tests; a
+  `FindWindow` test helper name that can collide with the `windows.h` macro;
+  no comment on `Activate`'s intentional permanent-topmost side effect;
+  coverage gaps for `IsIconic`/restore, the exact-90-percent height gate,
+  non-ASCII `WideToUtf8`, and the headless activation early-return;
+  unbounded test-side `SendMessageW` for `WM_DISPLAYCHANGE`; the detach path
+  can leave the overlay class registered until a wedged worker exits;
+  `release()` failure path and reverse kill-on-close are untested;
+  `SameImageName` can pass a null pointer for an empty `wstring_view`; the
+  launcher ignores `spec.url`/`spec.profile_dir` without documenting the
+  argument precondition; an unused `Utf8ToWide` using-declaration remains in
+  the launcher test.
