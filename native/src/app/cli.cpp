@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/config_ui.h"
 #include "app/supervisor.h"
 #include "core/config.h"
 #include "core/config_issue.h"
@@ -37,6 +38,7 @@ enum class Command {
   Stop,
   Status,
   Diagnostics,
+  ConfigUi,
   DumpHelper,
 };
 
@@ -73,6 +75,7 @@ void PrintUsage(std::ostream& out) {
       << "  --stop                 stop a running supervisor (Windows only)\n"
       << "  --status               print the run black box (Windows only)\n"
       << "  --diagnostics          write a diagnostics package (needs --out PATH)\n"
+      << "  --config-ui            open the native config editor (Windows only)\n"
       << "  --dump-helper PID PATH write a MiniDump for a process (Windows "
          "only)\n"
       << "\n"
@@ -207,6 +210,11 @@ ParseResult ParseCli(int argc, char** argv) {
       }
     } else if (argument == "--diagnostics") {
       if (!SetCommand(&result.options, Command::Diagnostics, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--config-ui") {
+      if (!SetCommand(&result.options, Command::ConfigUi, &result.error)) {
         result.ok = false;
         return result;
       }
@@ -360,6 +368,11 @@ ParseResult ParseCli(int argc, char** argv) {
       result.options.run_id.empty()) {
     result.ok = false;
     result.error = "--run-id is required for --stop, --status, or --diagnostics";
+    return result;
+  }
+  if (command == Command::ConfigUi && result.options.config_path.empty()) {
+    result.ok = false;
+    result.error = "--config-ui requires --config PATH";
     return result;
   }
   if (command == Command::DumpHelper &&
@@ -541,6 +554,9 @@ int RunCli(int argc, char** argv) {
       return RunDiagnostics(parsed.options.run_id, dir,
                             std::filesystem::path(parsed.options.diagnostics_out));
     }
+    case Command::ConfigUi:
+      return RunConfigUi(parsed.options.config_path,
+                         parsed.options.deck_info_path);
     case Command::DumpHelper:
       return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
   }

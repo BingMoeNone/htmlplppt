@@ -62,12 +62,13 @@ if (WIN32)
   add_library(htmlppt_win32 STATIC ${HTMLPPT_WIN32_SOURCES})
   target_compile_definitions(htmlppt_win32 PUBLIC NOMINMAX)
   target_link_libraries(htmlppt_win32 PUBLIC htmlppt_core dbghelp ole32
-    oleaut32 shell32)
+    oleaut32 shell32 comctl32)
   htmlppt_enable_warnings(htmlppt_win32)
 endif()
 
 add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp
-  src/app/supervisor.cpp src/app/worker_session.cpp ${HTMLPPT_WIN32_RESOURCES})
+  src/app/config_ui.cpp src/app/supervisor.cpp src/app/worker_session.cpp
+  ${HTMLPPT_WIN32_RESOURCES})
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
 if (WIN32)
   target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_win32)
