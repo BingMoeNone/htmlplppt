@@ -234,20 +234,25 @@ git commit -m "feat(core): add worker runtime show sampling"
 HTMLPPT_TEST_CASE(worker_runtime_fades_cover_in_holds_and_reports_done) {
   WorkerHarness h;
   h.config.startup_ignore = Duration{0};
-  h.plan.machine.targets = {{1, "t1", "p1"}};      // target slide 1
-  h.rebuild();                                     // re-create machine with the new plan
-  h.presentation.show = {HostStatus::Ok, true, 1};
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};   // target slide 1
+  h.rebuild();                                            // re-create runtime with the new plan
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
   h.Start(); h.runtime.Step();
-  h.presentation.show.slide = 2;                   // leave-forward
+  h.presentation.show.slide = 2;                          // leave-forward
   h.runtime.Step();
-  HTMLPPT_CHECK_EQ(h.overlay.show_calls, 1);       // CoverFadeIn ran
-  HTMLPPT_CHECK(h.overlay.opacity > 0.0);
+  HTMLPPT_CHECK_EQ(h.overlay.show_calls, 1);              // CoverFadeIn ran
+  HTMLPPT_CHECK(h.overlay.opacity <= 0.01);               // fade starts transparent
+  h.advance(h.host.cover.fade / 2);
+  h.runtime.Step();                                       // ObserveCover ticks the fade
+  HTMLPPT_CHECK(h.overlay.opacity > 0.0 && h.overlay.opacity < 1.0);
   // CoverHold fires only after fade + hold, never after hold alone.
-  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.advance(h.host.cover.fade / 2 + h.host.cover.hold + Duration{1});
   h.runtime.Step();
-  HTMLPPT_CHECK_EQ(h.launcher.launch_count, 1);    // CoverHold unblocked EdgeStarting
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
 }
 ```
+
+Task 3 must not assert that Edge launched — `LaunchEdge` is Task 4's; the state transition is the observable here.
 
 - [ ] **Step 2: Run and watch it fail**
 
