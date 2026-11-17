@@ -256,7 +256,9 @@ Expected: FAIL — `overlay.show_calls == 0`.
 
 - [ ] **Step 3: Implement the action dispatch and cover tick**
 
-Add `Dispatch(const std::vector<Action>&)` and `Execute(const Action&)` with a `switch` over `ActionKind`. Kinds owned by later tasks (`LaunchEdge`, `KillEdge`, `FocusEdge`, `ExitShow`, `ResumeShow`, `RestoreShow`, `FocusWps`) only append to `journal_` until their task lands. `ObserveCover()` ticks the controller (which applies opacity to the overlay) and emits `CoverHold`/`CoverDone` on phase edges.
+Call `ObserveCover()` from `Step()` in the briefed order — after `ObserveShow()`, before `machine_.Tick()` and dispatch. Task 2 deliberately left the call site because an empty observer would be a stub; this task supplies the body and the call together.
+
+Add `Dispatch(const std::vector<Action>&)` and `Execute(const Action&)` with a `switch` over `ActionKind`. Kinds owned by later tasks (`LaunchEdge`, `KillEdge`, `FocusEdge`, `ExitShow`, `ResumeShow`, `RestoreShow`, `FocusWps`) append `detail` to `journal_` rather than passing silently — a missing `case` in a later task must be visible in the journal. `ObserveCover()` ticks the controller (which applies opacity to the overlay) and emits `CoverHold`/`CoverDone` on phase edges.
 
 - [ ] **Step 4: Run and watch it pass**
 
@@ -315,6 +317,8 @@ Run: `cmake --build native/build --target htmlppt_core_tests && native/build/htm
 Expected: FAIL — `launch_count == 0`.
 
 - [ ] **Step 3: Implement edge observation**
+
+Call `ObserveEdge()` from `Step()` (after `ObserveCover()`, before `machine_.Tick()`) — Task 2 left the call site open for the same reason as the cover one.
 
 Resolve the `ResolvedTarget` for `action.slide` from `plan_.targets`, build with `MakeEdgeLaunchSpec`, store `edge_pid_`, reset `ready_sent_`/`return_sent_`. In `ObserveEdge()` (only when `edge_pid_ != 0`): if `!edge_.active()` emit `EdgeClosed` and clear the pid; otherwise `SelectEdgeWindow(windows_.Enumerate(), edge_.pid())`; on a return title with `!return_sent_` emit `ReturnRequested`; else if `!ready_sent_` and `focus_.FocusEdge(pid)` succeeds, emit `EdgeReady`.
 
@@ -439,6 +443,8 @@ Expected: FAIL — `done()` never true / stop ignored.
 - [ ] **Step 3: Implement the driver**
 
 Compute the wake time before dispatch: `auto wake = now + host_.poll_interval; if (auto d = machine_.NextDeadline(); d && *d < wake) wake = *d; clock_.sleep_until(wake);`. Once `done_` is set, `Step()` returns false and executes nothing. Track `cleanup_done_` so a repeated stop cannot re-run cleanup.
+
+Also finish two COM-failure debts the Task 2 review found: treat `HostStatus::Unavailable` and `HostStatus::Failed` exactly like `Busy` (emit the COM failure and leave the remembered sample untouched) so a failed query can never look like a show end, and cap `journal_` (keep the last 500 entries) so a sustained failure poll cannot grow it without bound. Cover both with tests: a failed poll with `active=false` must not journal `show ended`, and 600 journal entries must leave 500.
 
 - [ ] **Step 4: Run and watch all pass**
 
