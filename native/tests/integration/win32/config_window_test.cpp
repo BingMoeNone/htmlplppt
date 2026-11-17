@@ -84,3 +84,33 @@ HTMLPPT_TEST_CASE(config_editor_opens_an_empty_model_for_a_missing_file) {
   HTMLPPT_CHECK_EQ(model.DisplayRows(nullptr, htmlppt::ResolveOptions{}).size(),
                    std::size_t{0});
 }
+
+HTMLPPT_TEST_CASE(win32_config_window_keeps_non_ascii_text_intact) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].label = "\xE5\xB1\x95\xE7\xA4\xBA";
+  rows[0].html = "\xE6\xBC\x94\xE7\xA4\xBA/p.html";
+  window.SetRows(rows);
+
+  wchar_t text[128] = {};
+  ListView_GetItemText(window.list_view(), 0, 1, text, 128);
+  HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"\u5c55\u793a"));
+  ListView_GetItemText(window.list_view(), 0, 2, text, 128);
+  HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"\u6f14\u793a/p.html"));
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}

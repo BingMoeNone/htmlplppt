@@ -9,6 +9,19 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"HtmlpptConfigWindow";
 
+// The model carries UTF-8; the list control stores UTF-16. Widen as a real
+// UTF-8 -> UTF-16 conversion so non-ASCII labels and paths survive intact.
+std::wstring Widen(const std::string& utf8) {
+  if (utf8.empty()) return {};
+  const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                                       static_cast<int>(utf8.size()), nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring wide(static_cast<std::size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                      wide.data(), size);
+  return wide;
+}
+
 } // namespace
 
 ConfigWindow::~ConfigWindow() {
@@ -111,7 +124,7 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
     const int inserted = ListView_InsertItem(list_view_, &item);
     if (inserted < 0) continue;
     const auto set_text = [&](int column, const std::string& text) {
-      const std::wstring wide(text.begin(), text.end());
+      const std::wstring wide = Widen(text);
       ListView_SetItemText(list_view_, inserted, column,
                            const_cast<wchar_t*>(wide.c_str()));
     };
@@ -168,7 +181,10 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       DestroyWindow(hwnd);
       return 0;
     case WM_DESTROY:
+      // Child windows are gone with the parent; never hold stale HWNDs.
       handle_ = nullptr;
+      list_view_ = nullptr;
+      status_view_ = nullptr;
       PostQuitMessage(0);
       return 0;
     default:

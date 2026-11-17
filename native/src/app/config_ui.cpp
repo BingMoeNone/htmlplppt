@@ -40,7 +40,11 @@ int RunConfigUi(const std::filesystem::path& config_path,
   DeckInfoResult deck;
   if (!deck_info_path.empty()) {
     JsonDeckInfoProvider provider(deck_info_path);
-    deck = provider.Load(config_path);
+    // Match the CLI: the deck path comes from the loaded config, not from the
+    // config file itself. A config that failed to load has nothing to resolve.
+    deck = provider.Load(loaded.config.has_value()
+                             ? ResolveDeckPath(*loaded.config)
+                             : std::filesystem::path{});
   }
   const std::vector<DisplayRow> rows = model.DisplayRows(
       deck.info.has_value() ? &*deck.info : nullptr, ResolveOptions{});
