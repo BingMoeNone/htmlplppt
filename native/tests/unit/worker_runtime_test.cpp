@@ -1,5 +1,6 @@
 #include "test_main.h"
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "core/types.h"
 #include "worker_fakes.h"
 
+using htmlppt::ClockPoint;
 using htmlppt::Duration;
 using htmlppt::HostStatus;
 using htmlppt::State;
@@ -71,7 +73,8 @@ HTMLPPT_TEST_CASE(worker_runtime_fades_cover_in_holds_and_reports_done) {
   h.advance(h.host.cover.fade / 2);
   h.runtime.Step();                                       // ObserveCover ticks the fade
   HTMLPPT_CHECK(h.overlay.opacity > 0.0 && h.overlay.opacity < 1.0);
-  // CoverHold fires only after fade + hold, never after hold alone.
+  // CoverHold fires when the fade-in completes (CoverTimeline::Tick sets the
+  // phase to Hold at that point); the hold duration only gates the fade-out.
   h.advance(h.host.cover.fade / 2 + h.host.cover.hold + Duration{1});
   h.runtime.Step();
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
@@ -90,8 +93,8 @@ HTMLPPT_TEST_CASE(worker_runtime_journals_actions_it_does_not_own) {
   // its profile string.
   HTMLPPT_CHECK_EQ(h.launcher.launch_count, 1);
   h.runtime.RequestStop("test stop");
-  h.runtime.Step();                             // cleanup actions
-  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Stopping);
+  h.runtime.Step();                             // cleanup actions, then Exited
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Exited);
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "test stop"));
 }
 
@@ -295,4 +298,121 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_failure_when_resume_show_fails) 
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "resume show failed"));
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "WPS resume failed"));
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+}
+
+// Task 6: a stop request must run the machine's cleanup batch exactly once and
+// then feed CleanupDone, which no machine path emits by itself. The Step that
+// runs the batch must reach Exited and every later Step must execute nothing.
+HTMLPPT_TEST_CASE(worker_runtime_stop_mid_trigger_cleans_up_once) {
+  WorkerHarness h = HTriggeredAtSlide1();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // CoverHold -> Edge launched
+  HTMLPPT_CHECK_EQ(h.launcher.launch_count, 1);
+  h.runtime.RequestStop("test");
+  h.runtime.Step();                             // cleanup batch + CleanupDone
+  HTMLPPT_CHECK(h.overlay.hide_calls >= 1);     // CoverHide ran
+  HTMLPPT_CHECK_EQ(h.launcher.kill_calls, 1);   // KillEdge ran
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Exited);
+  HTMLPPT_CHECK(h.runtime.done());
+  const int hides = h.overlay.hide_calls;
+  const std::size_t entries = h.runtime.journal().size();
+  h.runtime.RequestStop("again");               // a second stop must not re-run
+  HTMLPPT_CHECK(!h.runtime.Step());             // done: executes nothing
+  HTMLPPT_CHECK_EQ(h.launcher.kill_calls, 1);
+  HTMLPPT_CHECK_EQ(h.overlay.hide_calls, hides);
+  HTMLPPT_CHECK_EQ(h.runtime.journal().size(), entries);
+}
+
+// Task 6: the idle wait is bounded by the poll interval.
+HTMLPPT_TEST_CASE(worker_runtime_step_sleeps_at_most_poll_interval) {
+  WorkerHarness h;
+  const ClockPoint before = h.clock.now();
+  h.runtime.Step();
+  HTMLPPT_CHECK(h.clock.sleeps().back() - before <=
+                h.host.poll_interval + Duration{1});
+}
+
+// Task 6: the idle wait is bounded by the machine's next deadline too. A short
+// CoverHold deadline must not be pushed out by a long poll interval, because the
+// timeout is the machine's, not the runtime's.
+HTMLPPT_TEST_CASE(worker_runtime_step_sleeps_until_the_next_deadline) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  h.config.cover_max_hold = Duration{50};
+  h.host.poll_interval = Duration{10000};
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();                             // Monitoring; full poll wait
+  h.presentation.show.slide = 2;                // leave-forward trigger
+  const ClockPoint before = h.clock.now();
+  h.runtime.Step();                             // CoverIn: CoverHold due in 50 ms
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::CoverIn);
+  HTMLPPT_CHECK_EQ(h.clock.sleeps().back() - before, h.config.cover_max_hold);
+}
+
+// Ruling: Unavailable and Failed are COM query failures exactly like Busy. A
+// failed poll with active=false must not journal "show ended" and must not move
+// prev_slide, or a wedged host would look like the end of the show.
+HTMLPPT_TEST_CASE(worker_runtime_failed_poll_is_not_a_show_end) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();                             // Monitoring at slide 1
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().prev_slide, 1);
+  const HostStatus failing[] = {HostStatus::Unavailable, HostStatus::Failed};
+  for (const HostStatus status : failing) {
+    h.presentation.show = MakeShowState(status, false, 0);
+    h.runtime.Step();
+    HTMLPPT_CHECK(!JournalContains(h.runtime.journal(), "show ended"));
+    HTMLPPT_CHECK_EQ(h.runtime.snapshot().prev_slide, 1);
+    HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+  }
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "COM unavailable"));
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "COM failed"));
+}
+
+// Ruling: the journal is diagnostic state that a sustained failure poll must not
+// grow without bound; the oldest entries are dropped once it is full. A poll
+// while Faulted journals one entry per Step, so 600 of them leave the cap.
+HTMLPPT_TEST_CASE(worker_runtime_journal_is_bounded) {
+  WorkerHarness h = HLiveAtSlide1();
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
+  h.windows.windows = {MakeWindow(2, h.launcher.pid, "TEF-LIVE-RETURN")};
+  h.runtime.Step();                             // ReturnRequested -> Returning
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  h.presentation.fail_next_resume = true;
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // failed resume -> Faulted
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+  h.windows.windows.clear();                    // no return title to re-arm on
+  h.presentation.show.status = HostStatus::Busy;
+  for (int i = 0; i < 600; ++i) {
+    h.runtime.Step();                           // "failure while faulted" each poll
+  }
+  // Pin the spec's cap so a change to the implementation constant cannot hide.
+  HTMLPPT_CHECK_EQ(h.runtime.journal().size(), 500u);
+  // The oldest entries went first, including the very first one.
+  HTMLPPT_CHECK(!JournalContains(h.runtime.journal(), "state=Warming"));
+}
+
+// Task 6: an Edge that never reports the return title is killed at the live
+// deadline; the machine returns through the cover instead of staying live.
+// CoverHold arrives when the fade-in completes, so advancing fade + hold keeps
+// the assertion on the state rather than on an exact tick.
+HTMLPPT_TEST_CASE(worker_runtime_edge_live_timeout_removes_cover_and_resumes) {
+  WorkerHarness h = HLiveAtSlide1();         // Live, Edge up, no return title ever arrives
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
+  h.advance(h.config.edge_max_live + Duration{1});
+  h.runtime.Step();                          // EdgeLive timeout -> Returning (cover fades in)
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  HTMLPPT_CHECK_EQ(h.launcher.kill_calls, 1);
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                          // CoverHold -> ReturnCoverOut + ResumeShow
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ReturnCoverOut);
+  HTMLPPT_CHECK_EQ(h.overlay.hide_calls, 0); // fade out, not a failure hide
+  HTMLPPT_CHECK_EQ(h.presentation.resume_slides.size(), 1u);
+  HTMLPPT_CHECK(h.presentation.resume_slides.back() == 1);
 }

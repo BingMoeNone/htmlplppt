@@ -1,5 +1,6 @@
 #include "core/worker_runtime.h"
 
+#include <cstddef>
 #include <string>
 #include <utility>
 
@@ -7,6 +8,31 @@
 #include "core/focus_model.h"
 
 namespace htmlppt {
+namespace {
+
+// The journal is diagnostic: a poll loop that keeps failing must not grow it
+// without bound, so it keeps the most recent entries only.
+constexpr std::size_t kMaxJournalEntries = 500;
+
+// Names a failed query in the journal. The caller keeps the last good show
+// sample: a failed query is not a show state, so it can never be read as a show
+// end.
+std::string ComFailureDetail(const ShowState& show) {
+  if (!show.detail.empty()) return show.detail;
+  switch (show.status) {
+    case HostStatus::Busy:
+      return "COM busy";
+    case HostStatus::Unavailable:
+      return "COM unavailable";
+    case HostStatus::Failed:
+      return "COM failed";
+    case HostStatus::Ok:
+      break;
+  }
+  return "COM query failed";
+}
+
+} // namespace
 
 WorkerRuntime::WorkerRuntime(WorkerPlan plan, StateMachineConfig config,
                              WorkerPorts ports, WorkerHostConfig host)
@@ -40,11 +66,27 @@ bool WorkerRuntime::Step() {
     Handle(MakeStopRequested(ports_.clock.now(), std::move(reason)));
   }
   Dispatch(machine_.Tick());
+  // Nothing in the machine emits CleanupDone: the runtime owes it the one event
+  // that ends a cleanup, and exactly one, so a repeated stop can neither re-run
+  // the batch nor re-report it.
+  if (!cleanup_done_ && machine_.state() == State::Stopping) {
+    cleanup_done_ = true;
+    Handle(MakeCleanupDone(ports_.clock.now()));
+  }
   SyncSnapshot();
   done_ =
       machine_.state() == State::Exited || machine_.state() == State::SafeMode;
   if (done_) return false;
-  ports_.clock.sleep_until(ports_.clock.now() + host_.poll_interval);
+  // Never idle past the machine's next deadline: a timeout must not be pushed
+  // out by a whole poll interval. A deadline that is already due belongs to
+  // Tick(); sleeping to it would busy-loop instead of waiting.
+  const ClockPoint now = ports_.clock.now();
+  ClockPoint wake = now + host_.poll_interval;
+  if (const std::optional<ClockPoint> deadline = machine_.NextDeadline();
+      deadline.has_value() && *deadline > now && *deadline < wake) {
+    wake = *deadline;
+  }
+  ports_.clock.sleep_until(wake);
   if (!was_faulted && machine_.state() == State::Faulted) {
     // A fault observed in this Step cannot be retried before the next one. The
     // window opens after this iteration's bounded idle wait, so the earliest
@@ -62,11 +104,14 @@ void WorkerRuntime::RequestStop(std::string reason) {
 void WorkerRuntime::ObserveShow() {
   const ShowState show = ports_.presentation.QueryShow();
   const ClockPoint now = ports_.clock.now();
-  if (show.status == HostStatus::Busy) {
-    // A busy COM query is not a show state: keep the last good sample so the
-    // busy poll cannot look like a slide change or a show end.
+  if (show.status == HostStatus::Busy ||
+      show.status == HostStatus::Unavailable ||
+      show.status == HostStatus::Failed) {
+    // A failed COM query is not a show state: keep the last good sample so the
+    // failed poll cannot look like a slide change or a show end. Only a real
+    // sample may update last_show_/last_slide_.
     Handle(MakeFailure(now, FailureKind::Transient, FailureSource::Com,
-                       show.detail.empty() ? "COM busy" : show.detail));
+                       ComFailureDetail(show)));
     return;
   }
   if (show.active != last_show_.active) {
@@ -139,6 +184,15 @@ void WorkerRuntime::SyncSnapshot() {
   snapshot_ = machine_.Snapshot();
 }
 
+void WorkerRuntime::AppendJournal(std::string entry) {
+  // Keep the newest entries: the oldest are the least useful once the cap is
+  // reached, and dropping them bounds memory for the life of the run.
+  if (journal_.size() >= kMaxJournalEntries) {
+    journal_.erase(journal_.begin());
+  }
+  journal_.push_back(std::move(entry));
+}
+
 void WorkerRuntime::AllowReturnRetry() {
   if (machine_.state() != State::Faulted || !return_sent_) return;
   if (ports_.clock.now() - last_return_retry_ < host_.return_retry_interval) {
@@ -179,7 +233,7 @@ void WorkerRuntime::Execute(const Action& action) {
       break;
     case ActionKind::Journal:
     case ActionKind::Diagnostic:
-      journal_.push_back(action.detail);
+      AppendJournal(action.detail);
       break;
     case ActionKind::LaunchEdge:
       LaunchEdge(action.slide);
@@ -230,7 +284,7 @@ void WorkerRuntime::Execute(const Action& action) {
     case ActionKind::LegacyFallback:
     case ActionKind::StopHelperThreads:
     case ActionKind::ReleaseLock:
-      journal_.push_back(action.detail);
+      AppendJournal(action.detail);
       break;
   }
 }
@@ -264,7 +318,7 @@ void WorkerRuntime::LaunchEdge(int slide) {
 }
 
 void WorkerRuntime::ReportEdgeLaunchFailure(std::string detail) {
-  journal_.push_back(detail);
+  AppendJournal(detail);
   Handle(MakeFailure(ports_.clock.now(), FailureKind::Transient,
                      FailureSource::Edge, std::move(detail)));
 }

@@ -70,6 +70,7 @@ class WorkerRuntime {
   void ReportEdgeLaunchFailure(std::string detail);
   void SyncSnapshot();
   void AllowReturnRetry();
+  void AppendJournal(std::string entry);
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
@@ -104,6 +105,9 @@ class WorkerRuntime {
   // return_retry_interval from this point.
   ClockPoint last_return_retry_{};
   std::optional<std::string> pending_stop_;
+  // Set once the runtime has fed the machine the CleanupDone it never emits
+  // itself, so a repeated stop cannot run or report the cleanup twice.
+  bool cleanup_done_ = false;
   bool done_ = false;
 };
 
