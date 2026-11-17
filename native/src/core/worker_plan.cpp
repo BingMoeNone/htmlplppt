@@ -73,9 +73,20 @@ bool ReadString(const json& object, const char* key, const std::string& path,
   return true;
 }
 
+bool ReadInt64(const json& object, const char* key, const std::string& path,
+               std::int64_t* out, std::string* error) {
+  const auto it = object.find(key);
+  if (it == object.end() || it->is_null()) return true;
+  if (!it->is_number_integer()) {
+    SetError(error, path + ": expected an integer");
+    return false;
+  }
+  *out = it->get<std::int64_t>();
+  return true;
+}
+
 std::optional<int> ReadIntValue(const json& value, const std::string& path,
-                                std::string* error) {
-  if (!value.is_number_integer()) {
+                                std::string* error) {  if (!value.is_number_integer()) {
     SetError(error, path + ": expected an integer");
     return std::nullopt;
   }
@@ -223,6 +234,24 @@ bool ReadResolvedTarget(const json& value, const std::string& path,
                   &target->edge_profile, error)) {
     return false;
   }
+  if (value.contains("assetsMode")) {
+    if (!ReadString(value, "assetsMode", path + ".assetsMode",
+                    &target->assets_mode, error)) {
+      return false;
+    }
+  }
+  if (value.contains("assetsRoot")) {
+    if (!ReadString(value, "assetsRoot", path + ".assetsRoot",
+                    &target->assets_root, error)) {
+      return false;
+    }
+  }
+  if (value.contains("assetsMaxBytes")) {
+    if (!ReadInt64(value, "assetsMaxBytes", path + ".assetsMaxBytes",
+                   &target->assets_max_bytes, error)) {
+      return false;
+    }
+  }
   target->state = target->slide > 0 ? ResolveState::Resolved
                                     : ResolveState::Disabled;
   return true;
@@ -260,6 +289,11 @@ nlohmann::ordered_json ResolvedTargetToJson(const ResolvedTarget& target) {
   result["fragment"] = target.fragment;
   result["stageName"] = target.stage_name;
   result["edgeProfile"] = target.edge_profile;
+  // Staging policy: without these the worker falls back to direct mode and the
+  // configured file/tree copy never happens.
+  result["assetsMode"] = target.assets_mode;
+  result["assetsRoot"] = target.assets_root;
+  result["assetsMaxBytes"] = target.assets_max_bytes;
   return result;
 }
 

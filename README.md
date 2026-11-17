@@ -86,10 +86,21 @@ PYTHONPATH=vendor python3 scripts/verify_pptx.py --source deck.pptx --out deck-a
 
 注意：完整捕获需要 Chrome、ffmpeg/ffprobe、Pillow 和目标 CJK 字体；`preflight.sh` 会逐项检查。
 
-### 模式 B / B2（Windows 现场）
+### 模式 B2 演示（原生 watchdog）
+
+```powershell
+python demo/make_deck.py
+powershell -ExecutionPolicy Bypass -File scripts\smoke-watchdog.ps1 `
+  -Config demo\watcher.json -StateDir demo\state `
+  -Exe native\build\htmlppt-watchdog.exe
+```
+
+默认目标是第 3 页。详细步骤、现场操作与排障见 [demo/README.md](demo/README.md)。
+
+### 模式 B / B2（VBS 版，Windows 现场）
 
 ```text
-demo/
+live-demo/                     # 示例目录名，按现场自建
   deck.pptx
   watch-live-content.vbs      # 模式 B2 通用模板
   focus-agent.ps1

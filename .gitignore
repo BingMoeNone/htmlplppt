@@ -4,6 +4,11 @@ dist/
 *.pptx
 *.zip
 
+# Demo generated files (built by demo/make_deck.py)
+demo/deck.pptx
+demo/live-page.html
+demo/state/
+
 # Python
 __pycache__/
 *.pyc

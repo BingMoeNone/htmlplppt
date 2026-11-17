@@ -161,6 +161,11 @@ WorkerPlan MakePlanWithEverything() {
   first_spec.fragment = "step-2";
   first_spec.stage_name = "target-01-one.html";
   first_spec.edge_profile = first.edge_profile;
+  // Staging policy must survive the plan handoff: without it the worker opens
+  // the source path and the configured file/tree copy never happens.
+  first_spec.assets_mode = "file";
+  first_spec.assets_root = "/srv/assets";
+  first_spec.assets_max_bytes = 4096;
 
   ResolvedTarget second_spec;
   second_spec.ordinal = 2;
@@ -255,6 +260,9 @@ HTMLPPT_TEST_CASE(worker_plan_json_round_trip_preserves_every_field) {
   HTMLPPT_CHECK(out.has_value());
   HTMLPPT_CHECK_EQ(out->machine.targets[0].label, in.machine.targets[0].label);
   HTMLPPT_CHECK_EQ(out->targets[0].html_path, in.targets[0].html_path);
+  HTMLPPT_CHECK_EQ(out->targets[0].assets_mode, std::string{"file"});
+  HTMLPPT_CHECK_EQ(out->targets[0].assets_root, std::string{"/srv/assets"});
+  HTMLPPT_CHECK_EQ(out->targets[0].assets_max_bytes, std::int64_t{4096});
   HTMLPPT_CHECK_EQ(out->deck_utf8, in.deck_utf8);
   HTMLPPT_CHECK_EQ(out->machine.run_id, in.machine.run_id);
   HTMLPPT_CHECK_EQ(out->machine.slide_count, in.machine.slide_count);
