@@ -34,6 +34,15 @@ struct DetailFields {
 using DetailEditHandler =
     std::function<bool(const DetailFields& fields, std::wstring* error)>;
 
+// A toolbar action that needs no arguments (Add, Save, Validate). The handler
+// runs the model action and refreshes the rows and the Save gate; it returns
+// false with `error` set to reject the action. Add and Validate write the
+// success status themselves; Save's "saved" is the view's.
+using ToolbarHandler = std::function<bool(std::wstring* error)>;
+// Remove carries the selected row's model index (DisplayRow::index).
+using RemoveHandler =
+    std::function<bool(std::size_t index, std::wstring* error)>;
+
 // Converts the detail pane's raw text into one model edit. The slide must parse
 // as a whole number (an empty field is an error); html and label are encoded
 // from UTF-16 to UTF-8. The assets mode and the enabled switch are not part of
@@ -96,6 +105,30 @@ class ConfigWindow {
   // The Apply button handle; the test seam for the WM_COMMAND route.
   HWND apply_button() const { return detail_apply_button_; }
 
+  // Toolbar seams (Task 4). The view only forwards: RunConfigUi installs the
+  // model calls. Each handler rebuilds the rows and the Save gate itself.
+  void SetAddHandler(ToolbarHandler handler);
+  void SetRemoveHandler(RemoveHandler handler);
+  void SetSaveHandler(ToolbarHandler handler);
+  // Validate re-runs the resolver through the app so the status line can name
+  // the first issue even when it has no row of its own (a bad deck, say).
+  void SetValidateHandler(ToolbarHandler handler);
+  // The Remove confirmation asks MessageBoxW(MB_YESNO); tests replace this so a
+  // headless run never blocks on a modal dialog.
+  void SetRemoveConfirmHandler(std::function<bool()> handler);
+
+  // The Save gate: the app sets this from `model.dirty() &&
+  // !model.HasBlockingError(...)` after every action. The button and the flag
+  // stay in step.
+  void SetSaveEnabled(bool enabled);
+  bool save_enabled() const { return save_enabled_; }
+
+  // Toolbar button handles; the test seams for the WM_COMMAND routes.
+  HWND add_button() const { return add_button_; }
+  HWND remove_button() const { return remove_button_; }
+  HWND save_button() const { return save_button_; }
+  HWND validate_button() const { return validate_button_; }
+
  private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam);
@@ -106,10 +139,19 @@ class ConfigWindow {
   void ClearDetail();
   void UpdateDetailEnabled();
   void NotifySelection();
+  bool ConfirmRemove();
+  void AddTarget();
+  void RemoveSelectedTarget();
+  void SaveConfig();
+  void ValidateConfig();
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;
   HWND status_view_ = nullptr;
+  HWND add_button_ = nullptr;
+  HWND remove_button_ = nullptr;
+  HWND save_button_ = nullptr;
+  HWND validate_button_ = nullptr;
   HWND detail_slide_label_ = nullptr;
   HWND detail_slide_edit_ = nullptr;
   HWND detail_label_label_ = nullptr;
@@ -128,6 +170,12 @@ class ConfigWindow {
   bool suppress_selection_notify_ = false;
   DetailEditHandler edit_handler_;
   std::function<void(int)> selection_handler_;
+  ToolbarHandler add_handler_;
+  RemoveHandler remove_handler_;
+  ToolbarHandler save_handler_;
+  ToolbarHandler validate_handler_;
+  std::function<bool()> remove_confirm_handler_;
+  bool save_enabled_ = false;
 };
 
 } // namespace htmlppt

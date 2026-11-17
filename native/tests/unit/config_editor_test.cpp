@@ -208,6 +208,35 @@ HTMLPPT_TEST_CASE(config_editor_save_with_backup_keeps_the_previous_file) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(config_editor_save_keeps_an_inherited_assets_block_absent) {
+  const auto dir = MakeDir();
+  // The base config's target has no assets block: it inherits stage.mode.
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  // Writing a block for an inheriting target would turn it explicit on reload.
+  HTMLPPT_CHECK(ReadAll(path).find("\"assets\"") == std::string::npos);
+  const auto reloaded = htmlppt::LoadConfigFile(path);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK(!reloaded.config->active.targets[0].assets_set);
+
+  // A target that owns its block must keep it explicit, with the same mode.
+  Config explicit_config = MakeConfig(dir);
+  explicit_config.active.targets[0].assets.mode = "tree";
+  explicit_config.active.targets[0].assets_set = true;
+  ConfigEditorModel explicit_model(explicit_config);
+  HTMLPPT_CHECK(explicit_model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(ReadAll(path).find("\"assets\"") != std::string::npos);
+  const auto explicit_reloaded = htmlppt::LoadConfigFile(path);
+  HTMLPPT_CHECK(explicit_reloaded.config.has_value());
+  HTMLPPT_CHECK(explicit_reloaded.config->active.targets[0].assets_set);
+  HTMLPPT_CHECK_EQ(explicit_reloaded.config->active.targets[0].assets.mode,
+                   std::string{"tree"});
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_editor_save_with_backup_leaves_the_file_on_failure) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));

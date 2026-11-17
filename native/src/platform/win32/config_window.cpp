@@ -16,15 +16,25 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"HtmlpptConfigWindow";
 
-// Stable id so the Apply button's BN_CLICKED can be routed in WM_COMMAND.
+// Stable ids so each button's BN_CLICKED can be routed in WM_COMMAND.
 constexpr int kApplyButtonId = 1001;
+constexpr int kAddButtonId = 1002;
+constexpr int kRemoveButtonId = 1003;
+constexpr int kSaveButtonId = 1004;
+constexpr int kValidateButtonId = 1005;
 
 // The assets combo's first entry: the target keeps inheriting the stage mode.
 constexpr wchar_t kInheritAssets[] = L"inherit";
 
-// Master-detail layout: the list fills the left column, the detail pane is a
-// fixed right-hand column, and the status line spans the bottom.
+// Master-detail layout: the toolbar spans the top, the list fills the left
+// column, the detail pane is a fixed right-hand column, and the status line
+// spans the bottom.
 constexpr int kStatusHeight = 24;
+constexpr int kToolbarHeight = 36;
+constexpr int kToolbarMargin = 8;
+constexpr int kToolbarButtonWidth = 88;
+constexpr int kToolbarButtonHeight = 28;
+constexpr int kToolbarGap = 8;
 constexpr int kDetailWidth = 300;
 constexpr int kDetailMargin = 12;
 
@@ -177,6 +187,20 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
 }
 
 void ConfigWindow::CreateChildren() {
+  // Toolbar: Add / Remove / Save / Validate, created first so the tab order
+  // starts with the actions and the list keeps its own keyboard navigation.
+  const auto make_button = [&](const wchar_t* text, int id) {
+    return CreateWindowExW(
+        0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0, handle_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        GetModuleHandleW(nullptr), nullptr);
+  };
+  add_button_ = make_button(L"Add", kAddButtonId);
+  remove_button_ = make_button(L"Remove", kRemoveButtonId);
+  save_button_ = make_button(L"Save", kSaveButtonId);
+  validate_button_ = make_button(L"Validate", kValidateButtonId);
+
   list_view_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
       WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -242,16 +266,29 @@ void ConfigWindow::CreateChildren() {
                           static_cast<INT_PTR>(kApplyButtonId)),
                       GetModuleHandleW(nullptr), nullptr);
   UpdateDetailEnabled();
+  // Nothing is dirty before the first edit, so Save starts closed.
+  SetSaveEnabled(false);
 }
 
 void ConfigWindow::Layout(int width, int height) {
   if (handle_ == nullptr || list_view_ == nullptr || status_view_ == nullptr) {
     return;
   }
+  // Toolbar band across the top; the list and the detail pane start below it.
+  HWND toolbar[] = {add_button_, remove_button_, save_button_, validate_button_};
+  int toolbar_x = kToolbarMargin;
+  for (HWND button : toolbar) {
+    if (button == nullptr) continue;
+    MoveWindow(button, toolbar_x, (kToolbarHeight - kToolbarButtonHeight) / 2,
+               kToolbarButtonWidth, kToolbarButtonHeight, TRUE);
+    toolbar_x += kToolbarButtonWidth + kToolbarGap;
+  }
+
   const int list_width = width > kDetailWidth ? width - kDetailWidth : 0;
-  const int body_height = height - kStatusHeight;
-  MoveWindow(list_view_, 0, 0, list_width, body_height > 0 ? body_height : 0,
-             TRUE);
+  const int body_top = kToolbarHeight;
+  const int body_height = height - kStatusHeight - kToolbarHeight;
+  MoveWindow(list_view_, 0, body_top, list_width,
+             body_height > 0 ? body_height : 0, TRUE);
   MoveWindow(status_view_, 0, height - kStatusHeight, width, kStatusHeight,
              TRUE);
 
@@ -260,7 +297,8 @@ void ConfigWindow::Layout(int width, int height) {
   const int field_width = kDetailWidth - 2 * kDetailMargin;
   const auto place = [&](HWND control, int top, int control_height) {
     if (control == nullptr) return;
-    MoveWindow(control, field_left, top, field_width, control_height, TRUE);
+    MoveWindow(control, field_left, body_top + top, field_width, control_height,
+               TRUE);
   };
   place(detail_slide_label_, 8, 16);
   place(detail_slide_edit_, 24, 24);
@@ -273,7 +311,7 @@ void ConfigWindow::Layout(int width, int height) {
   place(detail_assets_combo_, 168, 120);
   place(detail_enabled_check_, 296, 24);
   if (detail_apply_button_ != nullptr) {
-    MoveWindow(detail_apply_button_, field_left, 328, 90, 28, TRUE);
+    MoveWindow(detail_apply_button_, field_left, body_top + 328, 90, 28, TRUE);
   }
 }
 
@@ -413,6 +451,84 @@ void ConfigWindow::ApplyDetail() {
   }
 }
 
+void ConfigWindow::SetAddHandler(ToolbarHandler handler) {
+  add_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetRemoveHandler(RemoveHandler handler) {
+  remove_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetSaveHandler(ToolbarHandler handler) {
+  save_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetValidateHandler(ToolbarHandler handler) {
+  validate_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetRemoveConfirmHandler(std::function<bool()> handler) {
+  remove_confirm_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetSaveEnabled(bool enabled) {
+  save_enabled_ = enabled;
+  if (save_button_ != nullptr) {
+    EnableWindow(save_button_, enabled ? TRUE : FALSE);
+  }
+}
+
+bool ConfigWindow::ConfirmRemove() {
+  if (remove_confirm_handler_) return remove_confirm_handler_();
+  if (handle_ == nullptr) return false;
+  return MessageBoxW(handle_, L"Remove the selected target?",
+                     L"htmlppt config", MB_YESNO | MB_ICONQUESTION) == IDYES;
+}
+
+void ConfigWindow::AddTarget() {
+  if (!add_handler_) return;
+  std::wstring error;
+  if (!add_handler_(&error)) {
+    SetStatus(error.empty() ? L"cannot add a target" : error);
+  }
+}
+
+void ConfigWindow::RemoveSelectedTarget() {
+  if (!remove_handler_) return;
+  if (selected_row_ < 0 || selected_row_ >= static_cast<int>(rows_.size())) {
+    // The button is disabled without a selection; this guards the WM_COMMAND
+    // route instead of removing an arbitrary target.
+    SetStatus(L"no row selected");
+    return;
+  }
+  if (!ConfirmRemove()) return;
+  // Address the model through the snapshot's own index, not the list position.
+  const std::size_t index =
+      rows_[static_cast<std::size_t>(selected_row_)].index;
+  std::wstring error;
+  if (!remove_handler_(index, &error)) {
+    SetStatus(error.empty() ? L"cannot remove the target" : error);
+  }
+}
+
+void ConfigWindow::SaveConfig() {
+  if (!save_handler_) return;
+  std::wstring error;
+  if (save_handler_(&error)) {
+    SetStatus(L"saved");
+  } else {
+    SetStatus(error.empty() ? L"save failed" : error);
+  }
+}
+
+void ConfigWindow::ValidateConfig() {
+  if (!validate_handler_) return;
+  std::wstring error;
+  if (!validate_handler_(&error)) {
+    SetStatus(error.empty() ? L"configuration is invalid" : error);
+  }
+}
+
 void ConfigWindow::FillDetail(const DisplayRow& row) {
   const std::wstring slide = std::to_wstring(row.slide);
   SetWindowTextW(detail_slide_edit_, slide.c_str());
@@ -454,6 +570,9 @@ void ConfigWindow::UpdateDetailEnabled() {
   for (HWND control : controls) {
     if (control != nullptr) EnableWindow(control, enabled);
   }
+  // Remove acts on the selection, so it follows the same rule as the pane; Add
+  // and Validate are always meaningful.
+  if (remove_button_ != nullptr) EnableWindow(remove_button_, enabled);
 }
 
 int ConfigWindow::RunMessageLoop() {
@@ -494,12 +613,30 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
-    case WM_COMMAND:
-      if (LOWORD(wparam) == kApplyButtonId && HIWORD(wparam) == BN_CLICKED) {
-        ApplyDetail();
-        return 0;
+    case WM_COMMAND: {
+      if (HIWORD(wparam) != BN_CLICKED) {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
       }
-      return DefWindowProcW(hwnd, message, wparam, lparam);
+      switch (LOWORD(wparam)) {
+        case kApplyButtonId:
+          ApplyDetail();
+          return 0;
+        case kAddButtonId:
+          AddTarget();
+          return 0;
+        case kRemoveButtonId:
+          RemoveSelectedTarget();
+          return 0;
+        case kSaveButtonId:
+          SaveConfig();
+          return 0;
+        case kValidateButtonId:
+          ValidateConfig();
+          return 0;
+        default:
+          return DefWindowProcW(hwnd, message, wparam, lparam);
+      }
+    }
     case WM_NOTIFY: {
       auto* header = reinterpret_cast<NMHDR*>(lparam);
       if (header != nullptr && header->hwndFrom == list_view_ &&
@@ -528,6 +665,10 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       handle_ = nullptr;
       list_view_ = nullptr;
       status_view_ = nullptr;
+      add_button_ = nullptr;
+      remove_button_ = nullptr;
+      save_button_ = nullptr;
+      validate_button_ = nullptr;
       detail_slide_label_ = nullptr;
       detail_slide_edit_ = nullptr;
       detail_label_label_ = nullptr;

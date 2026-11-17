@@ -108,7 +108,10 @@ HTMLPPT_TEST_CASE(win32_config_window_binds_selection_to_the_detail_pane) {
   // STATE column.
   wchar_t state_text[128] = {};
   ListView_GetItemText(window.list_view(), 0, 4, state_text, 128);
-  HTMLPPT_CHECK(std::wstring(state_text).rfind(L"error", 0) == 0);
+  // compare(0, 5, L"error") is the same "starts with error" check as
+  // wstring(state_text).rfind(L"error", 0) == 0, without a temporary string
+  // built from the literal (GCC 16 mis-folds that under -O3/-Werror).
+  HTMLPPT_CHECK(std::wstring(state_text).compare(0, 5, L"error") == 0);
 
   window.SelectRow(0);
   auto fields = window.detail_fields();
@@ -141,6 +144,160 @@ HTMLPPT_TEST_CASE(win32_config_window_binds_selection_to_the_detail_pane) {
   // A cleared selection disables the pane instead of writing to a stale index.
   window.SelectRow(-1);
   HTMLPPT_CHECK(!window.detail_enabled());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_disables_save_while_a_row_is_an_error) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  window.SetSaveEnabled(false);
+  HTMLPPT_CHECK(!window.save_enabled());
+  window.SetSaveEnabled(true);
+  HTMLPPT_CHECK(window.save_enabled());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_save_button_follows_the_gate) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  HTMLPPT_CHECK(window.save_button() != nullptr);
+  // Create() starts with a closed gate: the model is not dirty yet.
+  HTMLPPT_CHECK(!window.save_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.save_button()) == 0);
+  window.SetSaveEnabled(true);
+  HTMLPPT_CHECK(IsWindowEnabled(window.save_button()) != 0);
+  window.SetSaveEnabled(false);
+  HTMLPPT_CHECK(IsWindowEnabled(window.save_button()) == 0);
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_forwards_the_toolbar_buttons) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
+  rows[0].state = "resolved";
+  rows[1].index = 7; rows[1].slide = 5; rows[1].html = "two.html";
+  rows[1].state = "resolved";
+  window.SetRows(rows);
+
+  // Clicking a button is the same WM_COMMAND/BN_CLICKED route a real click uses.
+  const auto click = [&](HWND button) {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(button));
+  };
+
+  int adds = 0;
+  window.SetAddHandler([&adds](std::wstring* error) {
+    ++adds;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  HTMLPPT_CHECK(window.add_button() != nullptr);
+  click(window.add_button());
+  HTMLPPT_CHECK_EQ(adds, 1);
+
+  // Remove forwards the selected row's model index, not its list position.
+  window.SelectRow(1);
+  int removes = 0;
+  std::size_t removed = 0;
+  window.SetRemoveConfirmHandler([] { return true; });
+  window.SetRemoveHandler([&](std::size_t index, std::wstring* error) {
+    ++removes;
+    removed = index;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  click(window.remove_button());
+  HTMLPPT_CHECK_EQ(removes, 1);
+  HTMLPPT_CHECK_EQ(removed, std::size_t{7});
+
+  // A refused confirmation never reaches the model.
+  window.SetRemoveConfirmHandler([] { return false; });
+  click(window.remove_button());
+  HTMLPPT_CHECK_EQ(removes, 1);
+
+  // Without a selection the view reports instead of removing an arbitrary row.
+  window.SetRemoveConfirmHandler([] { return true; });
+  window.SelectRow(-1);
+  click(window.remove_button());
+  HTMLPPT_CHECK_EQ(removes, 1);
+  wchar_t status[64] = {};
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"no row selected"));
+
+  // Save reports the handler's outcome.
+  window.SetSaveHandler([](std::wstring* error) {
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  click(window.save_button());
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"saved"));
+
+  window.SetSaveHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"cannot write watcher.json";
+    return false;
+  });
+  click(window.save_button());
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status),
+                   std::wstring(L"cannot write watcher.json"));
+
+  // Validate surfaces the first blocking issue the handler reports (including
+  // a global one that has no row of its own).
+  int validates = 0;
+  window.SetValidateHandler([&validates](std::wstring* error) {
+    ++validates;
+    if (error != nullptr) *error = L"deck must not be empty";
+    return false;
+  });
+  click(window.validate_button());
+  HTMLPPT_CHECK_EQ(validates, 1);
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status),
+                   std::wstring(L"deck must not be empty"));
+
+  // Removing the handlers turns the same clicks into no-ops, not crashes.
+  window.SetAddHandler(nullptr);
+  window.SetRemoveHandler(nullptr);
+  window.SetSaveHandler(nullptr);
+  window.SetValidateHandler(nullptr);
+  click(window.add_button());
+  click(window.remove_button());
+  click(window.save_button());
+  click(window.validate_button());
+  HTMLPPT_CHECK_EQ(adds, 1);
+  HTMLPPT_CHECK_EQ(removes, 1);
+  HTMLPPT_CHECK_EQ(validates, 1);
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
 HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
@@ -481,11 +638,12 @@ HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
   HTMLPPT_CHECK(GetWindowRect(window.list_view(), &list_rect) != 0);
   MapWindowPoints(nullptr, window.handle(),
                   reinterpret_cast<POINT*>(&list_rect), 2);
+  // The toolbar owns a 36 px band across the top, so the list starts below it.
   HTMLPPT_CHECK_EQ(list_rect.left, 0);
-  HTMLPPT_CHECK_EQ(list_rect.top, 0);
+  HTMLPPT_CHECK_EQ(list_rect.top, 36);
   // The detail pane owns a fixed 300 px right-hand column.
   HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600 - 300);
-  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top, 400 - 24);
+  HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top, 400 - 24 - 36);
 
   RECT status_rect{};
   HTMLPPT_CHECK(GetWindowRect(window.status_view(), &status_rect) != 0);

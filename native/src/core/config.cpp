@@ -611,7 +611,10 @@ nlohmann::ordered_json TargetToJson(const TargetConfig& target) {
   if (!target.label.empty()) result["label"] = target.label;
   if (!target.edge_profile.empty()) result["edgeProfile"] = target.edge_profile;
   if (!target.stage_name.empty()) result["stageName"] = target.stage_name;
-  result["assets"] = AssetsToJson(target.assets);
+  // Only a target that owns an assets block writes one. An inheriting target
+  // must stay block-less, or a save+reload would silently make the inherited
+  // stage mode an explicit per-target override.
+  if (target.assets_set) result["assets"] = AssetsToJson(target.assets);
   if (!target.html_query.empty()) result["htmlQuery"] = target.html_query;
   result["trigger"] = target.trigger;
   if (target.cover.has_value()) result["cover"] = CoverToJson(*target.cover);

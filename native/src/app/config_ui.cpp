@@ -63,8 +63,27 @@ int RunConfigUi(const std::filesystem::path& config_path,
     return 1;
   }
 
-  // The view reports the selected row's model index, never its own row
-  // position; the edit handler applies to exactly that target.
+  // Recomputes the rows and the Save gate after every action, and returns the
+  // first blocking message: a target row's error when there is one, otherwise
+  // the config-wide resolver error that has no row of its own (a missing or
+  // invalid deck). Empty means the config is clean.
+  const auto refresh = [&window, &model, deck_info]() -> std::wstring {
+    const std::vector<DisplayRow> rows =
+        model.DisplayRows(deck_info, ResolveOptions{});
+    window.SetRows(rows);
+    const bool blocked = model.HasBlockingError(deck_info, ResolveOptions{});
+    window.SetSaveEnabled(model.dirty() && !blocked);
+    if (!blocked) return {};
+    for (const auto& row : rows) {
+      if (row.state == "error") return Widen(row.issue);
+    }
+    for (const auto& issue : model.Validate(deck_info, ResolveOptions{})) {
+      if (issue.severity == IssueSeverity::Error) return Widen(issue.message);
+    }
+    return L"configuration is invalid";
+  };
+
+  // The view reports the selection as a model index, never as a list position.
   window.SetSelectionHandler([&selected_index](int model_index) {
     if (model_index < 0) {
       selected_index.reset();
@@ -74,8 +93,8 @@ int RunConfigUi(const std::filesystem::path& config_path,
   });
 
   window.SetEditHandler(
-      [&window, &model, &selected_index,
-       deck_info](const DetailFields& fields, std::wstring* error) {
+      [&model, &selected_index,
+       refresh](const DetailFields& fields, std::wstring* error) {
         TargetEdit edit;
         std::wstring parse_error;
         if (!TargetEditFromDetailFields(fields, &edit, &parse_error)) {
@@ -92,14 +111,69 @@ int RunConfigUi(const std::filesystem::path& config_path,
           return false;
         }
         // The view never writes Config: after a successful edit, recompute the
-        // rows here and hand the fresh snapshot to the window.
-        window.SetRows(model.DisplayRows(deck_info, ResolveOptions{}));
-        window.SetStatus(L"applied");
+        // rows and the Save gate here. ApplyDetail reports "applied" itself.
+        refresh();
         return true;
       });
 
+  // Toolbar actions: each runs one model call, then hands the fresh rows and
+  // the Save gate back to the view. Add offers a placeholder html because an
+  // empty one is rejected by the model, which would leave nothing to edit.
+  window.SetAddHandler([&window, &model, refresh](std::wstring* error) {
+    int max_slide = 0;
+    for (const auto& row : model.rows()) {
+      if (row.slide > max_slide) max_slide = row.slide;
+    }
+    std::string model_error;
+    if (!model.AddTarget(max_slide + 1, "page.html", &model_error)) {
+      if (error != nullptr) *error = Widen(model_error);
+      return false;
+    }
+    const std::wstring reason = refresh();
+    window.SetStatus(reason.empty() ? L"added target" : reason);
+    return true;
+  });
+
+  window.SetRemoveHandler(
+      [&window, &model, refresh](std::size_t index, std::wstring* error) {
+        std::string model_error;
+        if (!model.RemoveTarget(index, &model_error)) {
+          if (error != nullptr) *error = Widen(model_error);
+          return false;
+        }
+        const std::wstring reason = refresh();
+        window.SetStatus(reason.empty() ? L"removed target" : reason);
+        return true;
+      });
+
+  window.SetValidateHandler([&window, refresh](std::wstring* error) {
+    // refresh() itself reports the first blocking issue, which is what the
+    // status line must show when Save is closed by a global (non-row) error.
+    const std::wstring reason = refresh();
+    if (!reason.empty()) {
+      if (error != nullptr) *error = reason;
+      return false;
+    }
+    window.SetStatus(L"valid");
+    return true;
+  });
+
+  window.SetSaveHandler([&model, config_path, refresh](std::wstring* error) {
+    std::string save_error;
+    if (!model.SaveWithBackup(config_path, &save_error)) {
+      if (error != nullptr) *error = Widen(save_error);
+      return false;
+    }
+    // A successful save clears dirty, so the gate closes until the next edit;
+    // the view reports "saved" itself.
+    refresh();
+    return true;
+  });
+
   window.SetRows(rows);
   window.SetStatus(Widen(ConfigStatusText(loaded, rows, config_path)));
+  // Nothing is dirty before the first edit, so Save starts closed.
+  window.SetSaveEnabled(false);
   return window.RunMessageLoop();
 }
 
