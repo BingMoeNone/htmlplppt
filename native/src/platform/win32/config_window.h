@@ -19,6 +19,15 @@ struct ConfigWindowOptions {
   bool show = true;
 };
 
+// The right-hand detail pane's field values, read back from the controls.
+struct DetailFields {
+  std::wstring slide;
+  std::wstring label;
+  std::wstring html;
+  std::wstring assets;
+  bool enabled = true;
+};
+
 // The config editor's top-level window. The view is deliberately thin: it owns
 // the window and its controls, and all edits go through ConfigEditorModel.
 class ConfigWindow {
@@ -42,16 +51,43 @@ class ConfigWindow {
   // One-line feedback under the table (load errors, save result, first issue).
   void SetStatus(const std::wstring& text);
 
+  // Selects the list row at `row` (clamped to the model snapshot) and fills the
+  // detail controls. -1 clears the selection and disables the pane.
+  void SelectRow(int row);
+  // Reads the detail controls back; the test seam for the pane binding.
+  DetailFields detail_fields() const;
+  // False when there is no selection, so the pane must not be written through.
+  bool detail_enabled() const;
+
  private:
   static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam);
   LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   void CreateChildren();
   void Layout(int width, int height);
+  void FillDetail(const DisplayRow& row);
+  void ClearDetail();
+  void UpdateDetailEnabled();
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;
   HWND status_view_ = nullptr;
+  HWND detail_slide_label_ = nullptr;
+  HWND detail_slide_edit_ = nullptr;
+  HWND detail_label_label_ = nullptr;
+  HWND detail_label_edit_ = nullptr;
+  HWND detail_html_label_ = nullptr;
+  HWND detail_html_edit_ = nullptr;
+  HWND detail_assets_label_ = nullptr;
+  HWND detail_assets_combo_ = nullptr;
+  HWND detail_enabled_check_ = nullptr;
+  HWND detail_apply_button_ = nullptr;
+  // The last snapshot from the model; the pane reads these rows, never the
+  // list control's text.
+  std::vector<DisplayRow> rows_;
+  int selected_row_ = -1;
+  // Programmatic list selection must not bounce back through WM_NOTIFY.
+  bool suppress_selection_notify_ = false;
 };
 
 } // namespace htmlppt

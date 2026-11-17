@@ -82,6 +82,128 @@ HTMLPPT_TEST_CASE(win32_config_window_shows_the_target_rows) {
   HTMLPPT_CHECK(window.status_view() == nullptr);
 }
 
+HTMLPPT_TEST_CASE(win32_config_window_binds_selection_to_the_detail_pane) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].label = "Live";
+  rows[0].html = "page.html"; rows[0].assets_mode = "file";
+  rows[0].state = "resolved";
+  rows[1].index = 1; rows[1].slide = 5; rows[1].html = "two.html";
+  rows[1].state = "resolved";
+  window.SetRows(rows);
+
+  window.SelectRow(0);
+  auto fields = window.detail_fields();
+  HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"3"));
+  HTMLPPT_CHECK_EQ(fields.html, std::wstring(L"page.html"));
+
+  window.SelectRow(1);
+  fields = window.detail_fields();
+  HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"5"));
+  // A cleared selection disables the pane instead of writing to a stale index.
+  window.SelectRow(-1);
+  HTMLPPT_CHECK(!window.detail_enabled());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_follows_the_list_selection) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(2);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
+  rows[0].assets_mode = "file"; rows[0].state = "resolved";
+  rows[1].index = 7; rows[1].slide = 5; rows[1].html = "two.html";
+  rows[1].state = "resolved";
+  window.SetRows(rows);
+
+  // lParam carries the model index, not the position in the list.
+  LVITEMW item{};
+  item.mask = LVIF_PARAM;
+  item.iItem = 1;
+  HTMLPPT_CHECK(ListView_GetItem(window.list_view(), &item) != 0);
+  HTMLPPT_CHECK_EQ(static_cast<std::size_t>(item.lParam), std::size_t{7});
+
+  // A list selection notification (the same one a mouse click produces) drives
+  // SelectRow and fills the pane.
+  ListView_SetItemState(window.list_view(), 0, LVIS_SELECTED | LVIS_FOCUSED,
+                        LVIS_SELECTED | LVIS_FOCUSED);
+  auto fields = window.detail_fields();
+  HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"3"));
+  HTMLPPT_CHECK_EQ(fields.assets, std::wstring(L"file"));
+
+  ListView_SetItemState(window.list_view(), 1, LVIS_SELECTED | LVIS_FOCUSED,
+                        LVIS_SELECTED | LVIS_FOCUSED);
+  fields = window.detail_fields();
+  HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"5"));
+
+  // An out-of-range row clamps to the last row instead of reading past the
+  // model snapshot.
+  window.SelectRow(99);
+  HTMLPPT_CHECK_EQ(window.detail_fields().slide, std::wstring(L"5"));
+
+  // Clearing the list selection disables the pane; no stale row stays bound.
+  ListView_SetItemState(window.list_view(), -1, 0, LVIS_SELECTED);
+  HTMLPPT_CHECK(!window.detail_enabled());
+  HTMLPPT_CHECK(window.detail_fields().slide.empty());
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_detail_reads_the_model_snapshot) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].label = "Live";
+  rows[0].html = "page.html"; rows[0].state = "resolved";
+  window.SetRows(rows);
+
+  // The pane must read the model's last snapshot, never the list control text.
+  ListView_SetItemText(window.list_view(), 0, 0, const_cast<wchar_t*>(L"999"));
+  ListView_SetItemText(window.list_view(), 0, 1,
+                       const_cast<wchar_t*>(L"mutated"));
+  ListView_SetItemText(window.list_view(), 0, 2,
+                       const_cast<wchar_t*>(L"mutated.html"));
+  window.SelectRow(0);
+  const auto fields = window.detail_fields();
+  HTMLPPT_CHECK_EQ(fields.slide, std::wstring(L"3"));
+  HTMLPPT_CHECK_EQ(fields.label, std::wstring(L"Live"));
+  HTMLPPT_CHECK_EQ(fields.html, std::wstring(L"page.html"));
+  HTMLPPT_CHECK(fields.enabled);
+
+  // A selection that no longer exists must not survive a smaller snapshot.
+  window.SetRows(std::vector<htmlppt::DisplayRow>{});
+  HTMLPPT_CHECK(!window.detail_enabled());
+  HTMLPPT_CHECK(window.detail_fields().slide.empty());
+
+  window.Close();
+  const DWORD deadline = GetTickCount() + 5000;
+  while (GetTickCount() < deadline && IsWindow(window.handle()) != 0) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(10);
+  }
+  HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
 HTMLPPT_TEST_CASE(config_editor_opens_an_empty_model_for_a_missing_file) {
   const auto result = htmlppt::LoadConfigFile("no-such-watcher.json");
   HTMLPPT_CHECK(!result.config.has_value());
@@ -136,7 +258,8 @@ HTMLPPT_TEST_CASE(win32_config_window_relayouts_on_resize) {
                   reinterpret_cast<POINT*>(&list_rect), 2);
   HTMLPPT_CHECK_EQ(list_rect.left, 0);
   HTMLPPT_CHECK_EQ(list_rect.top, 0);
-  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600);
+  // The detail pane owns a fixed 300 px right-hand column.
+  HTMLPPT_CHECK_EQ(list_rect.right - list_rect.left, 600 - 300);
   HTMLPPT_CHECK_EQ(list_rect.bottom - list_rect.top, 400 - 24);
 
   RECT status_rect{};
