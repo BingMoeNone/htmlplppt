@@ -83,7 +83,13 @@ bool WorkerRuntime::Step() {
   // out by a whole poll interval. A deadline that is already due belongs to
   // Tick(); sleeping to it would busy-loop instead of waiting.
   const ClockPoint now = ports_.clock.now();
-  ClockPoint wake = now + host_.poll_interval;
+  // A slide change is only observable through the COM poll, so the poll
+  // interval is the trigger latency: poll fast while a show is being watched
+  // and fall back to the idle cadence everywhere else.
+  const Duration interval = machine_.state() == State::Monitoring
+                                ? host_.active_poll_interval
+                                : host_.poll_interval;
+  ClockPoint wake = now + interval;
   if (const std::optional<ClockPoint> deadline = machine_.NextDeadline();
       deadline.has_value() && *deadline > now && *deadline < wake) {
     wake = *deadline;

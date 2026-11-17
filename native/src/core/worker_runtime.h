@@ -42,6 +42,10 @@ struct WorkerHostConfig {
   // page keeps its renamed title, so without this the Faulted retry would fire
   // on every poll and hammer a wedged WPS with COM calls.
   Duration return_retry_interval{2000};
+  // Idle cadence, and the faster cadence used while Monitoring a running show
+  // (slide changes are only visible through the COM poll, so the poll interval
+  // is the trigger latency).
+  Duration active_poll_interval{20};
   Duration poll_interval{100};
 };
 

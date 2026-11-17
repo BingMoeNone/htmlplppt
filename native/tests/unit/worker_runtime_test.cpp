@@ -494,3 +494,22 @@ HTMLPPT_TEST_CASE(worker_runtime_stages_html_for_a_file_mode_target) {
   HTMLPPT_CHECK(h.launcher.last_spec.url.find("page1.html") != std::string::npos);
   std::filesystem::remove_all(root, error);
 }
+// While a show is being watched the loop polls faster, so a slide change is
+// noticed within a frame budget rather than up to a full idle interval later.
+HTMLPPT_TEST_CASE(worker_runtime_polls_actively_while_monitoring) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();  // Warming -> Monitoring
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+  const ClockPoint before = h.clock.now();
+  h.runtime.Step();
+  HTMLPPT_CHECK(!h.clock.sleeps().empty());
+  HTMLPPT_CHECK_EQ(h.clock.sleeps().back() - before,
+                   h.host.active_poll_interval);
+}
+
+HTMLPPT_TEST_CASE(worker_runtime_default_poll_intervals) {
+  HTMLPPT_CHECK_EQ(WorkerHostConfig{}.poll_interval, Duration{100});
+  HTMLPPT_CHECK_EQ(WorkerHostConfig{}.active_poll_interval, Duration{20});
+}

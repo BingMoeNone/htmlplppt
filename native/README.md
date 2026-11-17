@@ -247,6 +247,10 @@ not run `--worker` by hand. The worker opens the deck in WPS, starts the
 slideshow, and drives the cover, Edge, and show actions while heartbeating its
 state into the shared black box.
 
+A slide change is only observable through the WPS COM poll, so the poll interval
+is the trigger latency: the loop polls every 20 ms while it is `Monitoring` a
+running show and falls back to 100 ms otherwise (`WorkerHostConfig::active_poll_interval`).
+
 From a second shell, inspect the run and stop it:
 
 ```powershell
