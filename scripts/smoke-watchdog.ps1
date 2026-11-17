@@ -6,12 +6,21 @@
 # and heartbeats its state into the shared black box.
 #
 # This script starts the supervisor as a background process, waits for the
-# plan, polls --status once a second until the black box reports a worker
-# state, then runs --stop and requires the supervisor to exit 0. Each run step
-# is bounded by -HoldSeconds; teardown after a failure adds a fixed ~25 s
-# before the journal tail. On any failure the supervisor is torn down and the
-# last 20 journal records are printed, so the operator sees why the run did not
-# reach the show.
+# plan, polls --status once a second until the black box reports the expected
+# worker state (default 2 = Monitoring, i.e. the show is actually running),
+# then runs --stop and requires the supervisor to exit 0. A faulted or
+# safe-mode state fails immediately. Each run step is bounded by -HoldSeconds;
+# teardown after a failure adds a fixed ~25 s before the journal tail. On any
+# failure the supervisor is torn down and the last 20 journal records are
+# printed, so the operator sees why the run did not reach the show.
+#
+# A pass means the worker opened the deck, started the show and reached
+# Monitoring -- not merely that a heartbeat arrived. Triggering the HTML still
+# needs an operator (or a slide-driving COM script).
+#
+# --stop leaves the slideshow (the worker exits the show during cleanup) but
+# does not quit WPS: the editor stays open, as PresentationHost::Release
+# promises.
 #
 # WPS Presentation must be installed and the deck must be closed before a run:
 # the supervisor reads the deck facts through COM and the worker opens the deck.
@@ -23,7 +32,11 @@ param(
   [Parameter(Mandatory = $true)] [string]$Config,
   [Parameter(Mandatory = $true)] [string]$StateDir,
   [Parameter(Mandatory = $true)] [string]$Exe,
-  [int]$HoldSeconds = 20
+  [int]$HoldSeconds = 60,
+  # The worker must reach this state (2 = Monitoring) before the run counts as
+  # healthy. The first heartbeat arrives long before WPS opens, so accepting any
+  # record would report success for a worker that never started the show.
+  [int]$ExpectState = 2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +56,10 @@ $ExePath = ''
 # publishing state records. The header ("run ... records ...") and the trailing
 # "journal ..." line cannot match it.
 $StateLinePattern = '^\s*\d+\s+\d+\s+\d+\s+\d+(\s|$)'
+# State enum order (core/types.h): 0 Boot, 1 Warming, 2 Monitoring, 3 CoverIn,
+# 4 EdgeStarting, 5 ShowExit, 6 Live, 7 Returning, 8 ReturnCoverOut,
+# 9 Stopping, 10 Faulted, 11 SafeMode, 12 Exited.
+$TerminalFailureState = 10
 
 function Resolve-InputPath {
   param([string]$Path)
@@ -260,9 +277,18 @@ try {
     if ($status.ExitCode -eq 0) {
       foreach ($line in ($status.StdOut -split "`r?`n")) {
         if ($line -match $StateLinePattern) {
-          $sawState = $true
-          $stateLine = $line.Trim()
-          break
+          $fields = $line.Trim() -split '\s+'
+          if ($fields.Count -ge 4) {
+            $stateValue = [int]$fields[3]
+            if ($stateValue -ge $TerminalFailureState) {
+              Fail-Run "worker entered state $stateValue before reaching state $ExpectState (config: $ConfigPath)"
+            }
+            if ($stateValue -ge $ExpectState) {
+              $sawState = $true
+              $stateLine = $line.Trim()
+              break
+            }
+          }
         }
       }
     }
@@ -273,7 +299,7 @@ try {
     if ($Supervisor.HasExited) {
       Fail-Run "supervisor exited with code $($Supervisor.ExitCode) before reporting a worker state (config: $ConfigPath)"
     }
-    Fail-Run "no worker state was reported by --status within $HoldSeconds s (config: $ConfigPath)"
+    Fail-Run "the worker did not reach state $ExpectState within $HoldSeconds s (config: $ConfigPath)"
   }
 
   # Step 3: stop the run and require a clean supervisor exit. --stop returns
@@ -293,7 +319,7 @@ try {
 
   $Supervisor.Dispose()
   Write-Output "state: $stateLine"
-  Write-Output "OK: run $RunId reported a worker state and stopped cleanly"
+  Write-Output "OK: run $RunId reached state $ExpectState and stopped cleanly"
   exit 0
 } catch {
   Fail-Run "unexpected error: $($_.Exception.Message)"

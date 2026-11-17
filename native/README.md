@@ -269,8 +269,10 @@ permits blocking COM actions; a wedged WPS is restarted within that budget.
 
 The on-machine check is `scripts/smoke-watchdog.ps1`. It starts a run with the
 run id `smoke`, waits for `worker-plan.json`, polls `--status` once a second
-until a worker state record appears, then runs `--stop` and requires the
-supervisor to exit 0:
+until the worker reaches `Monitoring` (state 2) -- i.e. the deck is open and the
+show is actually running -- then runs `--stop` and requires the supervisor to
+exit 0. An earlier faulted/safe-mode state fails immediately instead of waiting
+out the window. `-ExpectState` raises or lowers the required state:
 
 ```powershell
 pwsh -File scripts/smoke-watchdog.ps1 -Config watcher.json -StateDir .\state -Exe native\build\htmlppt-watchdog.exe
@@ -280,11 +282,32 @@ The script targets Windows PowerShell 5.1 and later, so a host without `pwsh`
 can run the same command through `powershell -File` instead.
 
 The script tears the supervisor down and prints the last 20 journal records
-when any step fails. Each run step is bounded by `-HoldSeconds` (default 20);
-teardown after a failure adds a fixed ~25 s before the journal tail. A
-pass means the supervisor resolved the config, launched the worker, and the
-worker published a state record. The check opens a real slideshow, so run it
-only on a machine where that is acceptable; it is not part of `ctest`.
+when any step fails. Each run step is bounded by `-HoldSeconds` (default 60);
+teardown after a failure adds a fixed ~25 s before the journal tail. A pass
+means the supervisor resolved the config, launched the worker, the worker
+opened the deck and started the show, and the run stopped cleanly -- not merely
+that a heartbeat arrived. Triggering the HTML still needs the presenter (or a
+slide-driving COM script); the check opens a real slideshow, so run it only on
+a machine where that is acceptable; it is not part of `ctest`.
+
+`--stop` exits the slideshow during cleanup (`ExitShow`) but never quits WPS:
+`PresentationHost::Release` promises to leave the application alone, so the
+editor stays open with the deck loaded.
+
+Edge's `--user-data-dir` is a full browser profile (~15 MB). The worker creates
+it under `%TEMP%\htmlppt-<run-id>` and removes the directory on exit, so the
+state directory holds only `worker-plan.json`, `worker-config.json`, and
+`journal.jsonl`.
+
+### Live page contract
+
+`templates/live-page.html` is the reference page. The watchdog watches the Edge
+window title for `TEF-LIVE-RETURN`; on that signal it fades the cover in, closes
+Edge under the cover (`KillEdge`), resumes the WPS show, and fades the cover
+out. Because the watchdog now closes Edge itself, a page that only renames its
+title cannot strand a full-screen browser on top of the resumed deck. Calling
+`window.close()` after a short delay is still recommended and is what the
+template does. See `references/live-content-trigger.md` for the full protocol.
 
 Pass ASCII paths for `--config`, `--state-dir`, and `-StateDir`: the native CLI
 converts path arguments through the ANSI code page, so a non-ASCII path aborts

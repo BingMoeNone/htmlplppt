@@ -166,6 +166,22 @@ class WorkerHostGuard {
   CoverOverlay& overlay_;
 };
 
+// Removes the per-run scratch directory (Edge's --user-data-dir is a complete
+// browser profile) on every RunWorker exit path, including the early returns.
+class TempDirGuard {
+ public:
+  explicit TempDirGuard(std::filesystem::path path) : path_(std::move(path)) {}
+  ~TempDirGuard() {
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+  }
+  TempDirGuard(const TempDirGuard&) = delete;
+  TempDirGuard& operator=(const TempDirGuard&) = delete;
+
+ private:
+  std::filesystem::path path_;
+};
+
 DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
                                       const Config& config) {
   const auto deck_path = ResolveDeckPath(config);
@@ -697,8 +713,12 @@ int RunWorker(const SupervisorRunOptions& options) {
   WorkerHostGuard host_guard(wps, overlay);
 
   WorkerHostFacts facts;
-  // Staged profiles and Edge's --user-data-dir live under the run's state dir.
-  facts.temp_dir = state_dir / "stage";
+  // Edge's --user-data-dir is a complete browser profile (~15 MB per run), so
+  // it lives in the system temp area, not in the state directory, and the guard
+  // removes it when this worker exits.
+  facts.temp_dir =
+      std::filesystem::temp_directory_path() / ("htmlppt-" + run_id);
+  const TempDirGuard temp_guard(facts.temp_dir);
   facts.screen = PrimaryScreenMetrics();
   if (const auto edge = FindEdgeExecutable(); edge.has_value()) {
     facts.edge_exe = *edge;

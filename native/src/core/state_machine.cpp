@@ -298,6 +298,12 @@ std::vector<Action> StateMachine::OnCoverHold(const Event& event) {
     show_active_ = true;
     SetDeadline(TimeoutKind::CoverDone, event.at + config_.cover_max_hold);
     auto actions = Journal("resumed at slide " + std::to_string(slide), slide);
+    // Close Edge while the cover is still opaque. A page that only renamed its
+    // title (the documented TEF-LIVE-RETURN signal) would otherwise stay
+    // full-screen on top of the resumed show once the cover fades out. This is
+    // deliberately after the return request, so a failed resume can still be
+    // retried by watching the title.
+    actions.push_back({ActionKind::KillEdge, slide, "return: close Edge"});
     actions.push_back({ActionKind::ResumeShow, slide, "resume WPS"});
     actions.push_back({ActionKind::FocusWps, slide, "focus WPS"});
     actions.push_back({ActionKind::CoverFadeOut, slide, "fade out cover"});
@@ -671,6 +677,9 @@ std::vector<Action> StateMachine::BeginCleanup(std::string detail) {
   std::vector<Action> actions;
   actions.push_back({ActionKind::Journal, slide, "cleanup start"});
   actions.push_back({ActionKind::CoverHide, slide, detail});
+  // Leave the slideshow before releasing: --stop must not strand a full-screen
+  // show on the operator's desktop.
+  actions.push_back({ActionKind::ExitShow, slide, detail});
   actions.push_back({ActionKind::KillEdge, slide, detail});
   actions.push_back({ActionKind::StopHelperThreads, slide, detail});
   actions.push_back({ActionKind::ReleaseLock, slide, detail});

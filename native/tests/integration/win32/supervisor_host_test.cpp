@@ -161,10 +161,29 @@ std::vector<std::uint32_t> WpsProcessIds() {
   return ids;
 }
 
+// Only the Presentation host matters for the "kill the show" scenario: WPS keeps
+// a persistent home/CEF process named wps.exe alive, but the slideshow COM
+// server is wpp.exe. A leftover wpp.exe is what makes COM reuse an instance.
+std::vector<std::uint32_t> WpsPresentationProcessIds() {
+  std::vector<std::uint32_t> ids;
+  for (const wchar_t* name : {L"wpp.exe", L"kwpp.exe"}) {
+    for (const auto id : htmlppt::ProcessIdsByName(name)) {
+      ids.push_back(id);
+    }
+  }
+  return ids;
+}
+
 // Terminates only the WPS processes this test started, so repeated runs do not
 // accumulate automation instances and their open deck windows. WPS is started
 // through COM outside the worker's job, so the job does not reach it; instances
 // that already existed (the operator's) are never touched.
+//
+// This also means the "kill WPS and expect a clean exit" case needs a clean
+// starting state: with an automation instance already running, COM reuses it,
+// killing the newly spawned pids does not remove the server the worker talks
+// to, and the scenario silently becomes a no-op. That case skips itself when a
+// WPS process already exists.
 class WpsTestProcesses {
  public:
   WpsTestProcesses() : before_(WpsProcessIds()) {}
@@ -289,6 +308,14 @@ HTMLPPT_TEST_CASE(win32_supervisor_clean_worker_exit_is_terminal) {
     std::cout << "SKIP: WPS not installed\n";
     return;
   }
+  // A pre-existing Presentation automation instance is reused through COM, so
+  // killing the pids this run spawns would not remove the server the worker
+  // talks to. The scenario needs a fresh instance; skip instead of reporting a
+  // false pass.
+  if (!WpsPresentationProcessIds().empty()) {
+    std::cout << "SKIP: a WPS presentation instance is already running\n";
+    return;
+  }
   WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
@@ -341,7 +368,9 @@ HTMLPPT_TEST_CASE(win32_supervisor_clean_worker_exit_is_terminal) {
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
   const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
   HTMLPPT_CHECK(journal.find("clean exit") != std::string::npos);
-  HTMLPPT_CHECK(journal.find("Worker restart") == std::string::npos);
+  // The journal is JSONL: a restart is event "restart" with detail
+  // "worker restarted", so match the detail text, not a display label.
+  HTMLPPT_CHECK(journal.find("worker restarted") == std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }

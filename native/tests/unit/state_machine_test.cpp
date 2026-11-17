@@ -495,6 +495,20 @@ HTMLPPT_TEST_CASE(state_machine_faulted_return_request_retries_return) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeIn));
 }
 
+HTMLPPT_TEST_CASE(state_machine_return_kills_edge_before_the_cover_fades_out) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  m.Advance(2000);  // the host fade completes; CoverHold is a host event
+  const auto actions = m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  // Edge must go while the cover is still opaque, or a page that only renamed
+  // its title would stay on top of the resumed show.
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::ResumeShow));
+}
+
 HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   Machine m;
   const auto actions = m.machine->Handle(
@@ -514,6 +528,9 @@ HTMLPPT_TEST_CASE(state_machine_stop_requested_cleans_up_and_exits) {
   HTMLPPT_CHECK(m.machine->state() == State::Stopping);
   HTMLPPT_CHECK(HasJournalContaining(stopping, "cleanup start"));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::CoverHide));
+  // Cleanup must leave the slideshow, not just hide the cover; otherwise
+  // --stop strands a full-screen show on the operator's desktop.
+  HTMLPPT_CHECK(HasAction(stopping, ActionKind::ExitShow));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::KillEdge));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::StopHelperThreads));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::ReleaseLock));
