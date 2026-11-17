@@ -104,10 +104,15 @@ bool TargetEditFromDetailFields(const DetailFields& fields, TargetEdit* edit,
     return false;
   }
   edit->enabled = fields.enabled;
-  if (fields.assets.empty() || fields.assets == kInheritAssets) {
-    // "inherit" leaves the target on the stage mode; ApplyEdit reads an empty
-    // mode as "keep the target's own assets block untouched".
+  if (fields.assets.empty()) {
+    // No mode chosen: leave the target's own assets block untouched.
     edit->assets_mode.clear();
+    return true;
+  }
+  if (fields.assets == kInheritAssets) {
+    // The pane's "inherit" is an explicit choice: forward the model's clear
+    // sentinel so an explicit block is dropped and the stage mode applies.
+    edit->assets_mode = "inherit";
     return true;
   }
   const std::optional<std::string> assets = WideToUtf8(fields.assets);

@@ -146,9 +146,13 @@ bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
   target.label = edit.label;
   target.html = edit.html;
   target.enabled = edit.enabled;
-  if (!edit.assets_mode.empty()) {
-    // An explicit mode makes the target own its assets block; otherwise the
-    // global stage mode keeps applying.
+  if (edit.assets_mode == "inherit") {
+    // The pane's explicit "use the stage mode" choice drops the target's own
+    // block, so DisplayRows reports the effective stage mode again.
+    target.assets_set = false;
+  } else if (!edit.assets_mode.empty()) {
+    // An explicit mode makes the target own its assets block; an empty mode
+    // keeps whatever the target had.
     target.assets.mode = edit.assets_mode;
     target.assets_set = true;
   }

@@ -304,6 +304,47 @@ HTMLPPT_TEST_CASE(config_editor_does_not_block_on_a_clean_or_disabled_row) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(config_editor_inherit_clears_an_explicit_assets_block) {
+  const auto dir = MakeDir();
+  Config config = MakeConfig(dir);
+  // The target owns a block whose mode differs from the stage mode.
+  config.active.stage.mode = "file";
+  config.active.targets[0].assets.mode = "tree";
+  config.active.targets[0].assets_set = true;
+  ConfigEditorModel model(config);
+  const auto deck = MakeDeck();
+  auto rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK(rows[0].assets_explicit);
+  HTMLPPT_CHECK_EQ(rows[0].assets_mode, std::string{"tree"});
+
+  htmlppt::TargetEdit edit;
+  edit.slide = 1;
+  edit.html = "page1.html";
+  std::string error;
+  // An empty mode still means "leave the target's own block untouched".
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK(rows[0].assets_explicit);
+  HTMLPPT_CHECK_EQ(rows[0].assets_mode, std::string{"tree"});
+
+  // "inherit" is a defined value: the pane's choice to use the stage mode
+  // clears the target's block instead of pinning it.
+  edit.assets_mode = "inherit";
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK(!rows[0].assets_explicit);
+  HTMLPPT_CHECK_EQ(rows[0].assets_mode, std::string{"file"});
+
+  // Any other mode makes the target own an explicit block again.
+  edit.assets_mode = "direct";
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  rows = model.DisplayRows(&deck, ResolveOptions{});
+  HTMLPPT_CHECK(rows[0].assets_explicit);
+  HTMLPPT_CHECK_EQ(rows[0].assets_mode, std::string{"direct"});
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_status_text_reports_the_missing_file_issue) {
   htmlppt::ConfigLoadResult loaded;
   loaded.issues.push_back(htmlppt::ConfigIssue{htmlppt::IssueSeverity::Error,

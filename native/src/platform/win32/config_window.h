@@ -45,8 +45,9 @@ bool ParseTargetEditFields(const std::wstring& slide_text,
 
 // One detail-pane snapshot -> one TargetEdit: the three text fields through
 // ParseTargetEditFields, plus the assets combo and the enabled switch. The
-// combo's "inherit" entry keeps the stage mode applying, which the edit
-// expresses as an empty assets_mode.
+// combo's "inherit" entry becomes the edit's "inherit" clear sentinel, so the
+// target's own assets block is dropped and the stage mode applies; an empty
+// combo text leaves the target's block untouched.
 bool TargetEditFromDetailFields(const DetailFields& fields, TargetEdit* edit,
                                 std::wstring* error);
 

@@ -12,8 +12,11 @@
 
 namespace htmlppt {
 
-// The editable fields of one target, as the UI dialog collects them. An empty
-// assets_mode leaves the target's own assets block (or its absence) untouched.
+// The editable fields of one target, as the UI dialog collects them. The
+// assets mode has three states: empty leaves the target's own assets block (or
+// its absence) untouched, "inherit" clears that block so the stage mode applies
+// again, and any other value makes the target own an explicit block with that
+// mode.
 struct TargetEdit {
   int slide = 1;
   std::string label;

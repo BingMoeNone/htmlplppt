@@ -399,9 +399,14 @@ HTMLPPT_TEST_CASE(win32_target_edit_from_detail_fields_maps_the_switch_and_mode)
   HTMLPPT_CHECK_EQ(edit.assets_mode, std::string{"tree"});
   HTMLPPT_CHECK(!edit.enabled);
 
-  // "inherit" means the target keeps the stage mode, so no explicit block is
-  // written: the edit carries an empty assets_mode.
+  // The pane's "inherit" is an explicit choice, so it is forwarded as the
+  // model's clear sentinel rather than as an empty "leave untouched" mode.
   fields.assets = L"inherit";
+  HTMLPPT_CHECK(htmlppt::TargetEditFromDetailFields(fields, &edit, &error));
+  HTMLPPT_CHECK_EQ(edit.assets_mode, std::string{"inherit"});
+
+  // An empty combo text still means "leave the target's block untouched".
+  fields.assets.clear();
   HTMLPPT_CHECK(htmlppt::TargetEditFromDetailFields(fields, &edit, &error));
   HTMLPPT_CHECK(edit.assets_mode.empty());
 
