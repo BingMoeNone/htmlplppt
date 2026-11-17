@@ -302,6 +302,16 @@ The cover window also re-covers on `WM_DISPLAYCHANGE`, `WM_DPICHANGED` and
 or resume reaches the overlay immediately instead of waiting for the next COM
 call.
 
+### Config editor
+
+`core/config_editor` is the testable half of the spec 9.5 UI: it edits the
+effective profile, validates through the same resolver a run uses (so a duplicate
+slide is reported against the offending target), and saves atomically -- a
+temporary sibling file replaces the target only after a complete write, so a
+failed save never truncates the config. `rows()` also reports the effective asset
+mode per target. The Win32 view and the auto-mapping wizard are not built yet;
+this model is what they will sit on.
+
 ### Threading model
 
 The worker is a single STA thread that owns the COM objects, the cover window,
