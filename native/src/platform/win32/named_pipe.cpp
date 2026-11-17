@@ -54,10 +54,20 @@ IoStatus ReadPipeExact(HANDLE pipe, std::uint8_t* buffer, std::size_t size,
     if (!ok) {
       ok = WaitFor(overlapped.hEvent, timeout) != FALSE;
       if (!ok) {
+        // The wait timed out, but the read may have completed in the window
+        // between the timeout and the cancel. Those bytes must be counted: a
+        // completed read has already consumed them from the pipe, so dropping
+        // them desynchronizes the stream and the next frame is parsed from the
+        // middle of this one.
         CancelIoEx(pipe, &overlapped);
-        DWORD ignored = 0;
-        GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+        DWORD completed = 0;
+        const BOOL finished =
+            GetOverlappedResult(pipe, &overlapped, &completed, TRUE);
         CloseHandle(overlapped.hEvent);
+        if (finished != FALSE && completed > 0) {
+          offset += completed;
+          continue;
+        }
         *transferred = offset;
         return offset == 0 ? IoStatus::Timeout : IoStatus::Error;
       }

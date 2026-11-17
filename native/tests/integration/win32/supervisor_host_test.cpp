@@ -174,16 +174,26 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   HTMLPPT_CHECK(stop != nullptr);
 
   bool saw_records = false;
-  for (int i = 0; i < 30; ++i) {
+  bool saw_show_start = false;
+  for (int i = 0; i < 150; ++i) {
     auto blackbox = SharedBlackbox::Open(
         htmlppt::SupervisorBlackboxName(run_id));
-    if (blackbox != nullptr && blackbox->appended() > 0) {
-      saw_records = true;
-      break;
+    if (blackbox != nullptr) {
+      if (blackbox->appended() > 0) saw_records = true;
+      for (const auto& record : blackbox->Snapshot()) {
+        if (std::string(record.detail).find("start show") != std::string::npos) {
+          saw_show_start = true;
+          break;
+        }
+      }
     }
+    if (saw_records && saw_show_start) break;
     Sleep(100);
   }
   HTMLPPT_CHECK(saw_records);
+  // The worker leaves Warming only on ShowStarted, so dropping StartShow would
+  // leave it polling forever. The black box is the worker's journal here.
+  HTMLPPT_CHECK(saw_show_start);
 
   // The supervisor writes the plan before it launches the worker, so a running
   // worker implies the file and the journal record exist.

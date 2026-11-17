@@ -622,8 +622,8 @@ int RunWorker(const SupervisorRunOptions& options) {
     std::cerr << "warning: Edge was not found; Edge launches will fail\n";
   }
 
-  // Opening the deck and collecting the slideshow pids can block for seconds
-  // (COM activation plus WPS opening the file), which is longer than the
+  // Opening the deck, starting the show, and collecting the slideshow pids can
+  // block for seconds (COM activation plus WPS), which is longer than the
   // supervisor's heartbeat window. Heartbeats keep flowing while it happens.
   // The callback runs on this thread and only records facts: the blackbox is
   // single-writer, so its diagnostic records are appended after the startup
@@ -632,13 +632,29 @@ int RunWorker(const SupervisorRunOptions& options) {
     bool launch_failed = false;
     long launch_error = 0;
     std::string launch_detail;
+    bool show_failed = false;
+    long show_error = 0;
+    std::string show_detail;
     std::size_t wps_pid_count = 0;
   } started;
   const auto startup = [&] {
     const HostResult launched = wps.Launch(PathFromUtf8(plan->deck_utf8));
-    started.launch_failed = !launched.ok();
-    started.launch_error = launched.error;
-    started.launch_detail = launched.detail;
+    if (!launched.ok()) {
+      started.launch_failed = true;
+      started.launch_error = launched.error;
+      started.launch_detail = launched.detail;
+      return;
+    }
+    // The machine leaves Warming only on ShowStarted, and Warming has no
+    // deadline, so the host owes the opening show: without this the worker
+    // would sit in Warming forever and never reach the cover/Edge flow.
+    const HostResult shown = wps.StartShow();
+    if (!shown.ok()) {
+      started.show_failed = true;
+      started.show_error = shown.error;
+      started.show_detail = shown.detail;
+      return;
+    }
     facts.wps_pids = CollectWpsPids(windows);
     started.wps_pid_count = facts.wps_pids.size();
   };
@@ -656,9 +672,20 @@ int RunWorker(const SupervisorRunOptions& options) {
     AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure,
                            started.launch_error,
                            "WPS launch failed: " + started.launch_detail);
-    std::cerr << "warning: cannot open " << plan->deck_utf8 << ": "
+    std::cerr << "error: cannot open " << plan->deck_utf8 << ": "
               << started.launch_detail << "\n";
+    return 1;
   }
+  if (started.show_failed) {
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, started.show_error,
+                           "start show failed: " + started.show_detail);
+    std::cerr << "error: cannot start the WPS slideshow: "
+              << started.show_detail << "\n";
+    return 1;
+  }
+  // Starting the show is a success fact worth seeing in --status: a regression
+  // that drops StartShow must be visible in the blackbox, not just inferred.
+  AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0, "start show");
   const auto pid_count = static_cast<std::int64_t>(started.wps_pid_count);
   AppendWorkerDiagnostic(
       *blackbox,
