@@ -737,3 +737,27 @@ HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {
   HTMLPPT_CHECK(m.Slide(1, 2).empty());
   HTMLPPT_CHECK(m.machine->Handle(MakeShowStarted(m.clock.now())).empty());
 }
+
+HTMLPPT_TEST_CASE(state_machine_return_deadlines_honour_the_target_max_hold) {
+  // The per-target cover.maxHoldMs must bound the return wait too, not only the
+  // forward trigger; otherwise a wedged resume waits the global value.
+  StateMachineConfig config = MakeConfig();
+  config.cover_max_hold = Duration{9000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].cover_max_hold = Duration{1000};
+  Machine m(config, plan);
+  m.ReachLive();
+
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  const auto resume = m.machine->NextDeadline();
+  HTMLPPT_CHECK(resume.has_value());
+  HTMLPPT_CHECK_EQ(*resume - m.clock.now(), Duration{1000});
+
+  m.Advance(200);  // cover fade completed; host reports the hold
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  const auto cover_done = m.machine->NextDeadline();
+  HTMLPPT_CHECK(cover_done.has_value());
+  HTMLPPT_CHECK_EQ(*cover_done - m.clock.now(), Duration{1000});
+}

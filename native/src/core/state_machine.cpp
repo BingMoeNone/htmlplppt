@@ -122,6 +122,13 @@ Duration StateMachine::EffectiveCoverMaxHold(const TargetPlan& target) const {
   return target.cover_max_hold.value_or(config_.cover_max_hold);
 }
 
+Duration StateMachine::ReturnCoverMaxHold() const {
+  if (!current_target_slide_.has_value()) return config_.cover_max_hold;
+  const TargetPlan* target = FindTarget(*current_target_slide_);
+  return target != nullptr ? EffectiveCoverMaxHold(*target)
+                           : config_.cover_max_hold;
+}
+
 void StateMachine::Enter(State state) {
   state_ = state;
   if (state == State::SafeMode) safe_mode_ = true;
@@ -296,7 +303,7 @@ std::vector<Action> StateMachine::OnCoverHold(const Event& event) {
     const int slide = current_target_slide_.value_or(0);
     Enter(State::ReturnCoverOut);
     show_active_ = true;
-    SetDeadline(TimeoutKind::CoverDone, event.at + config_.cover_max_hold);
+    SetDeadline(TimeoutKind::CoverDone, event.at + ReturnCoverMaxHold());
     auto actions = Journal("resumed at slide " + std::to_string(slide), slide);
     // Close Edge while the cover is still opaque. A page that only renamed its
     // title (the documented TEF-LIVE-RETURN signal) would otherwise stay
@@ -521,7 +528,7 @@ std::vector<Action> StateMachine::BeginReturn(ClockPoint at, bool prepared,
   ResetRetries();
   ClearDeadlines();
   Enter(State::Returning);
-  SetDeadline(TimeoutKind::ReturnResume, at + config_.cover_max_hold);
+  SetDeadline(TimeoutKind::ReturnResume, at + ReturnCoverMaxHold());
   auto actions = Journal(std::move(detail), slide);
   actions.push_back({ActionKind::CoverFadeIn, slide, "return cover fade"});
   return actions;

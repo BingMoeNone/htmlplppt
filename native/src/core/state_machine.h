@@ -36,6 +36,9 @@ class StateMachine {
   const TargetPlan* FindTarget(int slide) const;
   int EffectiveFailureThreshold(const TargetPlan& target) const;
   Duration EffectiveCoverMaxHold(const TargetPlan& target) const;
+  // The cover max hold for the in-flight target, used by the return paths so a
+  // per-target cover.maxHoldMs also bounds the return wait.
+  Duration ReturnCoverMaxHold() const;
   void Enter(State state);
   void ResetRetries();
   void ClearDeadlines();
