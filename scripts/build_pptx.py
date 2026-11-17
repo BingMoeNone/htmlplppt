@@ -110,6 +110,12 @@ def inject_appear_timing(slide, shape_ids, first_auto: bool) -> None:
     root_child = root_ctn.find(qn('p:childTnLst'))
     if root_child is None:
         raise RuntimeError('p:childTnLst missing')
+    # `add_movie` registers one `p:video` media node per clip and each node is
+    # itself a click stop. Keeping them next to the injected click groups makes
+    # every step need two Space presses, so appear mode drops them and lets the
+    # mediacall/playFrom groups drive playback.
+    for video in list(root_child.findall(qn('p:video'))):
+        root_child.remove(video)
     root_child.append(build_main_seq(shape_ids, first_auto))
     build_list = etree.SubElement(timing, qn('p:bldLst'))
     for spid in shape_ids:

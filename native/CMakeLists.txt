@@ -110,6 +110,11 @@ if (HTMLPPT_BUILD_TESTS)
     add_executable(htmlppt_win32_arg_echo
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/win32/helper/arg_echo.cpp")
     htmlppt_enable_warnings(htmlppt_win32_arg_echo)
+    if (MINGW)
+      # arg_echo defines wmain; MinGW only selects the Unicode startup object
+      # with -municode (MSVC does this automatically for console apps).
+      target_link_options(htmlppt_win32_arg_echo PRIVATE -municode)
+    endif()
     add_executable(htmlppt_win32_tests
       ${HTMLPPT_WIN32_TEST_SOURCES}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp"

@@ -1,4 +1,9 @@
 # Python dependencies for mode A assembly/verification.
-# python-pptx is already vendored under vendor/; keep this for reproducibility.
+# python-pptx is vendored under vendor/ with --no-deps, so its runtime
+# dependencies are listed explicitly here (they must be importable from the
+# interpreter, not from vendor/).
 python-pptx==1.0.2
 Pillow>=10
+lxml>=5
+XlsxWriter>=3
+typing-extensions>=4.9

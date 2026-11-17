@@ -53,7 +53,7 @@ Image.new('RGBA', (1920, 1080), (0, 0, 0, 0)).save('transparent.png')
 
 适用于 native 模式在某些 WPS/Office 版本上不按预期分步的情况。
 
-- 视频仍由 `add_movie` 创建，媒体节点保持 `delay="indefinite"`。
+- 视频仍由 `add_movie` 创建，但注入前必须删除 `p:video` 媒体节点：它们本身就是单击停点，与下面的单击组叠加会让每一步需要按两次空格。删除后由注入的 mediacall / `playFrom(0.0)` 组负责播放。
 - 在根 `p:cTn` 的 `p:childTnLst` 中注入 `p:seq`：
 
 ```xml
@@ -123,8 +123,8 @@ Image.new('RGBA', (1920, 1080), (0, 0, 0, 0)).save('transparent.png')
 2. 新页索引正确（1-based）。
 3. 源 PPTX 中所有 `ppt/slides/slide*.xml` 的 C14N 哈希与新文件一致（原页语义未变）。
 4. 目标页 `a:videoFile` 数量 = 步骤数。
-5. native：`p:video` 媒体节点数 = 步骤数；首节点 `delay="0"`，其余 `indefinite`（或 `--no-first-auto` 时全部 `indefinite`）。
-6. appear：`mainSeq` 的直接单击组数 = 步骤数；首组 `afterEffect`+`delay="0"`，其余 `clickEffect`+`indefinite`；`playFrom(0.0)` 与 `style.visibility` 各 = 步骤数。
+5. native：`p:video` 媒体节点数 = 步骤数；首节点 `delay="0"`，其余 `indefinite`（或 `--no-first-auto` 时全部 `indefinite`）；且不出现注入的 `mainSeq`。
+6. appear：`mainSeq` 的直接单击组数 = 步骤数；首组 `afterEffect`+`delay="0"`，其余 `clickEffect`+`indefinite`；`playFrom(0.0)` 与 `style.visibility` 各 = 步骤数；`p:video` 媒体节点数 = 0（否则与单击组叠加成双倍停点）。
 7. 源稿哈希未变；`--out` 不得等于 `--source`。
 
 ## 5. 常见失败

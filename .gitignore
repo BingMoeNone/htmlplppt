@@ -37,3 +37,5 @@ native/build/
 
 # Test fixture deck is intentionally tracked
 !native/tests/fixtures/deck.pptx
+# Vendored python-pptx template: Presentation() fails without it
+!vendor/pptx/templates/default.pptx

@@ -185,7 +185,9 @@ class FakeDispatch final : public IDispatch {
     if (member.id == 0) member.id = next_id_++;
     VariantClear(&member.value);
     VariantInit(&member.value);
-    (void)VariantCopy(&member.value, &value);
+    // VariantCopy takes a non-const source in the MinGW headers and a const one
+    // in the MSVC headers; the cast keeps the fake compiling on both.
+    (void)VariantCopy(&member.value, const_cast<VARIANT*>(&value));
     member.has_value = true;
   }
 

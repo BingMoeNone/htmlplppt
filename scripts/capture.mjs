@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,19 +28,59 @@ const REQUIRED_FONT = process.env.REQUIRED_FONT || 'Microsoft YaHei';
 // The rendered video bakes the font into pixels. Capturing before the intended
 // font is installed silently produces a deck with the wrong typeface, so fail
 // before launching Chrome instead of after rendering hundreds of frames.
+// Windows ships no fontconfig, so fc-match is unavailable there. Map the
+// requested family straight to the font file the renderer will pick; the
+// default "Microsoft YaHei" is msyh.ttc on every zh-CN install.
+const WINDOWS_FONT_FAMILIES = [
+  ['microsoft yahei', [/^msyh(?:bd)?\.ttc$/i]],
+  ['dengxian', [/^deng(?:xian|b|i)?\.ttf$/i]],
+  ['simhei', [/^simhei\.ttf$/i]],
+  ['simsun', [/^simsun\.ttc$/i]],
+  ['noto sans cjk', [/^notosanscjk/i]],
+  ['source han', [/^sourcehan/i]]
+];
+
+function matchWindowsFont(required) {
+  const fontsDir = path.join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts');
+  let files;
+  try {
+    files = readdirSync(fontsDir);
+  } catch (error) {
+    throw new Error(`font preflight failed: cannot read ${fontsDir} (${error.message})`);
+  }
+  const wanted = required.toLowerCase();
+  const family = WINDOWS_FONT_FAMILIES.find(([name]) => name === wanted);
+  const groups = family ? [family] : WINDOWS_FONT_FAMILIES;
+  for (const [, patterns] of groups) {
+    for (const pattern of patterns) {
+      const hit = files.find((file) => pattern.test(file));
+      if (hit) return path.join(fontsDir, hit);
+    }
+  }
+  throw new Error(
+    `font preflight failed: "${required}" not found under ${fontsDir}. ` +
+      'Install the family or set REQUIRED_FONT to one of: ' +
+      WINDOWS_FONT_FAMILIES.map(([name]) => name).join(', ')
+  );
+}
+
 function assertFontAvailable() {
   let match;
-  try {
-    match = execFileSync('fc-match', [REQUIRED_FONT], { encoding: 'utf8' }).trim();
-  } catch (error) {
-    throw new Error(`font preflight failed: fc-match unavailable (${error.message})`);
-  }
-  const normalized = match.toLowerCase();
-  if (!normalized.includes(REQUIRED_FONT.toLowerCase()) && !/msyh|deng|noto sans cjk|source han/.test(normalized)) {
-    throw new Error(
-      `font preflight failed: "${REQUIRED_FONT}" resolved to "${match}". ` +
-        'Install the font under ~/.local/share/fonts and run fc-cache -f, or set REQUIRED_FONT.'
-    );
+  if (process.platform === 'win32') {
+    match = `${REQUIRED_FONT}: ${matchWindowsFont(REQUIRED_FONT)}`;
+  } else {
+    try {
+      match = execFileSync('fc-match', [REQUIRED_FONT], { encoding: 'utf8' }).trim();
+    } catch (error) {
+      throw new Error(`font preflight failed: fc-match unavailable (${error.message})`);
+    }
+    const normalized = match.toLowerCase();
+    if (!normalized.includes(REQUIRED_FONT.toLowerCase()) && !/msyh|deng|noto sans cjk|source han/.test(normalized)) {
+      throw new Error(
+        `font preflight failed: "${REQUIRED_FONT}" resolved to "${match}". ` +
+          'Install the font under ~/.local/share/fonts and run fc-cache -f, or set REQUIRED_FONT.'
+      );
+    }
   }
   console.log(`font: ${match}`);
 }
