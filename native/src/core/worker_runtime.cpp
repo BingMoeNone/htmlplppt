@@ -27,6 +27,9 @@ void WorkerRuntime::Start() {
 
 bool WorkerRuntime::Step() {
   if (done_) return false;
+  // Unlatch a rate-limited Faulted return retry before ObserveEdge() can see
+  // the still-renamed title.
+  AllowReturnRetry();
   ObserveShow();
   ObserveCover();
   ObserveEdge();
@@ -103,6 +106,7 @@ void WorkerRuntime::ObserveEdge() {
         if (window.id != *selected) continue;
         if (IsReturnTitle(window.title)) {
           return_sent_ = true;
+          last_return_retry_ = now;
           Handle(MakeReturnRequested(now));
           return;
         }
@@ -126,13 +130,18 @@ void WorkerRuntime::Handle(const Event& event) {
 
 void WorkerRuntime::SyncSnapshot() {
   snapshot_ = machine_.Snapshot();
-  if (snapshot_.state == State::Faulted && last_state_ != State::Faulted) {
-    // Faulted exists so a return can be retried on a fresh ReturnRequested.
-    // Re-arm the one-shot signal on entry only: the page keeps the renamed
-    // title until Edge closes, so staying Faulted must not re-emit every poll.
-    return_sent_ = false;
+}
+
+void WorkerRuntime::AllowReturnRetry() {
+  if (machine_.state() != State::Faulted || !return_sent_) return;
+  if (ports_.clock.now() - last_return_retry_ < host_.return_retry_interval) {
+    return;
   }
-  last_state_ = snapshot_.state;
+  // Unlatch so the next ObserveEdge() may report the still-renamed title once
+  // and the machine can retry. The interval is measured from the previous
+  // emission (recorded in ObserveEdge), so a wedged WPS is retried at most once
+  // per return_retry_interval instead of on every poll.
+  return_sent_ = false;
 }
 
 void WorkerRuntime::Dispatch(const std::vector<Action>& actions) {
@@ -195,7 +204,11 @@ void WorkerRuntime::Execute(const Action& action) {
       if (edge_pid_ != 0) focus_.TryFocusEdge(edge_.pid());
       break;
     case ActionKind::FocusWps:
-      focus_.FocusWps(host_.wps_pids, host_.screen);
+      // An empty pid list can never match a WPS window, so calling the
+      // controller would only burn its full focus timeout.
+      if (!host_.wps_pids.empty()) {
+        focus_.FocusWps(host_.wps_pids, host_.screen);
+      }
       break;
     // Kinds owned by later tasks. They are journaled rather than ignored so a
     // missing case stays visible instead of vanishing in a default branch.

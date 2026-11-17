@@ -110,6 +110,18 @@ HTMLPPT_TEST_CASE(worker_runtime_focuses_wps_show_window) {
   HTMLPPT_CHECK_EQ(h.windows.activate_calls.back(), 9u);
 }
 
+// An empty pid list can never match a WPS window, so the runtime must not pay
+// the controller's full focus timeout for a call that cannot succeed.
+HTMLPPT_TEST_CASE(worker_runtime_skips_focus_wps_without_pids) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();                             // ShowStarted -> FocusWps skipped
+  HTMLPPT_CHECK(h.windows.activate_calls.empty());
+  // Only Step()'s poll sleep remains; FocusWps did not sleep to focus.timeout.
+  HTMLPPT_CHECK_EQ(h.clock.sleeps().size(), 1u);
+}
+
 // Task 4: the cover hold launches Edge for the target's profile; once the Edge
 // window is visible the runtime focuses it and reports readiness.
 HTMLPPT_TEST_CASE(worker_runtime_launches_edge_then_reports_ready) {
@@ -175,6 +187,10 @@ HTMLPPT_TEST_CASE(worker_runtime_return_title_enters_and_stays_in_returning) {
 // ReturnRequested, so the renamed title must be reportable again after the
 // ReturnResume timeout. Without re-arming, Faulted would be a stuck state.
 //
+// The page keeps the renamed title, so the retry is rate-limited to one per
+// return_retry_interval; the step right after entering Faulted must not leave
+// it, and the step after the interval must.
+//
 // cover_max_hold is tuned below the 300 ms cover fade: at the default 10 s the
 // frame after the advance emits CoverHold first (ObserveCover runs before Tick)
 // and leaves Returning for ReturnCoverOut, so the ReturnResume timeout could
@@ -205,7 +221,10 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_again_after_faulted) {
   h.advance(h.config.cover_max_hold + Duration{1});
   h.runtime.Step();                             // ReturnResume timeout -> Faulted
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
-  h.runtime.Step();                             // title still renamed: retry
+  h.runtime.Step();                             // inside the interval: no retry
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+  h.advance(h.host.return_retry_interval);
+  h.runtime.Step();                             // interval elapsed: retry
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
 }
 
@@ -254,9 +273,9 @@ HTMLPPT_TEST_CASE(worker_runtime_retries_failed_exit_show) {
 // Ruling: without this failure the machine's return-failure path is dead in
 // production (CoverHold preempts the ReturnResume timeout at default timings),
 // so a failed resume must report a Return failure. HandleReturnFailure journals
-// both the "return failure" entry and its operator diagnostic; the still
-// renamed page then makes the re-armed return signal retry on the same Step,
-// which is why the state is Returning again by the step boundary.
+// both the "return failure" entry and its operator diagnostic, and the
+// rate-limited retry keeps the state in Faulted instead of re-emitting on the
+// same Step and hammering a wedged WPS.
 HTMLPPT_TEST_CASE(worker_runtime_reports_return_failure_when_resume_show_fails) {
   WorkerHarness h = HLiveAtSlide1();
   h.windows.windows = {MakeWindow(2, h.launcher.pid, "TEF-LIVE-RETURN")};
@@ -269,5 +288,5 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_failure_when_resume_show_fails) 
   HTMLPPT_CHECK_EQ(h.presentation.resume_slides.back(), 1);
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "resume show failed"));
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "WPS resume failed"));
-  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
 }

@@ -37,6 +37,10 @@ struct WorkerHostConfig {
   FocusTiming focus;
   ScreenMetrics screen;
   std::vector<std::uint32_t> wps_pids;
+  // Minimum spacing between two return attempts after a return failure. The
+  // page keeps its renamed title, so without this the Faulted retry would fire
+  // on every poll and hammer a wedged WPS with COM calls.
+  Duration return_retry_interval{2000};
   Duration poll_interval{100};
 };
 
@@ -65,6 +69,7 @@ class WorkerRuntime {
   void LaunchEdge(int slide);
   void ReportEdgeLaunchFailure(std::string detail);
   void SyncSnapshot();
+  void AllowReturnRetry();
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
@@ -78,9 +83,6 @@ class WorkerRuntime {
   StateMachine machine_;
   std::vector<std::string> journal_;
   StateSnapshot snapshot_;
-  // The machine state as of the previous SyncSnapshot(). The one-shot return
-  // signal is re-armed on the entry into Faulted, never while staying there.
-  State last_state_ = State::Boot;
   ShowState last_show_;
   int last_slide_ = 0;
   // The previous cover tick's phase edges. Hold/done are emitted on a rising
@@ -92,9 +94,14 @@ class WorkerRuntime {
   // KillEdge clears it because the runtime itself ended that process.
   std::uint32_t edge_pid_ = 0;
   // Readiness and return are reported once per launch: EdgeReady once focused,
-  // ReturnRequested once even though the page keeps its renamed title.
+  // ReturnRequested once even though the page keeps its renamed title. After a
+  // return failure the signal is unlatched again at most once per
+  // return_retry_interval.
   bool ready_sent_ = false;
   bool return_sent_ = false;
+  // When the last ReturnRequested was emitted; AllowReturnRetry() measures the
+  // return_retry_interval from this point.
+  ClockPoint last_return_retry_{};
   std::optional<std::string> pending_stop_;
   bool done_ = false;
 };
