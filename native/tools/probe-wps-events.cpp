@@ -70,26 +70,6 @@ class Dispatch {
     return out;
   }
 
-  bool Put(const wchar_t* name, bool value_in) {
-    if (value_ == nullptr) return false;
-    DISPID id = 0;
-    LPOLESTR raw = const_cast<LPOLESTR>(name);
-    if (FAILED(value_->GetIDsOfNames(IID_NULL, &raw, 1, LOCALE_USER_DEFAULT,
-                                     &id))) {
-      return false;
-    }
-    VARIANT argument;
-    VariantInit(&argument);
-    argument.vt = VT_BOOL;
-    argument.boolVal = value_in ? VARIANT_TRUE : VARIANT_FALSE;
-    DISPPARAMS params{&argument, nullptr, 1, 0};
-    const HRESULT hr = value_->Invoke(id, IID_NULL, LOCALE_USER_DEFAULT,
-                                      DISPATCH_PROPERTYPUT, &params, nullptr,
-                                      nullptr, nullptr);
-    VariantClear(&argument);
-    return SUCCEEDED(hr);
-  }
-
   bool Call(const wchar_t* name, int int_argument, long* error) {
     if (value_ == nullptr) return false;
     DISPID id = 0;
