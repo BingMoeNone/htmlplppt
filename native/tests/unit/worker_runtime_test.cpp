@@ -128,3 +128,21 @@ HTMLPPT_TEST_CASE(worker_runtime_retries_after_edge_launch_failure) {
   h.runtime.Step();                             // EdgeReady -> ShowExit
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ShowExit);
 }
+
+// B2 core: the page signals return by renaming the Edge window title. The
+// runtime reports it once; the renamed title stays until Edge closes.
+HTMLPPT_TEST_CASE(worker_runtime_reports_return_request_once) {
+  WorkerHarness h = HTriggeredAtSlide1();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // edge launched
+  h.windows.windows = {MakeWindow(1, h.launcher.pid, "TEF-LIVE-STAGE")};
+  h.runtime.Step();                             // EdgeReady -> ShowExit
+  h.presentation.show = MakeShowState(HostStatus::Ok, false, 0);
+  h.runtime.Step();                             // show ended -> Live
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
+  h.windows.windows = {MakeWindow(1, h.launcher.pid, "TEF-LIVE-RETURN")};
+  h.runtime.Step();                             // ReturnRequested -> Returning
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  h.runtime.Step();                             // same title: no repeat
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+}

@@ -144,3 +144,27 @@ HTMLPPT_TEST_CASE(focus_controller_zero_interval_still_times_out) {
   HTMLPPT_CHECK(!controller.FocusEdge(100));
   HTMLPPT_CHECK(clock.now() >= ClockPoint(Duration{50}));
 }
+
+// TryFocusEdge is the single non-blocking attempt the worker loop uses: one
+// selection pass, one activation, no retry loop and no sleep.
+HTMLPPT_TEST_CASE(focus_controller_try_focus_edge_activates_once) {
+  FakeClock clock;
+  FakeWindows windows;
+  windows.windows = {MakeEdge(1, 100, 800, 600), MakeEdge(2, 100, 1920, 1080)};
+  FocusController controller(windows, clock,
+                             FocusTiming{Duration{10}, Duration{100}});
+  HTMLPPT_CHECK(controller.TryFocusEdge(100));
+  HTMLPPT_CHECK_EQ(windows.foreground, WindowId{2});
+  HTMLPPT_CHECK_EQ(windows.activation_count, 1);
+  HTMLPPT_CHECK(clock.sleeps().empty());
+}
+
+HTMLPPT_TEST_CASE(focus_controller_try_focus_edge_does_not_wait_for_a_window) {
+  FakeClock clock;
+  FakeWindows windows;
+  FocusController controller(windows, clock,
+                             FocusTiming{Duration{10}, Duration{100}});
+  HTMLPPT_CHECK(!controller.TryFocusEdge(100));
+  HTMLPPT_CHECK(clock.sleeps().empty());
+  HTMLPPT_CHECK_EQ(clock.now(), ClockPoint(Duration{0}));
+}

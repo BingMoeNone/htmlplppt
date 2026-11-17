@@ -84,7 +84,8 @@ class WorkerRuntime {
   bool last_cover_hold_ = false;
   bool last_cover_done_ = false;
   // The process this runtime launched, or 0 when no launch is outstanding.
-  // ObserveEdge stays idle at 0 so a fresh runtime cannot report a closure.
+  // ObserveEdge stays idle at 0 so a fresh runtime cannot report a closure, and
+  // KillEdge clears it because the runtime itself ended that process.
   std::uint32_t edge_pid_ = 0;
   // Readiness and return are reported once per launch: EdgeReady once focused,
   // ReturnRequested once even though the page keeps its renamed title.

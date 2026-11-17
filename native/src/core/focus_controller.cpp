@@ -29,6 +29,12 @@ bool FocusController::FocusEdge(std::uint32_t edge_pid) {
   return false;
 }
 
+bool FocusController::TryFocusEdge(std::uint32_t edge_pid) {
+  const auto selected = SelectEdgeWindow(windows_.Enumerate(), edge_pid);
+  if (!selected.has_value()) return false;
+  return FocusWindow(*selected);
+}
+
 bool FocusController::FocusWps(const std::vector<std::uint32_t>& wps_pids,
                                ScreenMetrics screen) {
   const auto deadline = clock_.now() + timing_.timeout;

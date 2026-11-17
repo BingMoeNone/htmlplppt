@@ -18,6 +18,10 @@ class FocusController {
   FocusController(WindowSystem& windows, Clock& clock, FocusTiming timing = {});
 
   bool FocusEdge(std::uint32_t edge_pid);
+  // Single non-blocking attempt: one window selection and one activation, no
+  // retry loop and no sleep. Callers that must keep the loop's poll cadence use
+  // this; FocusEdge keeps the retrying semantics for callers that want to wait.
+  bool TryFocusEdge(std::uint32_t edge_pid);
   bool FocusWps(const std::vector<std::uint32_t>& wps_pids,
                 ScreenMetrics screen);
   bool IsReturnSignal(std::uint32_t edge_pid);

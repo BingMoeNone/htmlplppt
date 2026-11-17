@@ -108,9 +108,10 @@ void WorkerRuntime::ObserveEdge() {
     }
   }
   if (ready_sent_) return;
-  // FocusEdge waits out the focus timeout for the Edge window to appear, so it
-  // is called once per launch until it succeeds.
-  if (!focus_.FocusEdge(pid)) return;
+  // One non-blocking attempt per step: the runtime must keep the poll cadence,
+  // so waiting for the Edge window stays the state machine's deadline, not a
+  // blocking focus loop.
+  if (!focus_.TryFocusEdge(pid)) return;
   ready_sent_ = true;
   Handle(MakeEdgeReady(now));
 }
@@ -144,6 +145,11 @@ void WorkerRuntime::Execute(const Action& action) {
       break;
     case ActionKind::KillEdge:
       edge_.Kill();
+      // The runtime ended the process itself: stop observing it so the next
+      // step cannot report a closure that the runtime already caused.
+      edge_pid_ = 0;
+      ready_sent_ = false;
+      return_sent_ = false;
       break;
     // Kinds owned by later tasks. They are journaled rather than ignored so a
     // missing case stays visible instead of vanishing in a default branch.
