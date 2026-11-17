@@ -251,6 +251,30 @@ A slide change is only observable through the WPS COM poll, so the poll interval
 is the trigger latency: the loop polls every 20 ms while it is `Monitoring` a
 running show and falls back to 100 ms otherwise (`WorkerHostConfig::active_poll_interval`).
 
+### WPS COM events (probe result)
+
+`tools/probe-wps-events.cpp` (built as `htmlppt-probe-wps-events` on Windows)
+answers whether the watchdog could take slide changes from a COM event instead
+of polling:
+
+```powershell
+native\build\htmlppt-probe-wps-events.exe demo\deck.pptx
+```
+
+Finding on WPS 12.1: the automation server exposes exactly one connection point,
+`{914934C2-5A91-11CF-8700-00AA0060263B}`, and it is connectable. The registered
+type library does not resolve `SlideShowNextSlide`, but a sink that accepts any
+DISPID sees exactly two events per slide change (DISPID 2013 with one argument,
+DISPID 2019 with two) and none while the show is idle.
+
+Decision: the event sink is **not** integrated. The loop already polls every
+20 ms while `Monitoring`, so an event would save at most one poll interval --
+the remaining latency is the COM round trip itself -- while integration costs a
+connection point on the worker's STA, a message pump in the loop's wait, and
+advise/unadvise lifetime handling. The probe stays in the tree so the decision
+can be revisited if the cadence is ever raised or WPS exposes a named event
+interface.
+
 From a second shell, inspect the run and stop it:
 
 ```powershell

@@ -54,6 +54,20 @@ if (WIN32)
 endif()
 htmlppt_enable_warnings(htmlppt-watchdog)
 
+# Empirical probe (not part of ctest): does the WPS automation server expose a
+# connectable SlideShowNextSlide event? Prints the resolved DISPID and every
+# event the sink receives while the probe advances slides.
+if (WIN32)
+  add_executable(htmlppt-probe-wps-events
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/probe-wps-events.cpp")
+  target_link_libraries(htmlppt-probe-wps-events PRIVATE ole32 oleaut32)
+  htmlppt_enable_warnings(htmlppt-probe-wps-events)
+  if (MINGW)
+    # wmain needs MinGW's Unicode startup object.
+    target_link_options(htmlppt-probe-wps-events PRIVATE -municode)
+  endif()
+endif()
+
 if (HTMLPPT_BUILD_TESTS)
   enable_testing()
   file(GLOB HTMLPPT_TEST_SOURCES CONFIGURE_DEPENDS
