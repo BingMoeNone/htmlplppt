@@ -630,8 +630,15 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
 }
 
 int ConfigWindow::ThumbnailForRow(std::size_t row) const {
-  if (row >= thumbnail_indices_.size()) return -1;
-  return thumbnail_indices_[row];
+  if (row >= rows_.size()) return -1;
+  // Rows follow the config's target order, which is not the deck's slide order:
+  // the image must come from the row's own slide, never from its position.
+  const int slide = rows_[row].slide;
+  if (slide < 1 ||
+      static_cast<std::size_t>(slide) > thumbnail_indices_.size()) {
+    return -1;
+  }
+  return thumbnail_indices_[static_cast<std::size_t>(slide) - 1];
 }
 
 int ConfigWindow::AddThumbnail(const std::string& utf8_path) {
@@ -640,15 +647,16 @@ int ConfigWindow::AddThumbnail(const std::string& utf8_path) {
   if (path.empty()) return -1;
   // LoadImage stretches the file to the list's slot size (a real WPS export is
   // already 96x72), so the bitmap always fits the image list. The handle is
-  // owned here and released after the list has copied it.
+  // owned here and released after the list has copied it. No colour mask: a
+  // masked add would make the slide's white pixels transparent, which turns a
+  // white-background slide into the dark list background.
   HBITMAP bitmap = reinterpret_cast<HBITMAP>(
       LoadImageW(nullptr, path.c_str(), IMAGE_BITMAP, kThumbnailWidth,
-                 kThumbnailHeight, LR_LOADFROMFILE | LR_LOADTRANSPARENT));
+                 kThumbnailHeight, LR_LOADFROMFILE));
   if (bitmap == nullptr) return -1;
-  // AddMasked copies the bitmap into the list; -1 means the list refused it,
-  // which is the same per-row fallback as a file that does not load.
-  const int index =
-      ImageList_AddMasked(thumbnails_, bitmap, RGB(255, 255, 255));
+  // Add copies the bitmap into the list; -1 means the list refused it, which is
+  // the same per-row fallback as a file that does not load.
+  const int index = ImageList_Add(thumbnails_, bitmap, nullptr);
   DeleteObject(bitmap);
   return index;
 }
@@ -697,7 +705,7 @@ void ConfigWindow::SetThumbnails(const std::vector<std::string>& paths) {
   if (wanted > 0 && list_view_ != nullptr) {
     if (thumbnails_ == nullptr) {
       thumbnails_ = ImageList_Create(kThumbnailWidth, kThumbnailHeight,
-                                     ILC_COLOR32 | ILC_MASK, wanted, 0);
+                                     ILC_COLOR32, wanted, 0);
       if (thumbnails_ != nullptr) {
         thumbnail_capacity_ = wanted;
         ListView_SetImageList(list_view_, thumbnails_, LVSIL_SMALL);
@@ -1359,14 +1367,9 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       }
       KillTimer(hwnd, kWatchdogPollTimerId);
       watchdog_poll_running_ = false;
-      // The list view is gone with the window, so its image list can be freed
-      // without detaching it first.
-      if (thumbnails_ != nullptr) {
-        ImageList_Destroy(thumbnails_);
-        thumbnails_ = nullptr;
-        thumbnail_capacity_ = 0;
-      }
-      thumbnail_indices_.clear();
+      // Detach the image list from the still-existing list view before the
+      // handle is destroyed: children outlive the parent's WM_DESTROY.
+      DestroyThumbnails();
       handle_ = nullptr;
       list_view_ = nullptr;
       status_view_ = nullptr;

@@ -207,10 +207,12 @@ class ConfigWindow {
   void SetThumbnailsHandler(std::function<void()> handler);
 
   // Rebuilds the list's small image list from exported BMP paths (one per
-  // slide, in slide order) and repaints the rows from it: row i shows image i
-  // until the thumbnails run out, and a stale index is not reused. A path that
-  // does not load leaves that row without an image (index -1) instead of
-  // failing the list population, and an empty list clears every row's image.
+  // slide, in slide order) and repaints the rows from it. A row shows the image
+  // of its own slide (rows follow the config's target order, not the deck's), so
+  // slide 5 in row 0 shows the fifth export; an unresolved row (slide 0) or a
+  // slide beyond the export gets no image (index -1). A path that does not load
+  // leaves that row without an image instead of failing the list population,
+  // and an empty list clears every row's image.
   void SetThumbnails(const std::vector<std::string>& paths);
 
   // The watchdog liveness poll. While a launched supervisor is alive the app

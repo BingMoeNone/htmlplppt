@@ -691,6 +691,42 @@ HTMLPPT_TEST_CASE(win32_config_window_keeps_rows_when_a_thumbnail_is_broken) {
   HTMLPPT_CHECK(IsWindow(handle) == 0);
 }
 
+// The image must come from the row's own slide, not from its list position:
+// rows follow the config's target order, so slide 5 can be the first row.
+HTMLPPT_TEST_CASE(win32_config_window_maps_thumbnails_by_slide) {
+  htmlppt::test::TempDir dir;
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+
+  std::vector<htmlppt::DisplayRow> rows(3);
+  rows[0].index = 0;
+  rows[0].slide = 5;
+  rows[0].html = "page.html";
+  rows[0].state = "resolved";
+  rows[1].index = 1;
+  rows[1].slide = 1;
+  rows[1].html = "page.html";
+  rows[1].state = "resolved";
+  rows[2].index = 2;
+  rows[2].slide = 0;  // unresolved match target
+  rows[2].html = "page.html";
+  rows[2].state = "resolved";
+  window.SetRows(rows);
+
+  const std::vector<std::string> paths = WriteThumbnails(dir.path(), 5);
+  window.SetThumbnails(paths);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), 4);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), 0);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), -1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
 // The scan button forwards to the app, which starts the export and owns the
 // "scanning" status; a rejected scan shows the handler's reason.
 HTMLPPT_TEST_CASE(win32_config_window_forwards_the_scan_button) {
