@@ -46,6 +46,25 @@ std::wstring MakeUiRunId(std::uint64_t stamp);
 std::wstring WatchdogStatusText(const std::wstring& run_id,
                                 const std::wstring& state);
 
+// The status line after a launched supervisor has exited. A clean exit reads
+// "watchdog stopped"; any other code is reported, so a launch the supervisor
+// refused cannot be mistaken for a clean stop.
+std::wstring WatchdogExitText(std::uint32_t exit_code);
+
+// What a Start click must do, from the facts read at click time. The
+// `supervisor_running` flag is the real single-instance state (a supervisor owns
+// the state dir's mutex), not the window's cached Start flag, which can be stale
+// by the time the click arrives. AlreadyRunning wins over every other outcome,
+// so a second supervisor is never launched into a refusal.
+enum class StartDecision {
+  Start,          // clean and runnable: launch now
+  NeedsSave,      // dirty and savable: save, then launch
+  BlockedConfig,  // dirty but the Save gate is closed (blocked, or profiles)
+  AlreadyRunning, // a supervisor already owns the state directory
+};
+StartDecision DecideStart(bool supervisor_running, bool save_enabled,
+                          bool dirty);
+
 #ifdef _WIN32
 // True when a supervisor owns the single-instance mutex for `state_dir`. The
 // supervisor holds it for its whole run and closes it as its last cleanup step,

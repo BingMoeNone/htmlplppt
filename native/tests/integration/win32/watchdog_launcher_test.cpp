@@ -120,6 +120,47 @@ HTMLPPT_TEST_CASE(win32_ui_run_id_and_status_text_name_the_run) {
                    std::wstring(L"watchdog ui-1: Monitoring"));
 }
 
+// Start's click-time decision is a pure function of the facts read at the
+// click. The window's Start flag is cached view state and may be stale, so the
+// supervisor probe is the authority: AlreadyRunning wins over every other
+// outcome, so a second supervisor is never launched into a refusal.
+HTMLPPT_TEST_CASE(win32_decide_start_matrix) {
+  using htmlppt::StartDecision;
+  // The probe wins even when the model is dirty and the Save gate is open or
+  // closed, and even when there is nothing to save.
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, true, true) ==
+                StartDecision::AlreadyRunning);
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, true) ==
+                StartDecision::AlreadyRunning);
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, true, false) ==
+                StartDecision::AlreadyRunning);
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, false) ==
+                StartDecision::AlreadyRunning);
+  // A clean model launches without saving.
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, false) ==
+                StartDecision::Start);
+  // A stale-open gate on a clean model is still a plain start.
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, false) ==
+                StartDecision::Start);
+  // Dirty and savable: the run must read the saved file.
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, true) ==
+                StartDecision::NeedsSave);
+  // Dirty but the Save gate is closed: the config cannot be persisted, so it
+  // must not be launched.
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, true) ==
+                StartDecision::BlockedConfig);
+}
+
+HTMLPPT_TEST_CASE(win32_watchdog_exit_text_reports_the_code) {
+  // A refused launch must not look like a clean stop.
+  HTMLPPT_CHECK_EQ(htmlppt::WatchdogExitText(0),
+                   std::wstring(L"watchdog stopped"));
+  HTMLPPT_CHECK_EQ(htmlppt::WatchdogExitText(1),
+                   std::wstring(L"watchdog exited (code 1)"));
+  HTMLPPT_CHECK_EQ(htmlppt::WatchdogExitText(0xC0000005u),
+                   std::wstring(L"watchdog exited (code 3221225477)"));
+}
+
 HTMLPPT_TEST_CASE(win32_launch_detached_returns_ownable_handles) {
   PROCESS_INFORMATION child{};
   std::wstring error;

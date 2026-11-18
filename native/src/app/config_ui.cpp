@@ -30,6 +30,12 @@ namespace {
 constexpr wchar_t kMultiProfileSaveDisabled[] =
     L"multi-profile config: save is disabled (edit profiles in the JSON)";
 
+// The click-time probe found a supervisor holding the run's state directory --
+// this editor's own run is handled separately, so this is another editor's (or
+// a manually launched) run.
+constexpr wchar_t kSupervisorAlreadyRunning[] =
+    L"another watchdog is already running for this state dir";
+
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return {};
   const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
@@ -278,7 +284,10 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // Start launches one detached supervisor (the same exe re-entered with
   // --supervisor) and hands its process handle to the liveness poll. The run
   // reads the file, so unsaved edits are saved first through the same gate the
-  // Save button uses; a config that cannot be saved is never launched.
+  // Save button uses; a config that cannot be saved is never launched. The
+  // decision reads the real single-instance state at click time: the window's
+  // Start flag is cached view state, and a supervisor started by another editor
+  // after the last refresh must not be launched into a refusal.
   window.SetStartHandler([&window, &model, &watchdog_child, &watchdog_running,
                           &run_id, &last_state, config_path, exe, state_dir,
                           allow_outside_folder, refresh](std::wstring* error) {
@@ -290,21 +299,28 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       if (error != nullptr) *error = L"cannot locate the watchdog executable";
       return false;
     }
+    const StartDecision decision = DecideStart(
+        IsSupervisorRunning(state_dir), window.save_enabled(), model.dirty());
+    if (decision == StartDecision::AlreadyRunning) {
+      if (error != nullptr) *error = kSupervisorAlreadyRunning;
+      return false;
+    }
     // A profile-based config can never be saved, so it is never the run's
     // config either: the supervisor would run a file the editor does not own.
     if (model.HasProfiles()) {
       if (error != nullptr) *error = kMultiProfileSaveDisabled;
       return false;
     }
-    if (model.dirty()) {
-      if (!window.save_enabled()) {
-        const std::wstring reason = refresh();
-        if (error != nullptr) {
-          *error = reason.empty() ? L"cannot save the config before starting"
-                                  : reason;
-        }
-        return false;
+    if (decision == StartDecision::BlockedConfig) {
+      // refresh() reports the first blocking reason for the dirty model.
+      const std::wstring reason = refresh();
+      if (error != nullptr) {
+        *error = reason.empty() ? L"cannot save the config before starting"
+                                : reason;
       }
+      return false;
+    }
+    if (decision == StartDecision::NeedsSave) {
       std::string save_error;
       if (!model.SaveWithBackup(config_path, &save_error)) {
         if (error != nullptr) *error = Widen(save_error);
@@ -314,14 +330,11 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       // also re-evaluates the Start gate.
       refresh();
     }
-    // The gate can close between the click and the launch (another supervisor
-    // took the state dir), so it is re-checked right before starting.
-    if (!window.start_enabled()) {
-      const std::wstring reason = refresh();
-      if (error != nullptr) {
-        *error = reason.empty() ? L"another watchdog is already running"
-                                : reason;
-      }
+    // The save takes time, so another supervisor can appear between the probe
+    // and the launch: probe the mutex once more immediately before starting,
+    // and never launch a run that would only be refused.
+    if (IsSupervisorRunning(state_dir)) {
+      if (error != nullptr) *error = kSupervisorAlreadyRunning;
       return false;
     }
 
@@ -379,6 +392,12 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       if (error != nullptr) *error = L"the watchdog did not exit after stopping";
       return false;
     }
+    // Report the supervisor's own exit code, not just that --stop returned 0:
+    // a run that failed while stopping must not look like a clean stop.
+    DWORD child_code = 0;
+    if (GetExitCodeProcess(watchdog_child, &child_code) == FALSE) {
+      child_code = 1;
+    }
     CloseHandle(watchdog_child);
     watchdog_child = nullptr;
     watchdog_running = false;
@@ -387,7 +406,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     window.StopWatchdogPoll();
     // The state-dir mutex is gone with the supervisor, so this reopens Start.
     refresh();
-    window.SetStatus(L"watchdog stopped");
+    window.SetStatus(WatchdogExitText(child_code));
     return true;
   });
 
@@ -398,6 +417,12 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                                  &run_id, &last_state, refresh]() {
     if (watchdog_child == nullptr) return;
     if (WaitForSingleObject(watchdog_child, 0) == WAIT_OBJECT_0) {
+      // A non-zero code means the supervisor refused or failed the run, so it
+      // must not be reported as "watchdog stopped".
+      DWORD child_code = 0;
+      if (GetExitCodeProcess(watchdog_child, &child_code) == FALSE) {
+        child_code = 1;
+      }
       CloseHandle(watchdog_child);
       watchdog_child = nullptr;
       watchdog_running = false;
@@ -405,7 +430,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       last_state.clear();
       window.StopWatchdogPoll();
       refresh();
-      window.SetStatus(L"watchdog stopped");
+      window.SetStatus(WatchdogExitText(child_code));
       return;
     }
     // Only a state change rewrites the line, so an edit's own status is not

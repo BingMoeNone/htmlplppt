@@ -77,6 +77,21 @@ std::wstring WatchdogStatusText(const std::wstring& run_id,
   return L"watchdog " + run_id + L": " + state;
 }
 
+std::wstring WatchdogExitText(std::uint32_t exit_code) {
+  if (exit_code == 0) return L"watchdog stopped";
+  return L"watchdog exited (code " + std::to_wstring(exit_code) + L")";
+}
+
+StartDecision DecideStart(bool supervisor_running, bool save_enabled,
+                          bool dirty) {
+  if (supervisor_running) return StartDecision::AlreadyRunning;
+  if (!dirty) return StartDecision::Start;
+  // Dirty: the Save gate is the only thing that can persist the edit the run
+  // would read. A closed gate is a blocked or multi-profile model.
+  return save_enabled ? StartDecision::NeedsSave
+                      : StartDecision::BlockedConfig;
+}
+
 #ifdef _WIN32
 namespace {
 
