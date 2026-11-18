@@ -7,6 +7,11 @@
 #include "core/single_instance.h"
 
 namespace htmlppt {
+
+void RemoveDirectoryRecursively(const std::filesystem::path& dir) {
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
 namespace {
 
 // One argument, always quoted. A double quote is doubled: the CRT's argument

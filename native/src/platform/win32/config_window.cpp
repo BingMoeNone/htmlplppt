@@ -1367,8 +1367,9 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       }
       KillTimer(hwnd, kWatchdogPollTimerId);
       watchdog_poll_running_ = false;
-      // Detach the image list from the still-existing list view before the
-      // handle is destroyed: children outlive the parent's WM_DESTROY.
+      // Free the image list through the helper that detaches it first. Children
+      // are destroyed before this message, so the detach targets a dead control
+      // and is harmless; the helper keeps the order correct regardless.
       DestroyThumbnails();
       handle_ = nullptr;
       list_view_ = nullptr;

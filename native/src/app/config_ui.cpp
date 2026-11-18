@@ -390,8 +390,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                                &scan_result]() {
       // A rescan starts clean, so a deck that shrank cannot leave stale
       // slide-NN.bmp files behind for a later scan to misread.
-      std::error_code clean_error;
-      std::filesystem::remove_all(thumbnail_dir, clean_error);
+      RemoveDirectoryRecursively(thumbnail_dir);
       SteadyClock clock;
       WpsHostConfig host_config;
       // One attempt: the scan is a user-initiated extra, and a failed launch
@@ -656,10 +655,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   if (scan_thread.joinable()) scan_thread.join();
   // The image list holds its own copies, so the BMP files are no longer needed
   // once the editor closes.
-  {
-    std::error_code clean_error;
-    std::filesystem::remove_all(thumbnail_dir, clean_error);
-  }
+  RemoveDirectoryRecursively(thumbnail_dir);
   // The supervisor is detached on purpose (a UI crash must not kill a running
   // watchdog), so closing the editor only releases the local child handle.
   if (watchdog_child != nullptr) {

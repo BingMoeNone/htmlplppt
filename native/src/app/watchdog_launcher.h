@@ -93,4 +93,8 @@ bool RunAndWait(const std::wstring& cmdline, DWORD timeout_ms,
                 DWORD* exit_code, std::wstring* error);
 #endif
 
+// Removes dir and everything under it. Missing paths are not an error; a
+// locked entry is reported through the returned error code only.
+void RemoveDirectoryRecursively(const std::filesystem::path& dir);
+
 } // namespace htmlppt

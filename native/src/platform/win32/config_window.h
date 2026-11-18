@@ -317,8 +317,9 @@ class ConfigWindow {
   int AddThumbnail(const std::string& utf8_path);
   void ApplyRowImages();
   void DestroyThumbnails();
-  // The image list index of `row`'s thumbnail, or -1 when it has none. Rows and
-  // exported slides are both in slide order, so the position is the mapping.
+  // The image list index of `row`'s slide thumbnail, or -1 when the row has no
+  // slide or the export has no image for it. Rows follow the config's target
+  // order, so this maps through the row's slide, never through its position.
   int ThumbnailForRow(std::size_t row) const;
 
   HWND handle_ = nullptr;

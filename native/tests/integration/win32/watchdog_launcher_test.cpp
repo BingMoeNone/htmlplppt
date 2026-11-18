@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "app/watchdog_launcher.h"
@@ -251,5 +252,23 @@ HTMLPPT_TEST_CASE(win32_supervisor_with_a_missing_config_exits_one) {
   // A config that cannot be loaded fails before any worker (or WPS) is
   // launched, so this case needs no deck and no WPS.
   HTMLPPT_CHECK_EQ(exit_code, static_cast<DWORD>(1));
+}
+
+// The thumbnail cleanup: a whole tree disappears, and a missing path is not an
+// error (the editor also calls it before the first scan).
+HTMLPPT_TEST_CASE(win32_remove_directory_recursively_removes_a_tree) {
+  htmlppt::test::TempDir dir;
+  const std::filesystem::path folder = dir.path() / L"thumbs";
+  std::filesystem::create_directories(folder / L"nested");
+  {
+    std::ofstream(folder / L"slide-01.bmp") << "x";
+    std::ofstream(folder / L"nested" / L"slide-02.bmp") << "x";
+  }
+  HTMLPPT_CHECK(std::filesystem::exists(folder));
+  htmlppt::RemoveDirectoryRecursively(folder);
+  HTMLPPT_CHECK(!std::filesystem::exists(folder));
+  // Idempotent: removing a missing directory does nothing and does not throw.
+  htmlppt::RemoveDirectoryRecursively(folder);
+  HTMLPPT_CHECK(!std::filesystem::exists(folder));
 }
 #endif  // _WIN32
