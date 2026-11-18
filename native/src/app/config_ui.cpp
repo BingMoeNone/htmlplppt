@@ -195,6 +195,31 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return true;
   });
 
+  // Undo/redo: the model owns the history, so after a successful restore the
+  // same refresh that follows an edit recomputes the rows, the Save gate, and
+  // the dirty flag. The handler owns the success status line; a rejected
+  // restore (nothing to undo or redo) leaves the view's error display to name
+  // the reason.
+  window.SetUndoHandler([&window, &model, refresh](std::wstring* error) {
+    if (!model.Undo()) {
+      if (error != nullptr) *error = L"nothing to undo";
+      return false;
+    }
+    const std::wstring reason = refresh();
+    window.SetStatus(reason.empty() ? L"undone" : reason);
+    return true;
+  });
+
+  window.SetRedoHandler([&window, &model, refresh](std::wstring* error) {
+    if (!model.Redo()) {
+      if (error != nullptr) *error = L"nothing to redo";
+      return false;
+    }
+    const std::wstring reason = refresh();
+    window.SetStatus(reason.empty() ? L"redone" : reason);
+    return true;
+  });
+
   window.SetRows(rows);
   window.SetStatus(model.HasProfiles()
                        ? kMultiProfileSaveDisabled

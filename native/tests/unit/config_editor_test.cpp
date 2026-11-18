@@ -465,6 +465,200 @@ HTMLPPT_TEST_CASE(config_editor_blocks_save_for_a_global_error) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(config_editor_undo_restores_the_previous_state) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  // Nothing was mutated, so there is nothing to undo or redo.
+  HTMLPPT_CHECK(!model.Undo());
+  HTMLPPT_CHECK(!model.Redo());
+  HTMLPPT_CHECK(!model.dirty());
+
+  std::string error;
+  HTMLPPT_CHECK(model.SetSlide(0, 4, &error));
+  HTMLPPT_CHECK(model.dirty());
+  HTMLPPT_CHECK(model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK_EQ(model.rows()[0].slide, 1);
+  // Undoing the only edit returns to the loaded baseline, so dirty flips back.
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(model.CanRedo());
+
+  HTMLPPT_CHECK(model.Redo());
+  HTMLPPT_CHECK_EQ(model.rows()[0].slide, 4);
+  HTMLPPT_CHECK(model.dirty());
+  HTMLPPT_CHECK(model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_undo_past_the_start_and_redo_past_the_end_are_noops) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(model.SetSlide(0, 4, &error));
+
+  HTMLPPT_CHECK(model.Undo());
+  const std::string baseline = model.ToJson();
+  HTMLPPT_CHECK(!model.Undo());
+  HTMLPPT_CHECK_EQ(model.ToJson(), baseline);
+
+  HTMLPPT_CHECK(model.Redo());
+  const std::string edited = model.ToJson();
+  HTMLPPT_CHECK(!model.Redo());
+  // A no-op redo must not disturb the model or the history either.
+  HTMLPPT_CHECK_EQ(model.ToJson(), edited);
+  HTMLPPT_CHECK(model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_undo_covers_every_mutating_method) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(model.SetSlide(0, 2, &error));
+  HTMLPPT_CHECK(model.SetHtml(0, "page2.html", &error));
+  HTMLPPT_CHECK(model.SetLabel(0, "Live", &error));
+  HTMLPPT_CHECK(model.SetEnabled(0, false, &error));
+  htmlppt::TargetEdit edit;
+  edit.slide = 3;
+  edit.label = "Edit";
+  edit.html = "page1.html";
+  edit.enabled = true;
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  HTMLPPT_CHECK(model.AddTarget(5, "page2.html", &error));
+  HTMLPPT_CHECK(model.RemoveTarget(0, &error));
+
+  int steps = 0;
+  while (model.Undo()) ++steps;
+  // One snapshot per successful mutation: seven in total.
+  HTMLPPT_CHECK_EQ(steps, 7);
+  const auto rows = model.rows();
+  HTMLPPT_CHECK_EQ(rows.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(rows[0].slide, 1);
+  HTMLPPT_CHECK_EQ(rows[0].html, std::string{"page1.html"});
+  HTMLPPT_CHECK_EQ(rows[0].label, std::string{"One"});
+  HTMLPPT_CHECK(rows[0].enabled);
+  HTMLPPT_CHECK(!model.dirty());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_failed_mutations_are_not_recorded) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(!model.SetSlide(0, 0, &error));
+  HTMLPPT_CHECK(!model.SetHtml(0, "", &error));
+  HTMLPPT_CHECK(!model.SetLabel(9, "nope", &error));
+  HTMLPPT_CHECK(!model.SetEnabled(9, false, &error));
+  htmlppt::TargetEdit edit;
+  edit.slide = 0;
+  edit.html = "page1.html";
+  HTMLPPT_CHECK(!model.ApplyEdit(0, edit, &error));
+  HTMLPPT_CHECK(!model.AddTarget(0, "page1.html", &error));
+  HTMLPPT_CHECK(!model.RemoveTarget(9, &error));
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(!model.dirty());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_a_new_edit_clears_the_redo_stack) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(model.SetSlide(0, 4, &error));
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK(model.CanRedo());
+  HTMLPPT_CHECK(model.SetHtml(0, "page2.html", &error));
+  // Branching off the undone state must discard the abandoned redo path.
+  HTMLPPT_CHECK(!model.CanRedo());
+  HTMLPPT_CHECK(!model.Redo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_undo_history_is_capped_at_fifty) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  // Sixty successful edits; only the newest fifty snapshots may survive.
+  for (int slide = 2; slide <= 61; ++slide) {
+    HTMLPPT_CHECK(model.SetSlide(0, slide, &error));
+  }
+  int steps = 0;
+  while (model.Undo()) ++steps;
+  HTMLPPT_CHECK_EQ(steps, 50);
+  // The oldest ten snapshots were dropped, so undo stops at the state after
+  // the tenth edit (slide 11), not at the loaded slide 1.
+  HTMLPPT_CHECK_EQ(model.rows()[0].slide, 11);
+  HTMLPPT_CHECK(!model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_save_clears_the_history_and_rebases_dirty) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(model.SetSlide(0, 3, &error));
+  HTMLPPT_CHECK(model.Undo());  // leaves a redo entry
+  HTMLPPT_CHECK(model.CanRedo());
+
+  const auto path = dir / "watcher.json";
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  // A successful save is the new baseline: no history crosses it.
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  HTMLPPT_CHECK(!model.dirty());
+
+  // An edit made after the save undoes back to the saved state, which is clean
+  // relative to the new baseline rather than the original load.
+  HTMLPPT_CHECK(model.SetLabel(0, "Saved", &error));
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK_EQ(model.rows()[0].label, std::string{"One"});
+  HTMLPPT_CHECK(!model.CanUndo());
+
+  // Save() is a save too: it must clear the history the same way.
+  HTMLPPT_CHECK(model.SetSlide(0, 5, &error));
+  HTMLPPT_CHECK(model.SetSlide(0, 2, &error));
+  HTMLPPT_CHECK(model.Save(path, &error));
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  HTMLPPT_CHECK(!model.dirty());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_undo_preserves_profiles_and_the_config_path) {
+  const auto dir = MakeDir();
+  // ConfigToJson writes only the effective profile. An undo must not silently
+  // drop the profile map, which would make a read-only config look saveable and
+  // lose the other profiles on the next save.
+  Config multi = MakeConfig(dir);
+  multi.profiles.emplace("demo", multi.active);
+  multi.active_profile = "demo";
+  ConfigEditorModel model(multi);
+  HTMLPPT_CHECK(model.HasProfiles());
+  std::string error;
+  HTMLPPT_CHECK(model.SetLabel(0, "Edited", &error));
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK(model.HasProfiles());
+  HTMLPPT_CHECK_EQ(model.config().active_profile, std::string{"demo"});
+  HTMLPPT_CHECK_EQ(model.config().source_path, dir / "watcher.json");
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_status_text_reports_the_missing_file_issue) {
   htmlppt::ConfigLoadResult loaded;
   loaded.issues.push_back(htmlppt::ConfigIssue{htmlppt::IssueSeverity::Error,

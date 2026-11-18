@@ -17,10 +17,25 @@ bool CheckIndex(std::size_t index, std::size_t count, std::string* error) {
   return false;
 }
 
+// True when two serialized configs describe the same configuration. A plain
+// string compare is not enough because the loader fills defaults that the
+// serializer omits (a target's inherited onFailure, say): a snapshot restored
+// through the loader is then textually different from the JSON it came from but
+// means exactly the same thing. Comparing both sides after one loader pass
+// keeps dirty() about the configuration, not that asymmetry.
+bool JsonIsEquivalent(const std::string& lhs, const std::string& rhs,
+                      const std::filesystem::path& source_path) {
+  if (lhs == rhs) return true;
+  const ConfigLoadResult left = LoadConfigFromString(lhs, source_path);
+  const ConfigLoadResult right = LoadConfigFromString(rhs, source_path);
+  if (!left.config.has_value() || !right.config.has_value()) return false;
+  return ConfigToJson(*left.config) == ConfigToJson(*right.config);
+}
+
 } // namespace
 
 ConfigEditorModel::ConfigEditorModel(Config config)
-    : config_(std::move(config)) {}
+    : config_(std::move(config)), baseline_json_(ToJson()) {}
 
 std::vector<ConfigEditorModel::Row> ConfigEditorModel::rows() const {
   std::vector<Row> rows;
@@ -50,6 +65,7 @@ bool ConfigEditorModel::SetSlide(std::size_t index, int slide,
     if (error != nullptr) *error = "slide must be >= 1";
     return false;
   }
+  RecordHistory();
   config_.active.targets[index].slide = slide;
   dirty_ = true;
   return true;
@@ -62,6 +78,7 @@ bool ConfigEditorModel::SetHtml(std::size_t index, std::string html,
     if (error != nullptr) *error = "html must not be empty";
     return false;
   }
+  RecordHistory();
   config_.active.targets[index].html = std::move(html);
   dirty_ = true;
   return true;
@@ -70,6 +87,7 @@ bool ConfigEditorModel::SetHtml(std::size_t index, std::string html,
 bool ConfigEditorModel::SetLabel(std::size_t index, std::string label,
                                  std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
+  RecordHistory();
   config_.active.targets[index].label = std::move(label);
   dirty_ = true;
   return true;
@@ -78,6 +96,7 @@ bool ConfigEditorModel::SetLabel(std::size_t index, std::string label,
 bool ConfigEditorModel::SetEnabled(std::size_t index, bool enabled,
                                    std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
+  RecordHistory();
   config_.active.targets[index].enabled = enabled;
   dirty_ = true;
   return true;
@@ -161,6 +180,7 @@ bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
     if (error != nullptr) *error = "html must not be empty";
     return false;
   }
+  RecordHistory();
   if (!match_target) target.slide = edit.slide;
   target.label = edit.label;
   target.html = edit.html;
@@ -189,6 +209,7 @@ bool ConfigEditorModel::AddTarget(int slide, std::string html,
     if (error != nullptr) *error = "html must not be empty";
     return false;
   }
+  RecordHistory();
   TargetConfig target;
   target.slide = slide;
   target.html = std::move(html);
@@ -200,6 +221,7 @@ bool ConfigEditorModel::AddTarget(int slide, std::string html,
 
 bool ConfigEditorModel::RemoveTarget(std::size_t index, std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
+  RecordHistory();
   config_.active.targets.erase(config_.active.targets.begin() +
                                static_cast<std::ptrdiff_t>(index));
   dirty_ = true;
@@ -227,6 +249,63 @@ bool ConfigEditorModel::HasBlockingError(const DeckInfo* deck,
 }
 
 std::string ConfigEditorModel::ToJson() const { return ConfigToJson(config_); }
+
+void ConfigEditorModel::RecordHistory() {
+  undo_stack_.push_back(ToJson());
+  // Drop the oldest snapshots once the cap is exceeded (keep the newest).
+  if (undo_stack_.size() > kHistoryLimit) undo_stack_.erase(undo_stack_.begin());
+  // A new edit branches away from any undone future.
+  redo_stack_.clear();
+}
+
+bool ConfigEditorModel::RestoreSnapshot(const std::string& json) {
+  // The snapshot came from ConfigToJson, so the production parser must accept
+  // it; parsing (rather than keeping a Config copy) keeps the undo path honest
+  // about what the loader will produce from the same text.
+  const ConfigLoadResult loaded =
+      LoadConfigFromString(json, config_.source_path);
+  if (!loaded.config.has_value()) return false;
+  Config restored = *loaded.config;
+  // ConfigToJson writes only the effective profile. Keep the profile map, the
+  // selector, and the legacy block so an undo can never turn a read-only
+  // multi-profile config into a saveable-looking single-profile one (which
+  // would drop the other profiles on the next save).
+  restored.profiles = config_.profiles;
+  restored.active_profile = config_.active_profile;
+  restored.legacy = config_.legacy;
+  config_ = std::move(restored);
+  return true;
+}
+
+bool ConfigEditorModel::Undo() {
+  if (undo_stack_.empty()) return false;
+  const std::string current = ToJson();
+  const std::string snapshot = undo_stack_.back();
+  if (!RestoreSnapshot(snapshot)) return false;
+  undo_stack_.pop_back();
+  redo_stack_.push_back(current);
+  dirty_ = !JsonIsEquivalent(ToJson(), baseline_json_, config_.source_path);
+  return true;
+}
+
+bool ConfigEditorModel::Redo() {
+  if (redo_stack_.empty()) return false;
+  const std::string current = ToJson();
+  const std::string snapshot = redo_stack_.back();
+  if (!RestoreSnapshot(snapshot)) return false;
+  redo_stack_.pop_back();
+  undo_stack_.push_back(current);
+  if (undo_stack_.size() > kHistoryLimit) undo_stack_.erase(undo_stack_.begin());
+  dirty_ = !JsonIsEquivalent(ToJson(), baseline_json_, config_.source_path);
+  return true;
+}
+
+void ConfigEditorModel::ResetHistory() {
+  undo_stack_.clear();
+  redo_stack_.clear();
+  baseline_json_ = ToJson();
+  dirty_ = false;
+}
 
 bool ConfigEditorModel::Save(const std::filesystem::path& path,
                              std::string* error) {
@@ -256,7 +335,8 @@ bool ConfigEditorModel::Save(const std::filesystem::path& path,
     }
     return false;
   }
-  dirty_ = false;
+  // The saved config is the new clean baseline: nothing before it is undoable.
+  ResetHistory();
   return true;
 }
 
@@ -308,7 +388,8 @@ bool ConfigEditorModel::SaveWithBackup(const std::filesystem::path& path,
     }
     return false;
   }
-  dirty_ = false;
+  // The saved config is the new clean baseline: nothing before it is undoable.
+  ResetHistory();
   return true;
 }
 

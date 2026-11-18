@@ -95,6 +95,19 @@ class ConfigEditorModel {
 
   std::string ToJson() const;
 
+  // Undo/redo over bounded JSON snapshots: every successful mutation records
+  // the pre-edit state, a new mutation discards the redo path, and the undo
+  // stack keeps at most the newest 50 snapshots. Restoring parses the snapshot
+  // through the production parser, so an undo cannot invent a config the loader
+  // would reject. dirty() is then recomputed against the baseline from the last
+  // load or save instead of being forced true, so undoing back to the saved
+  // state is clean again. Undo/Redo past the end return false and change
+  // nothing; a load (construction) and a successful save both reset the history.
+  bool Undo();
+  bool Redo();
+  bool CanUndo() const { return !undo_stack_.empty(); }
+  bool CanRedo() const { return !redo_stack_.empty(); }
+
   // Atomic save: write a sibling temp file, then replace the target. A failed
   // write leaves the previous file untouched.
   bool Save(const std::filesystem::path& path, std::string* error);
@@ -103,8 +116,24 @@ class ConfigEditorModel {
   bool SaveWithBackup(const std::filesystem::path& path, std::string* error);
 
  private:
+  // The undo stack is capped so a long editing session stays bounded.
+  static constexpr std::size_t kHistoryLimit = 50;
+
+  // Records the state before a successful mutation and clears the redo path.
+  void RecordHistory();
+  // Parses one snapshot back into config_, keeping the profile state the
+  // effective-profile serializer does not carry and the original source path.
+  bool RestoreSnapshot(const std::string& json);
+  // Drops both stacks and makes the current state the dirty() baseline.
+  void ResetHistory();
+
   Config config_;
   bool dirty_ = false;
+  // The JSON of the last loaded or saved state: after an undo/redo dirty() is
+  // recomputed by comparing against this, not simply set.
+  std::string baseline_json_;
+  std::vector<std::string> undo_stack_;
+  std::vector<std::string> redo_stack_;
 };
 
 // One-line status for the editor window. For a file that did not load it is

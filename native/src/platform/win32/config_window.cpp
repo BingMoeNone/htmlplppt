@@ -553,6 +553,43 @@ void ConfigWindow::SetValidateHandler(ToolbarHandler handler) {
   validate_handler_ = std::move(handler);
 }
 
+void ConfigWindow::SetUndoHandler(ToolbarHandler handler) {
+  undo_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetRedoHandler(ToolbarHandler handler) {
+  redo_handler_ = std::move(handler);
+}
+
+bool ConfigWindow::HandleEditorKey(bool ctrl, bool shift, int vk) {
+  if (!ctrl) return false;
+  ToolbarHandler* handler = nullptr;
+  const wchar_t* fallback = nullptr;
+  if (vk == 'Z') {
+    if (shift) {
+      handler = &redo_handler_;
+      fallback = L"cannot redo";
+    } else {
+      handler = &undo_handler_;
+      fallback = L"cannot undo";
+    }
+  } else if (vk == 'Y') {
+    handler = &redo_handler_;
+    fallback = L"cannot redo";
+  } else {
+    return false;
+  }
+  // The shortcut belongs to the editor whether or not the app installed a
+  // handler; with none, doing nothing is the correct no-op.
+  if (!*handler) return true;
+  std::wstring error;
+  if (!(*handler)(&error)) {
+    // The app owns the success status; the view only reports a rejection.
+    SetStatus(error.empty() ? fallback : error);
+  }
+  return true;
+}
+
 void ConfigWindow::SetRemoveConfirmHandler(std::function<bool()> handler) {
   remove_confirm_handler_ = std::move(handler);
 }
@@ -713,6 +750,16 @@ int ConfigWindow::RunMessageLoop() {
     const BOOL result = GetMessageW(&message, nullptr, 0, 0);
     if (result == -1) return -1;
     if (result == 0) return static_cast<int>(message.wParam);
+    // The editor shortcuts are window-wide: route them before DispatchMessage so
+    // a focused child control (the HTML edit, say) cannot consume Ctrl+Z before
+    // the app can undo the model. Every other key still reaches its control.
+    if (message.message == WM_KEYDOWN) {
+      const bool ctrl = GetKeyState(VK_CONTROL) < 0;
+      const bool shift = GetKeyState(VK_SHIFT) < 0;
+      if (HandleEditorKey(ctrl, shift, static_cast<int>(message.wParam))) {
+        continue;
+      }
+    }
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
@@ -785,6 +832,14 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_CLOSE:
       OnClose();
       return 0;
+    case WM_KEYDOWN: {
+      // GetKeyState reads the thread's key state, which is why the routing
+      // itself is a helper: a test can exercise it without physical input.
+      const bool ctrl = GetKeyState(VK_CONTROL) < 0;
+      const bool shift = GetKeyState(VK_SHIFT) < 0;
+      if (HandleEditorKey(ctrl, shift, static_cast<int>(wparam))) return 0;
+      return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
     case WM_COMMAND: {
       if (HIWORD(wparam) != BN_CLICKED) {
         return DefWindowProcW(hwnd, message, wparam, lparam);

@@ -695,6 +695,76 @@ HTMLPPT_TEST_CASE(win32_config_window_reports_the_selected_model_index) {
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
+HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+
+  int undos = 0;
+  int redos = 0;
+  window.SetUndoHandler([&undos](std::wstring* error) {
+    ++undos;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  window.SetRedoHandler([&redos](std::wstring* error) {
+    ++redos;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+
+  // The pure routing the WM_KEYDOWN branch calls: Ctrl+Z undoes, Ctrl+Y and
+  // Ctrl+Shift+Z redo, and every other key falls through to DefWindowProc.
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  HTMLPPT_CHECK_EQ(undos, 1);
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Y'));
+  HTMLPPT_CHECK_EQ(redos, 1);
+  HTMLPPT_CHECK(window.HandleEditorKey(true, true, 'Z'));
+  HTMLPPT_CHECK_EQ(redos, 2);
+  HTMLPPT_CHECK_EQ(undos, 1);
+
+  HTMLPPT_CHECK(!window.HandleEditorKey(false, false, 'Z'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(false, true, 'Z'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, false, 'A'));
+  HTMLPPT_CHECK_EQ(undos, 1);
+  HTMLPPT_CHECK_EQ(redos, 2);
+
+  // The WM_KEYDOWN route runs the same routing; without a physical Ctrl key
+  // (a test cannot fake the thread's key state) an unrelated key must not
+  // touch the history.
+  SendMessageW(window.handle(), WM_KEYDOWN, 'A', 0);
+  HTMLPPT_CHECK_EQ(undos, 1);
+
+  // A refused undo shows the app's failure reason in the status line.
+  window.SetUndoHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"nothing to undo";
+    return false;
+  });
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  wchar_t status[64] = {};
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"nothing to undo"));
+
+  // A failure without a message still gets a view-owned fallback.
+  window.SetUndoHandler([](std::wstring*) { return false; });
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"cannot undo"));
+
+  // With no handler installed the shortcut is a no-op rather than a crash.
+  window.SetUndoHandler(nullptr);
+  window.SetRedoHandler(nullptr);
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Y'));
+  HTMLPPT_CHECK_EQ(undos, 1);
+  HTMLPPT_CHECK_EQ(redos, 2);
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+}
+
 HTMLPPT_TEST_CASE(win32_should_close_window_honours_dirty_and_answer) {
   HTMLPPT_CHECK(htmlppt::ShouldCloseWindow(false, false));
   HTMLPPT_CHECK(!htmlppt::ShouldCloseWindow(true, false));

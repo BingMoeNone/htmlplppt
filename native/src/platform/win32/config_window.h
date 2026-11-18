@@ -126,6 +126,17 @@ class ConfigWindow {
   // Validate re-runs the resolver through the app so the status line can name
   // the first issue even when it has no row of its own (a bad deck, say).
   void SetValidateHandler(ToolbarHandler handler);
+  // Undo/redo are keyboard actions (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z). The app owns
+  // the model call, the refresh of the rows gate and dirty flag, and the
+  // success status; the view only routes the keys and reports a failure.
+  void SetUndoHandler(ToolbarHandler handler);
+  void SetRedoHandler(ToolbarHandler handler);
+  // Routes one WM_KEYDOWN as an editor shortcut. Returns true when the key was
+  // an undo/redo shortcut and is therefore consumed; false for every other key,
+  // so the window never swallows unrelated input. With no handler installed the
+  // shortcut is a no-op. Public: the pure routing is the test seam, which avoids
+  // having to synthesise the thread's physical key state.
+  bool HandleEditorKey(bool ctrl, bool shift, int vk);
   // The Remove confirmation asks MessageBoxW(MB_YESNO); tests replace this so a
   // headless run never blocks on a modal dialog.
   void SetRemoveConfirmHandler(std::function<bool()> handler);
@@ -214,6 +225,8 @@ class ConfigWindow {
   RemoveHandler remove_handler_;
   ToolbarHandler save_handler_;
   ToolbarHandler validate_handler_;
+  ToolbarHandler undo_handler_;
+  ToolbarHandler redo_handler_;
   std::function<bool()> remove_confirm_handler_;
   std::function<int()> close_prompt_handler_;
   bool save_enabled_ = false;
