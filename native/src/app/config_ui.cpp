@@ -1,5 +1,6 @@
 #include "app/config_ui.h"
 
+#include <cstdint>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -78,6 +79,28 @@ std::wstring ReadRunState(const std::wstring& run_id) {
   return Widen(StateName(static_cast<State>(snapshot.back().state)));
 }
 
+// The editor writes the config from the same directory the watcher watches, so
+// a notification is only an external edit when the file itself no longer looks
+// like the copy this editor last loaded, saved, or reloaded. Size plus write
+// time is enough to tell a self-save (whose stamp is refreshed immediately)
+// from a sibling write such as the .bak or the run's state directory.
+struct ConfigStamp {
+  std::uintmax_t size = 0;
+  std::filesystem::file_time_type mtime{};
+  friend bool operator==(const ConfigStamp& left, const ConfigStamp& right) {
+    return left.size == right.size && left.mtime == right.mtime;
+  }
+};
+
+std::optional<ConfigStamp> ReadConfigStamp(const std::filesystem::path& path) {
+  std::error_code error;
+  const std::uintmax_t size = std::filesystem::file_size(path, error);
+  if (error) return std::nullopt;
+  const auto mtime = std::filesystem::last_write_time(path, error);
+  if (error) return std::nullopt;
+  return ConfigStamp{size, mtime};
+}
+
 } // namespace
 
 int RunConfigUi(const ConfigUiOptions& ui_options) {
@@ -89,6 +112,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // until the file is fixed outside it.
   const ConfigLoadResult loaded = LoadConfigFile(config_path);
   ConfigEditorModel model(loaded.config.has_value() ? *loaded.config : Config{});
+  // The copy the editor believes is on disk: refreshed after every load, save,
+  // and reload so a watcher notification can be attributed correctly.
+  std::optional<ConfigStamp> last_stamp = ReadConfigStamp(config_path);
 
   ResolveOptions resolve_options;
   resolve_options.allow_outside_folder = ui_options.allow_outside_folder;
@@ -239,8 +265,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return true;
   });
 
-  window.SetSaveHandler([&window, &model, config_path, refresh, &watchdog_running,
-                         &run_id, exe, state_dir](std::wstring* error) {
+  window.SetSaveHandler([&window, &model, config_path, refresh, &last_stamp,
+                         &watchdog_running, &run_id, exe,
+                         state_dir](std::wstring* error) {
     // Defence in depth: the button and the close prompt are already gated, but
     // a direct route must never flatten a profile-based config either.
     if (model.HasProfiles()) {
@@ -252,6 +279,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       if (error != nullptr) *error = Widen(save_error);
       return false;
     }
+    // This is the editor's own write: stamp it before the notification arrives
+    // so the watcher does not mistake it for an external edit.
+    last_stamp = ReadConfigStamp(config_path);
     // A live editor-launched run keeps reading its old file, so the save queues
     // a hot reload; the supervisor applies it at the next safe point and logs a
     // deferral until then. The status line names the queue instead of "saved".
@@ -421,6 +451,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     window.StopWatchdogPoll();
     // The state-dir mutex is gone with the supervisor, so this reopens Start.
     refresh();
+    // No run is live any more, so a later save must not claim a reload request.
+    window.SetSaveSuccessStatus(L"saved");
     window.SetStatus(WatchdogExitText(child_code));
     return true;
   });
@@ -445,6 +477,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       last_state.clear();
       window.StopWatchdogPoll();
       refresh();
+      window.SetSaveSuccessStatus(L"saved");
       window.SetStatus(WatchdogExitText(child_code));
       return;
     }
@@ -457,11 +490,16 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     }
   });
 
-  // External edits: the watcher only notifies; the decision lives here. A dirty
-  // editor keeps its edits and reports the conflict; a clean one reloads the
-  // file as a new clean baseline (the undo history never crosses a reload).
+  // External edits: the watcher only notifies; the decision lives here. The
+  // notification is ignored when the file still matches the copy this editor
+  // wrote or read, which is what keeps a save from reloading over itself and a
+  // sibling write (the .bak, the run's state directory) from being called an
+  // external edit.
   window.SetConfigChangedHandler([&window, &model, config_path, refresh,
-                                  &selected_index]() {
+                                  &selected_index,
+                                  &last_stamp]() {
+    const std::optional<ConfigStamp> stamp = ReadConfigStamp(config_path);
+    if (stamp == last_stamp) return;
     if (model.dirty()) {
       window.SetStatus(L"config changed on disk; save to overwrite");
       return;
@@ -473,6 +511,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                            : Widen(reload_error));
       return;
     }
+    last_stamp = stamp;
     selected_index.reset();
     refresh();
     window.SetStatus(L"reloaded from disk");

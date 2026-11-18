@@ -797,10 +797,17 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // the request disappears or is applied.
   bool reload_defer_journaled = false;
 
+  // True once the current request file could not be cleared: a delete that keeps
+  // failing would otherwise restart the worker on every heartbeat. While the
+  // latch is set the request is ignored until the file disappears.
+  bool reload_request_stuck = false;
+
   // Hot reload: rebuild the plan exactly as startup does, then replace the
-  // worker through the existing restart batch. A failed rebuild leaves the old
-  // worker and its plan untouched and consumes the request, so a broken config
-  // cannot retry (and log) on every heartbeat; a fresh --reload asks again.
+  // worker through the existing restart batch. A failed rebuild stops here and
+  // keeps the old worker; the request is consumed so a broken config cannot
+  // retry (and log) on every heartbeat, and a fresh --reload asks again. A plan
+  // write that fails midway can leave worker-plan.json partially rewritten, so
+  // the restart path must not reuse it without a successful rebuild.
   const auto apply_reload = [&]() -> std::optional<int> {
     const auto request_path = state_dir / "reload.request";
     std::string plan_error;
@@ -811,7 +818,12 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                     "reload: failed " + plan_error);
       std::cerr << "warning: reload failed: " << plan_error << "\n";
       std::error_code remove_error;
-      std::filesystem::remove(request_path, remove_error);
+      if (!std::filesystem::remove(request_path, remove_error) ||
+          remove_error) {
+        reload_request_stuck = true;
+        AppendJournal(journal, run_id, "Monitoring", "reload",
+                      "reload: request not cleared");
+      }
       return std::nullopt;
     }
     for (const auto& warning : plan_warnings) {
@@ -819,9 +831,16 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                     "reload warning: " + warning);
       std::cerr << "warning: reload: " << warning << "\n";
     }
-    AppendJournal(journal, run_id, "Monitoring", "reload", "reload: applied");
     std::error_code remove_error;
-    std::filesystem::remove(request_path, remove_error);
+    if (!std::filesystem::remove(request_path, remove_error) || remove_error) {
+      // Without clearing the marker the next Monitoring heartbeat would apply
+      // the same reload again, restarting the deck in a loop.
+      reload_request_stuck = true;
+      AppendJournal(journal, run_id, "Monitoring", "reload",
+                    "reload: request not cleared");
+      return std::nullopt;
+    }
+    AppendJournal(journal, run_id, "Monitoring", "reload", "reload: applied");
     // A worker that was about to exit cleanly must not make its replacement
     // look like a clean terminal end.
     cleanup_received = false;
@@ -895,7 +914,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                 payload->state == static_cast<std::uint8_t>(State::Monitoring);
             const ReloadDecision decision =
                 DecideReload(request_pending, monitoring);
-            if (!request_pending) reload_defer_journaled = false;
+            if (!request_pending) {
+              reload_defer_journaled = false;
+              reload_request_stuck = false;
+            }
             if (decision == ReloadDecision::Defer) {
               if (ShouldJournalDefer(decision, reload_defer_journaled)) {
                 reload_defer_journaled = true;
@@ -906,7 +928,8 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                 AppendJournal(journal, run_id, state_name, "reload",
                               "reload: deferred " + state_name);
               }
-            } else if (decision == ReloadDecision::Apply) {
+            } else if (decision == ReloadDecision::Apply &&
+                       !reload_request_stuck) {
               reload_defer_journaled = false;
               if (auto code = apply_reload(); code.has_value()) {
                 return *code;
