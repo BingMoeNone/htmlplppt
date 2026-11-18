@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -27,6 +28,7 @@
 #include "core/deck_info.h"
 #include "core/faults.h"
 #include "core/journal.h"
+#include "core/journal_reconcile.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
 #include "core/state_machine.h"
@@ -187,6 +189,68 @@ std::filesystem::path CompatBaseDir(const SupervisorRunOptions& options) {
   if (options.config_path.empty()) return {};
   const auto parent = std::filesystem::path(options.config_path).parent_path();
   return parent.empty() ? std::filesystem::path{} : parent;
+}
+
+const char* ReconcileOutcomeName(ReconcileOutcome outcome) {
+  switch (outcome) {
+    case ReconcileOutcome::Clean:
+      return "clean";
+    case ReconcileOutcome::TakeOver:
+      return "takeover";
+    case ReconcileOutcome::Cleanup:
+      return "cleanup";
+    case ReconcileOutcome::RestoreWps:
+      return "restore-wps";
+    case ReconcileOutcome::SafeMode:
+      return "safe-mode";
+  }
+  return "unknown";
+}
+
+// Reconciles the state a previous run may have left behind before the config is
+// resolved. The facts describe only what this process can observe: a leftover
+// Edge from the same run (its command line carries the run marker), the legacy
+// flags this run owns, and no overlay/WPS restore (a crashed worker's overlay
+// dies with it, and restoring WPS at supervisor start is out of scope). The
+// decision is journaled and never blocks startup: the normal plan/launch path
+// follows and supersedes whatever the previous run left behind.
+void ReconcilePreviousRun(Journal& journal,
+                          const std::vector<JournalRecord>& previous_tail,
+                          const SupervisorRunOptions& options,
+                          const std::string& run_id) {
+  const std::wstring marker = L"htmlppt-" + Widen(run_id);
+  const std::vector<std::uint32_t> edge_pids =
+      ProcessIdsByCommandLineMarker(L"msedge.exe", marker);
+
+  ReconcileFacts facts;
+  facts.edge_process_alive = !edge_pids.empty();
+  facts.overlay_owned = false;
+  facts.can_restore_wps = false;
+  const auto compat_dir = CompatBaseDir(options);
+  if (!compat_dir.empty()) {
+    CompatFlags flags(compat_dir,
+                      CompatIdentity{run_id, GetCurrentProcessId(), ""});
+    facts.flags_owned_by_current_run = flags.IsOwned(kLockFile);
+  }
+
+  const ReconcileDecision decision =
+      ReconcileStartup(previous_tail, facts, run_id);
+  AppendJournal(journal, run_id, "Supervisor", "reconcile",
+                "reconcile: " +
+                    std::string(ReconcileOutcomeName(decision.outcome)) + " " +
+                    decision.reason);
+  if (!decision.kill_edge) return;
+
+  std::size_t killed = 0;
+  for (const auto pid : edge_pids) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (process == nullptr) continue;
+    if (TerminateProcess(process, 1)) ++killed;
+    CloseHandle(process);
+  }
+  AppendJournal(journal, run_id, "Supervisor", "reconcile",
+                "reconcile: killed " + std::to_string(killed) + " of " +
+                    std::to_string(edge_pids.size()) + " edge processes");
 }
 
 // On every RunWorker exit path: flush the runtime journal into the legacy
@@ -486,7 +550,13 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   }
 
   JsonlJournal journal(state_dir / "journal.jsonl");
+  // The engine reconciles the last state in the tail, so read the previous
+  // run's records before this run writes its own "supervisor start" record:
+  // that record would otherwise shadow the previous state and hide every
+  // leftover the reconcile step exists to clean up.
+  const std::vector<JournalRecord> previous_tail = journal.read_tail(50);
   AppendJournal(journal, run_id, "Supervisor", "start", "supervisor start");
+  ReconcilePreviousRun(journal, previous_tail, options, run_id);
 
   // Resolve the config and write the worker's plan before the worker is
   // launched, so a bad config fails the run here instead of inside a restarted

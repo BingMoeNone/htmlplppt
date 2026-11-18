@@ -230,6 +230,38 @@ HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
   std::filesystem::remove_all(state_dir, error);
 }
 
+// A1: the supervisor reconciles the journal a previous run left behind before
+// it resolves the config or writes a plan. The deliberately missing config still
+// fails the run with exit 1, but only after the reconcile record is journaled:
+// a non-Clean reconcile decision must never block or mask startup.
+HTMLPPT_TEST_CASE(win32_supervisor_reconciles_the_previous_journal) {
+  const auto state_dir = TempStateDir();
+  {
+    std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
+    journal << "{\"event\":\"start\",\"state\":\"Live\",\"run_id\":\"prev\","
+               "\"sequence\":0,\"timestamp\":\"2026-01-01T00:00:00Z\","
+               "\"slide\":1,\"detail\":\"worker started\"}\n";
+  }
+  const std::string run_id = RunId();
+  const auto result = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(run_id.begin(), run_id.end())},
+      10000);
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  // The previous record belongs to a foreign run that left a Live state behind,
+  // so the engine's decision is Cleanup; the outcome name is journaled verbatim.
+  HTMLPPT_CHECK(journal.find("reconcile: cleanup") != std::string::npos);
+  const auto reconcile_at = journal.find("reconcile:");
+  const auto plan_failed_at = journal.find("plan failed");
+  HTMLPPT_CHECK(plan_failed_at != std::string::npos);
+  HTMLPPT_CHECK(reconcile_at < plan_failed_at);
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   // This case runs the worker end to end, which opens the deck in real WPS.
   // Without the WPS Presentation COM class the worker cannot present, so the
