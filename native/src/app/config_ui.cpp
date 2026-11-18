@@ -334,8 +334,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // Start flag is cached view state, and a supervisor started by another editor
   // after the last refresh must not be launched into a refusal.
   window.SetStartHandler([&window, &model, &watchdog_child, &watchdog_running,
-                          &run_id, &last_state, config_path, exe, state_dir,
-                          allow_outside_folder, refresh](std::wstring* error) {
+                          &run_id, &last_state, &last_stamp, config_path, exe,
+                          state_dir, allow_outside_folder,
+                          refresh](std::wstring* error) {
     if (watchdog_running) {
       if (error != nullptr) *error = L"the watchdog is already running";
       return false;
@@ -371,6 +372,10 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
         if (error != nullptr) *error = Widen(save_error);
         return false;
       }
+      // Start's implicit save is still this editor's own write: stamp it, or
+      // the watcher's notification arrives as an "external" edit and reloads
+      // over the run that is being started.
+      last_stamp = ReadConfigStamp(config_path);
       // A successful save clears dirty and closes the Save gate; this refresh
       // also re-evaluates the Start gate.
       refresh();
