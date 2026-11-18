@@ -660,9 +660,10 @@ HTMLPPT_TEST_CASE(worker_session_on_step_sees_every_post_step_state) {
 }
 
 // A2: the callback RunWorker installs writes the mapped flags and one watch-log
-// line per write. A CoverIn -> Live -> Monitoring sequence must leave exactly the
-// four protocol files and must not touch another run's files.
-HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_sequence) {
+// line per write. A full CoverIn -> Live -> Returning -> ReturnCoverOut ->
+// Monitoring cycle must leave exactly the four protocol files and must not touch
+// another run's files.
+HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_cycle) {
   NamedPipeServer server;
   const std::wstring pipe_name = UniquePipeName();
   HTMLPPT_CHECK(server.Create(pipe_name));
@@ -697,8 +698,9 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_sequen
 
   FakeWorkerDriver driver;
   driver.step_sleep = Duration{1};
-  driver.scripted_states = {State::CoverIn, State::Live, State::Monitoring};
-  driver.steps_to_done = 3;
+  driver.scripted_states = {State::CoverIn, State::Live, State::Returning,
+                            State::ReturnCoverOut, State::Monitoring};
+  driver.steps_to_done = 5;
   WorkerSessionConfig config;
   config.heartbeat_interval = Duration{10};
   config.on_step = MakeCompatFlagMirror(
@@ -734,7 +736,8 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_sequen
   for (const std::string_view name :
        {htmlppt::kCoverFadeFlag, htmlppt::kCoverReadyFlag,
         htmlppt::kAgentArmFlag, htmlppt::kEdgeClosedFlag}) {
-    HTMLPPT_CHECK(watch_log.find(std::string(name)) != std::string::npos);
+    HTMLPPT_CHECK(watch_log.find("flag " + std::string(name)) !=
+                  std::string::npos);
   }
   HTMLPPT_CHECK_EQ(
       static_cast<std::size_t>(
@@ -747,6 +750,90 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_sequen
   HTMLPPT_CHECK_EQ(other.ReadFlag(htmlppt::kLockFile),
                    std::string{"other-lock"});
   HTMLPPT_CHECK(other.IsOwned(htmlppt::kLockFile));
+
+  channel->Close();
+  server.Close();
+}
+
+// A2 fix round: a real stop collapses Stopping -> Exited inside one Step, so the
+// loop observes ... -> Exited. That transition must still write the two stop
+// flags the legacy stop tooling watches for.
+HTMLPPT_TEST_CASE(worker_session_mirrors_stop_flags_for_a_scripted_stop_to_exited) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) return;
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  TempDir dir;
+  CompatFlags flags(dir.path(), CompatIdentity{"run-stop", 4321, ""});
+  LegacyLog log(dir.path());
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  driver.scripted_states = {State::CoverIn, State::Live, State::Exited};
+  driver.steps_to_done = 3;
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  config.on_step = MakeCompatFlagMirror(
+      flags, log, [](const StateSnapshot&) {
+        return std::string{"tef-live-page1"};
+      });
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverFadeFlag), std::string{});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverReadyFlag), std::string{});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentArmFlag),
+                   std::string{"tef-live-page1|exit=0|ready=1"});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverStopFlag), std::string{});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentStopFlag), std::string{});
+  // Leaving Live for Exited is a stop, not the return path: no edge-closed.
+  HTMLPPT_CHECK(!std::filesystem::exists(
+      dir.path() / std::string(htmlppt::kEdgeClosedFlag)));
+  for (const std::string_view name :
+       {htmlppt::kCoverFadeFlag, htmlppt::kCoverReadyFlag,
+        htmlppt::kAgentArmFlag, htmlppt::kCoverStopFlag,
+        htmlppt::kAgentStopFlag}) {
+    HTMLPPT_CHECK(flags.IsOwned(name));
+  }
+
+  const std::string watch_log =
+      ReadTextFile(dir.path() / std::string(htmlppt::kWatchLog));
+  for (const std::string_view name :
+       {htmlppt::kCoverFadeFlag, htmlppt::kCoverReadyFlag,
+        htmlppt::kAgentArmFlag, htmlppt::kCoverStopFlag,
+        htmlppt::kAgentStopFlag}) {
+    HTMLPPT_CHECK(watch_log.find("flag " + std::string(name)) !=
+                  std::string::npos);
+  }
+  HTMLPPT_CHECK_EQ(
+      static_cast<std::size_t>(
+          std::count(watch_log.begin(), watch_log.end(), '\n')),
+      static_cast<std::size_t>(5));
 
   channel->Close();
   server.Close();

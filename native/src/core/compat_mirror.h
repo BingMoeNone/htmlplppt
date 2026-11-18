@@ -29,10 +29,17 @@ struct FlagWrite {
 //   -> SafeMode     cover-hide.flag   (empty)
 //   -> Stopping     cover-stop.flag   (empty)
 //                   agent-stop.flag   (empty)
-//   Live -> Monitoring  edge-closed.flag  (empty)
+//   -> Exited       cover-stop.flag   (empty)
+//                   agent-stop.flag   (empty)
+//   Live -> Monitoring | Returning | ReturnCoverOut
+//                   edge-closed.flag  (empty)
 //
 // The order matters: a reader that sees the second row of a pair can assume the
-// first one is already on disk.
+// first one is already on disk. The Exited and return-path rows are the ones a
+// real WorkerRuntime actually publishes: its cleanup collapses Stopping into
+// Exited inside one Step, and its return path runs through Returning and
+// ReturnCoverOut before Monitoring. The literal Stopping and Live -> Monitoring
+// rows are kept for drivers that publish those transitions directly.
 std::vector<FlagWrite> FlagsForStateTransition(State from, State to,
                                                std::string_view edge_profile);
 

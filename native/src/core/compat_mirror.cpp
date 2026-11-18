@@ -27,19 +27,28 @@ std::vector<FlagWrite> FlagsForStateTransition(State from, State to,
       return {EmptyFlag(kCoverHideFlag)};
     case State::Stopping:
       return {EmptyFlag(kCoverStopFlag), EmptyFlag(kAgentStopFlag)};
+    case State::Exited:
+      // A real stop usually never publishes Stopping: the runtime feeds
+      // CleanupDone in the same Step, so the loop observes Stopping -> Exited or
+      // even Live/Monitoring -> Exited. The legacy stop tooling watches the stop
+      // files, so the observable end must write them too.
+      return {EmptyFlag(kCoverStopFlag), EmptyFlag(kAgentStopFlag)};
+    case State::Returning:
+    case State::ReturnCoverOut:
+      // Leaving Live for the return path is when the runtime closes Edge. A real
+      // return goes Live -> Returning -> ReturnCoverOut -> Monitoring, so the
+      // direct Live -> Monitoring row below is not enough on its own.
+      if (from == State::Live) return {EmptyFlag(kEdgeClosedFlag)};
+      return {};
     case State::Monitoring:
-      // Only the end of a live session closes Edge; a return path that reaches
-      // Monitoring through the cover states must not look like one.
+      // Kept for a driver that publishes the direct Live -> Monitoring edge.
       if (from == State::Live) return {EmptyFlag(kEdgeClosedFlag)};
       return {};
     case State::Boot:
     case State::Warming:
     case State::EdgeStarting:
     case State::ShowExit:
-    case State::Returning:
-    case State::ReturnCoverOut:
     case State::Faulted:
-    case State::Exited:
     case State::DegradedNoSupervisor:
       return {};
   }

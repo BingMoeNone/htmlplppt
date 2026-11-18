@@ -96,15 +96,63 @@ HTMLPPT_TEST_CASE(compat_mirror_entering_stopping_writes_cover_stop_then_agent_s
   }
 }
 
-HTMLPPT_TEST_CASE(compat_mirror_live_to_monitoring_writes_edge_closed) {
+HTMLPPT_TEST_CASE(compat_mirror_ending_live_writes_edge_closed) {
+  // The runtime closes Edge when it leaves Live for the return path, so every
+  // entry into a return-path state must close the session, not just Monitoring
+  // (a real return traverses Returning and ReturnCoverOut first).
   ExpectRows(FlagsForStateTransition(State::Live, State::Monitoring, "profile"),
              {Row(htmlppt::kEdgeClosedFlag, "")});
-  // The flag marks the end of one live session only: another state entering
-  // Monitoring is a normal return and must not look like a closed Edge.
+  ExpectRows(FlagsForStateTransition(State::Live, State::Returning, "profile"),
+             {Row(htmlppt::kEdgeClosedFlag, "")});
+  ExpectRows(FlagsForStateTransition(State::Live, State::ReturnCoverOut,
+                                     "profile"),
+             {Row(htmlppt::kEdgeClosedFlag, "")});
+  // Another state entering a return-path state is not the end of a live
+  // session and must not look like a closed Edge.
   for (const State from : kAllStates) {
     if (from == State::Live || from == State::Monitoring) continue;
     ExpectRows(FlagsForStateTransition(from, State::Monitoring, "profile"), {});
   }
+  for (const State from : kAllStates) {
+    if (from == State::Live || from == State::Returning) continue;
+    ExpectRows(FlagsForStateTransition(from, State::Returning, "profile"), {});
+  }
+  for (const State from : kAllStates) {
+    if (from == State::Live || from == State::ReturnCoverOut) continue;
+    ExpectRows(FlagsForStateTransition(from, State::ReturnCoverOut, "profile"),
+               {});
+  }
+}
+
+HTMLPPT_TEST_CASE(compat_mirror_entering_exited_writes_the_stop_flags) {
+  // A real stop often never publishes Stopping: the runtime feeds CleanupDone in
+  // the same Step, so the observable transition is ... -> Exited (from Live,
+  // Monitoring, or a directly observed Stopping).
+  for (const State from : kAllStates) {
+    if (from == State::Exited) continue;
+    ExpectRows(FlagsForStateTransition(from, State::Exited, "profile"),
+               {Row(htmlppt::kCoverStopFlag, ""),
+                Row(htmlppt::kAgentStopFlag, "")});
+  }
+}
+
+HTMLPPT_TEST_CASE(compat_mirror_full_live_cycle_emits_posted_flags_in_order) {
+  constexpr State kCycle[] = {State::CoverIn, State::Live, State::Returning,
+                              State::ReturnCoverOut, State::Monitoring};
+  std::vector<FlagWrite> writes;
+  State from = State::Boot;
+  for (const State to : kCycle) {
+    for (const FlagWrite& row :
+         FlagsForStateTransition(from, to, "tef-live-page1")) {
+      writes.push_back(row);
+    }
+    from = to;
+  }
+  ExpectRows(writes,
+             {Row(htmlppt::kCoverFadeFlag, ""),
+              Row(htmlppt::kCoverReadyFlag, ""),
+              Row(htmlppt::kAgentArmFlag, "tef-live-page1|exit=0|ready=1"),
+              Row(htmlppt::kEdgeClosedFlag, "")});
 }
 
 HTMLPPT_TEST_CASE(compat_mirror_unrelated_transitions_write_nothing) {
@@ -115,7 +163,6 @@ HTMLPPT_TEST_CASE(compat_mirror_unrelated_transitions_write_nothing) {
       {State::Boot, State::Warming},
       {State::Warming, State::Monitoring},
       {State::Monitoring, State::EdgeStarting},
-      {State::Live, State::Returning},
       {State::Returning, State::ReturnCoverOut},
       {State::ReturnCoverOut, State::Monitoring},
       {State::Faulted, State::Monitoring},
