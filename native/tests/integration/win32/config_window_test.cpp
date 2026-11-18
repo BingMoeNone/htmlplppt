@@ -495,6 +495,135 @@ HTMLPPT_TEST_CASE(win32_config_window_forwards_the_toolbar_buttons) {
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
+HTMLPPT_TEST_CASE(win32_config_window_start_button_follows_the_app_gate) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  HTMLPPT_CHECK(window.start_button() != nullptr);
+  HTMLPPT_CHECK(window.stop_button() != nullptr);
+  const HWND handle = window.handle();
+
+  // Start opens only when the app enables it: a run is not safe to launch
+  // until the config is saved and no other supervisor owns the state dir.
+  HTMLPPT_CHECK(!window.start_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.start_button()) == 0);
+  window.SetStartEnabled(true);
+  HTMLPPT_CHECK(window.start_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.start_button()) != 0);
+  window.SetStartEnabled(false);
+  HTMLPPT_CHECK(!window.start_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.start_button()) == 0);
+  // Stop has no gate: it is always clickable and reports when nothing runs.
+  HTMLPPT_CHECK(IsWindowEnabled(window.stop_button()) != 0);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_forwards_the_watchdog_buttons) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  const auto click = [&](HWND button) {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(button));
+  };
+
+  // A synthetic WM_COMMAND must not bypass the app's Start gate.
+  int starts = 0;
+  window.SetStartHandler([&starts](std::wstring* error) {
+    ++starts;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  click(window.start_button());
+  HTMLPPT_CHECK_EQ(starts, 0);
+  window.SetStartEnabled(true);
+  click(window.start_button());
+  HTMLPPT_CHECK_EQ(starts, 1);
+
+  // The app owns a successful status; a rejection is shown verbatim, and an
+  // empty one still names the action.
+  window.SetStartHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"save before starting";
+    return false;
+  });
+  click(window.start_button());
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"save before starting"));
+  window.SetStartHandler([](std::wstring*) { return false; });
+  click(window.start_button());
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"cannot start the watchdog"));
+
+  int stops = 0;
+  window.SetStopHandler([&stops](std::wstring* error) {
+    ++stops;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  click(window.stop_button());
+  HTMLPPT_CHECK_EQ(stops, 1);
+  window.SetStopHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"no watchdog is running";
+    return false;
+  });
+  click(window.stop_button());
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"no watchdog is running"));
+  window.SetStopHandler([](std::wstring*) { return false; });
+  click(window.stop_button());
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"cannot stop the watchdog"));
+
+  // Removing the handlers turns the same clicks into no-ops, not crashes.
+  window.SetStartHandler(nullptr);
+  window.SetStopHandler(nullptr);
+  click(window.start_button());
+  click(window.stop_button());
+  HTMLPPT_CHECK_EQ(starts, 1);
+  HTMLPPT_CHECK_EQ(stops, 1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_polls_the_watchdog_on_its_timer) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+
+  int polls = 0;
+  window.SetWatchdogPollHandler([&polls] { ++polls; });
+  // A tick only reaches the handler while the app has the poll running, so an
+  // idle editor never reads the run state.
+  SendMessageW(window.handle(), WM_TIMER, htmlppt::kWatchdogPollTimerId, 0);
+  HTMLPPT_CHECK_EQ(polls, 0);
+  window.StartWatchdogPoll();
+  SendMessageW(window.handle(), WM_TIMER, htmlppt::kWatchdogPollTimerId, 0);
+  HTMLPPT_CHECK_EQ(polls, 1);
+  window.StopWatchdogPoll();
+  SendMessageW(window.handle(), WM_TIMER, htmlppt::kWatchdogPollTimerId, 0);
+  HTMLPPT_CHECK_EQ(polls, 1);
+  // With no handler installed a running poll is still a no-op.
+  window.SetWatchdogPollHandler(nullptr);
+  window.StartWatchdogPoll();
+  SendMessageW(window.handle(), WM_TIMER, htmlppt::kWatchdogPollTimerId, 0);
+  HTMLPPT_CHECK_EQ(polls, 1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_apply_forwards_the_detail_fields) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;

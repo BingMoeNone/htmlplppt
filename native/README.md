@@ -350,6 +350,24 @@ uses, and saves atomically.
    No discards the edits and closes, and Cancel keeps the window and its edits.
    The window declares a minimum size and follows `WM_DPICHANGED`, so the pane
    and its Apply button never cover the status line.
+6. **Start** launches a supervisor for this config as a detached process (the
+   same EXE re-entered with `--supervisor`), and **Stop** asks it to shut down
+   through `--stop` and reports the exit code. Start stays disabled unless the
+   config is clean and no supervisor owns the run's state directory; it also
+   saves unsaved edits first, through the same gate the Save button uses, so a
+   run always reads the file the editor shows. The status line shows the run id
+   (`ui-<timestamp>`) and then the state the run last journalled, spelled the
+   same way `--status` spells it. A 500 ms poll reaps the child, so a supervisor
+   that exits on its own reopens Start and reports `watchdog stopped`.
+
+An editor-launched run writes its state to `<config-dir>\.htmlppt-run`, a hidden
+sibling of the config file, so the plan and journal are discoverable next to the
+config instead of mixing into the user's folder. That is deliberately different
+from the CLI's per-user default (`%LOCALAPPDATA%\htmlppt-watchdog`) and from the
+smoke script's explicit `-StateDir`, because the editor must not share one state
+directory across unrelated configs. Closing the editor leaves a running
+supervisor alive (a UI crash must not kill the watchdog); stop it with
+`--stop --run-id <id> --state-dir <config-dir>\.htmlppt-run`.
 
 **Profile-based configs are read-only for saving in v1.** When the file uses
 `profiles` or `activeProfile`, the editor loads the effective profile but Save

@@ -13,8 +13,13 @@
 #include "core/config_editor.h"
 #include "core/deck_info.h"
 #include "core/resolve.h"
+#include "core/single_instance.h"
+#include "core/types.h"
 #include "app/deck_info_loader.h"
+#include "app/supervisor.h"
+#include "app/watchdog_launcher.h"
 #include "platform/win32/config_window.h"
+#include "platform/win32/shared_blackbox.h"
 
 namespace htmlppt {
 namespace {
@@ -34,6 +39,36 @@ std::wstring Widen(const std::string& utf8) {
   MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
                       wide.data(), size);
   return wide;
+}
+
+// The editor's own executable: the same binary runs as supervisor, so a run is
+// launched by re-entering it with --supervisor.
+std::filesystem::path CurrentExecutable() {
+  std::wstring buffer(MAX_PATH, L'\0');
+  for (;;) {
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) return {};
+    if (length < buffer.size()) {
+      buffer.resize(static_cast<std::size_t>(length));
+      return std::filesystem::path(buffer);
+    }
+    // Truncated: the path is longer than the buffer, so grow and ask again.
+    buffer.resize(buffer.size() * 2);
+  }
+}
+
+// The state the run last journalled into its shared black box, spelled the way
+// --status spells it. Empty before the supervisor has written a record (or when
+// the mapping does not exist yet).
+std::wstring ReadRunState(const std::wstring& run_id) {
+  if (run_id.empty()) return {};
+  const std::string narrow(run_id.begin(), run_id.end());
+  auto blackbox = SharedBlackbox::Open(SupervisorBlackboxName(narrow));
+  if (blackbox == nullptr) return {};
+  const std::vector<BlackboxRecord> snapshot = blackbox->Snapshot();
+  if (snapshot.empty()) return {};
+  return Widen(StateName(static_cast<State>(snapshot.back().state)));
 }
 
 } // namespace
@@ -73,12 +108,24 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return 1;
   }
 
-  // Recomputes the rows, the Save gate, and the dirty flag after every action,
-  // and returns the first blocking message: a target row's error when there is
-  // one, otherwise the config-wide resolver error that has no row of its own (a
-  // missing or invalid deck). Empty means the config is clean.
-  const auto refresh = [&window, &model, deck_info,
-                        resolve_options]() -> std::wstring {
+  // The editor's own exe and the state directory an editor-launched run uses:
+  // both are fixed for the life of the window. The process handle below is the
+  // one-run-at-a-time liveness source, so it is declared before the handlers
+  // that launch, stop, and poll the run.
+  const std::filesystem::path exe = CurrentExecutable();
+  const std::filesystem::path state_dir = WatchdogStateDir(config_path);
+  HANDLE watchdog_child = nullptr;
+  bool watchdog_running = false;
+  std::wstring run_id;
+  std::wstring last_state;
+
+  // Recomputes the rows, the Save gate, the Start gate, and the dirty flag after
+  // every action, and returns the first blocking message: a target row's error
+  // when there is one, otherwise the config-wide resolver error that has no row
+  // of its own (a missing or invalid deck). Empty means the config is clean.
+  const auto refresh = [&window, &model, deck_info, resolve_options,
+                        &watchdog_running,
+                        &state_dir]() -> std::wstring {
     const std::vector<DisplayRow> rows =
         model.DisplayRows(deck_info, resolve_options);
     window.SetRows(rows);
@@ -87,6 +134,11 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     // effective profile, so a save would silently drop the other profiles.
     const bool profiles_blocked = model.HasProfiles();
     window.SetSaveEnabled(model.dirty() && !blocked && !profiles_blocked);
+    // Start needs a runnable config and a free state dir. A supervisor already
+    // holding the state-dir mutex owns the run -- even when this editor did not
+    // launch it -- so a second one must not be started (spec 9.6).
+    window.SetStartEnabled(!blocked && !profiles_blocked && !watchdog_running &&
+                           !IsSupervisorRunning(state_dir));
     window.SetDirty(model.dirty());
     if (profiles_blocked) return kMultiProfileSaveDisabled;
     if (!blocked) return {};
@@ -220,13 +272,164 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return true;
   });
 
+  // Start launches one detached supervisor (the same exe re-entered with
+  // --supervisor) and hands its process handle to the liveness poll. The run
+  // reads the file, so unsaved edits are saved first through the same gate the
+  // Save button uses; a config that cannot be saved is never launched.
+  window.SetStartHandler([&window, &model, &watchdog_child, &watchdog_running,
+                          &run_id, &last_state, config_path, exe, state_dir,
+                          refresh](std::wstring* error) {
+    if (watchdog_running) {
+      if (error != nullptr) *error = L"the watchdog is already running";
+      return false;
+    }
+    if (exe.empty()) {
+      if (error != nullptr) *error = L"cannot locate the watchdog executable";
+      return false;
+    }
+    // A profile-based config can never be saved, so it is never the run's
+    // config either: the supervisor would run a file the editor does not own.
+    if (model.HasProfiles()) {
+      if (error != nullptr) *error = kMultiProfileSaveDisabled;
+      return false;
+    }
+    if (model.dirty()) {
+      if (!window.save_enabled()) {
+        const std::wstring reason = refresh();
+        if (error != nullptr) {
+          *error = reason.empty() ? L"cannot save the config before starting"
+                                  : reason;
+        }
+        return false;
+      }
+      std::string save_error;
+      if (!model.SaveWithBackup(config_path, &save_error)) {
+        if (error != nullptr) *error = Widen(save_error);
+        return false;
+      }
+      // A successful save clears dirty and closes the Save gate; this refresh
+      // also re-evaluates the Start gate.
+      refresh();
+    }
+    // The gate can close between the click and the launch (another supervisor
+    // took the state dir), so it is re-checked right before starting.
+    if (!window.start_enabled()) {
+      const std::wstring reason = refresh();
+      if (error != nullptr) {
+        *error = reason.empty() ? L"another watchdog is already running"
+                                : reason;
+      }
+      return false;
+    }
+
+    const std::wstring new_run_id = MakeUiRunId(GetTickCount64());
+    const std::wstring command =
+        BuildSupervisorCommandLine(exe, config_path, state_dir, new_run_id);
+    PROCESS_INFORMATION child{};
+    std::wstring launch_error;
+    if (!LaunchDetached(command, &child, &launch_error)) {
+      if (error != nullptr) {
+        *error =
+            launch_error.empty() ? L"cannot start the watchdog" : launch_error;
+      }
+      return false;
+    }
+    CloseHandle(child.hThread);
+    watchdog_child = child.hProcess;
+    watchdog_running = true;
+    run_id = new_run_id;
+    last_state.clear();
+    // This refresh closes the Start gate for the life of the run.
+    refresh();
+    window.StartWatchdogPoll();
+    window.SetStatus(WatchdogStatusText(run_id, L""));
+    return true;
+  });
+
+  // Stop asks the run to shut down and reports its exit code. --stop returns
+  // after the supervisor's last cleanup step, so the process is reaped here
+  // before Start reopens.
+  window.SetStopHandler([&window, &watchdog_child, &watchdog_running, &run_id,
+                         &last_state, exe, state_dir,
+                         refresh](std::wstring* error) {
+    if (!watchdog_running || watchdog_child == nullptr) {
+      if (error != nullptr) *error = L"no watchdog is running";
+      return false;
+    }
+    const std::wstring command = BuildStopCommandLine(exe, state_dir, run_id);
+    DWORD exit_code = 1;
+    std::wstring stop_error;
+    if (!RunAndWait(command, 15000, &exit_code, &stop_error)) {
+      if (error != nullptr) {
+        *error = stop_error.empty() ? L"cannot stop the watchdog" : stop_error;
+      }
+      return false;
+    }
+    if (exit_code != 0) {
+      if (error != nullptr) {
+        *error = L"watchdog stop failed (exit " +
+                 std::to_wstring(exit_code) + L")";
+      }
+      return false;
+    }
+    if (WaitForSingleObject(watchdog_child, 5000) != WAIT_OBJECT_0) {
+      if (error != nullptr) *error = L"the watchdog did not exit after stopping";
+      return false;
+    }
+    CloseHandle(watchdog_child);
+    watchdog_child = nullptr;
+    watchdog_running = false;
+    run_id.clear();
+    last_state.clear();
+    window.StopWatchdogPoll();
+    // The state-dir mutex is gone with the supervisor, so this reopens Start.
+    refresh();
+    window.SetStatus(L"watchdog stopped");
+    return true;
+  });
+
+  // The liveness poll mirrors the run's last journalled state (the same name
+  // --status prints) and reaps the child, so a supervisor that exits on its own
+  // reopens Start instead of leaving the editor stuck on "started".
+  window.SetWatchdogPollHandler([&window, &watchdog_child, &watchdog_running,
+                                 &run_id, &last_state, refresh]() {
+    if (watchdog_child == nullptr) return;
+    if (WaitForSingleObject(watchdog_child, 0) == WAIT_OBJECT_0) {
+      CloseHandle(watchdog_child);
+      watchdog_child = nullptr;
+      watchdog_running = false;
+      run_id.clear();
+      last_state.clear();
+      window.StopWatchdogPoll();
+      refresh();
+      window.SetStatus(L"watchdog stopped");
+      return;
+    }
+    // Only a state change rewrites the line, so an edit's own status is not
+    // erased on every tick.
+    const std::wstring state = ReadRunState(run_id);
+    if (!state.empty() && state != last_state) {
+      last_state = state;
+      window.SetStatus(WatchdogStatusText(run_id, state));
+    }
+  });
+
   window.SetRows(rows);
   window.SetStatus(model.HasProfiles()
                        ? kMultiProfileSaveDisabled
                        : Widen(ConfigStatusText(loaded, rows, config_path)));
-  // Nothing is dirty before the first edit, so Save starts closed.
-  window.SetSaveEnabled(false);
-  return window.RunMessageLoop();
+  // One refresh derives every gate from the same model snapshot: nothing is
+  // dirty before the first edit, so Save starts closed, and Start opens only
+  // for a clean, runnable config that no supervisor already owns.
+  refresh();
+  const int result = window.RunMessageLoop();
+  // The supervisor is detached on purpose (a UI crash must not kill a running
+  // watchdog), so closing the editor only releases the local child handle.
+  if (watchdog_child != nullptr) {
+    CloseHandle(watchdog_child);
+    watchdog_child = nullptr;
+  }
+  return result;
 }
 
 } // namespace htmlppt

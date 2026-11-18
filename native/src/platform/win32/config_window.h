@@ -77,6 +77,10 @@ using ToolbarHandler = std::function<bool(std::wstring* error)>;
 using RemoveHandler =
     std::function<bool(std::size_t index, std::wstring* error)>;
 
+// The WM_TIMER id of the watchdog liveness poll. Public so a test can deliver
+// one tick without waiting for a real timer.
+inline constexpr UINT kWatchdogPollTimerId = 7;
+
 // The close policy: a window with no pending edits always closes; a dirty one
 // only when the user answered the close prompt with Save and that save went
 // through (answer_save). Cancel and a failed save keep the window and its edits
@@ -171,6 +175,24 @@ class ConfigWindow {
   // success status; the view only routes the keys and reports a failure.
   void SetUndoHandler(ToolbarHandler handler);
   void SetRedoHandler(ToolbarHandler handler);
+
+  // The watchdog toolbar actions. Start launches a detached supervisor; Stop
+  // asks that run to shut down. Both handlers own their success status line
+  // ("watchdog started: <id>", "watchdog stopped"); the view reports a failure.
+  // Start is only reachable while the app has opened the gate: the config is
+  // saved and healthy and no other supervisor owns the state directory.
+  void SetStartHandler(ToolbarHandler handler);
+  void SetStopHandler(ToolbarHandler handler);
+  void SetStartEnabled(bool enabled);
+  bool start_enabled() const { return start_enabled_; }
+
+  // The watchdog liveness poll. While a launched supervisor is alive the app
+  // starts a 500 ms window timer; each tick calls this handler, which reaps the
+  // child, reopens Start, and mirrors the run state. Installing no handler
+  // leaves the timer a no-op.
+  void SetWatchdogPollHandler(std::function<void()> handler);
+  void StartWatchdogPoll();
+  void StopWatchdogPoll();
   // Routes one WM_KEYDOWN as an editor shortcut. `focus_in_edit` is true when
   // the focused control is a detail EDIT: plain Ctrl+Z then belongs to that
   // control's own text undo and must not be consumed, while Ctrl+Y and
@@ -206,6 +228,8 @@ class ConfigWindow {
   HWND remove_button() const { return remove_button_; }
   HWND save_button() const { return save_button_; }
   HWND validate_button() const { return validate_button_; }
+  HWND start_button() const { return start_button_; }
+  HWND stop_button() const { return stop_button_; }
 
   // The layout DPI (96 = 100%). The initial window size and every layout
   // metric scale with it; tests derive their expectations from this instead of
@@ -245,6 +269,8 @@ class ConfigWindow {
   void RemoveSelectedTarget();
   void SaveConfig();
   void ValidateConfig();
+  void StartWatchdog();
+  void StopWatchdog();
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;
@@ -253,6 +279,8 @@ class ConfigWindow {
   HWND remove_button_ = nullptr;
   HWND save_button_ = nullptr;
   HWND validate_button_ = nullptr;
+  HWND start_button_ = nullptr;
+  HWND stop_button_ = nullptr;
   HWND detail_slide_label_ = nullptr;
   HWND detail_slide_edit_ = nullptr;
   HWND detail_label_label_ = nullptr;
@@ -283,9 +311,14 @@ class ConfigWindow {
   ToolbarHandler validate_handler_;
   ToolbarHandler undo_handler_;
   ToolbarHandler redo_handler_;
+  ToolbarHandler start_handler_;
+  ToolbarHandler stop_handler_;
+  std::function<void()> watchdog_poll_handler_;
+  bool watchdog_poll_running_ = false;
   std::function<bool()> remove_confirm_handler_;
   std::function<int()> close_prompt_handler_;
   bool save_enabled_ = false;
+  bool start_enabled_ = false;
   bool dirty_ = false;
   UINT dpi_ = 96;
 };

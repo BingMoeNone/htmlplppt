@@ -73,7 +73,7 @@ endif()
 
 add_executable(htmlppt-watchdog src/app/main.cpp src/app/cli.cpp
   src/app/config_ui.cpp src/app/deck_info_loader.cpp src/app/supervisor.cpp
-  src/app/worker_session.cpp
+  src/app/watchdog_launcher.cpp src/app/worker_session.cpp
   ${HTMLPPT_WIN32_RESOURCES})
 target_link_libraries(htmlppt-watchdog PRIVATE htmlppt_core)
 if (WIN32)
@@ -161,6 +161,7 @@ if (HTMLPPT_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/test_main.cpp"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/app/deck_info_loader.cpp"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/app/supervisor.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/app/watchdog_launcher.cpp"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/app/worker_session.cpp")
     target_include_directories(htmlppt_win32_tests PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/tests")

@@ -24,6 +24,12 @@ constexpr int kAddButtonId = 1002;
 constexpr int kRemoveButtonId = 1003;
 constexpr int kSaveButtonId = 1004;
 constexpr int kValidateButtonId = 1005;
+constexpr int kStartButtonId = 1006;
+constexpr int kStopButtonId = 1007;
+
+// How often the liveness poll checks a launched supervisor. Fast enough that a
+// crashed supervisor reopens Start promptly, slow enough to be free.
+constexpr UINT kWatchdogPollIntervalMs = 500;
 
 // The assets combo's first entry: the target keeps inheriting the stage mode.
 constexpr wchar_t kInheritAssets[] = L"inherit";
@@ -46,7 +52,9 @@ constexpr int kDetailMargin = 12;
 constexpr int kPaneApplyTop = 328;
 constexpr int kPaneApplyHeight = 28;
 constexpr int kPaneBottomMargin = 8;
-constexpr int kMinClientWidth = 560;
+// The minimum width fits the whole toolbar: margin + six 88 px buttons + five
+// gaps + a margin, with room to spare.
+constexpr int kMinClientWidth = 600;
 constexpr int kMinClientHeight =
     kToolbarHeight + kPaneApplyTop + kPaneApplyHeight + kPaneBottomMargin +
     kStatusHeight;
@@ -332,8 +340,10 @@ void ConfigWindow::CreateChildren() {
   // One font for the whole window, created at the window's current DPI. It is
   // applied once every child exists, and recreated on WM_DPICHANGED.
   CreateFontForDpi();
-  // Toolbar: Add / Remove / Save / Validate, created first so the tab order
-  // starts with the actions and the list keeps its own keyboard navigation.
+  // Toolbar: Add / Remove / Save / Validate / Start / Stop, created first so
+  // the tab order starts with the actions and the list keeps its own keyboard
+  // navigation. Start and Stop are the watchdog actions; they sit after the
+  // editor actions so a stray Enter never launches a run.
   const auto make_button = [&](const wchar_t* text, int id) {
     return CreateWindowExW(
         0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -345,6 +355,8 @@ void ConfigWindow::CreateChildren() {
   remove_button_ = make_button(L"Remove", kRemoveButtonId);
   save_button_ = make_button(L"Save", kSaveButtonId);
   validate_button_ = make_button(L"Validate", kValidateButtonId);
+  start_button_ = make_button(L"Start", kStartButtonId);
+  stop_button_ = make_button(L"Stop", kStopButtonId);
 
   list_view_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
@@ -413,6 +425,8 @@ void ConfigWindow::CreateChildren() {
   UpdateDetailEnabled();
   // Nothing is dirty before the first edit, so Save starts closed.
   SetSaveEnabled(false);
+  // The app opens the Start gate once the config is saved and runnable.
+  SetStartEnabled(false);
   ApplyFont();
   // Children exist now, so the list colours and the DWM title bar can be set;
   // the window's own erase brush was already created before it opened.
@@ -459,6 +473,7 @@ void ConfigWindow::ApplyFont() {
   // stays readable instead of clipping in geometry that has already grown.
   HWND children[] = {add_button_,          remove_button_,
                      save_button_,         validate_button_,
+                     start_button_,        stop_button_,
                      list_view_,           status_view_,
                      detail_slide_label_,  detail_slide_edit_,
                      detail_label_label_,  detail_label_edit_,
@@ -484,7 +499,8 @@ void ConfigWindow::Layout(int width, int height) {
   const int toolbar_height = Scale(kToolbarHeight);
   const int button_height = Scale(kToolbarButtonHeight);
   const int button_width = Scale(kToolbarButtonWidth);
-  HWND toolbar[] = {add_button_, remove_button_, save_button_, validate_button_};
+  HWND toolbar[] = {add_button_,      remove_button_, save_button_,
+                    validate_button_, start_button_,  stop_button_};
   int toolbar_x = Scale(kToolbarMargin);
   for (HWND button : toolbar) {
     if (button == nullptr) continue;
@@ -729,6 +745,36 @@ void ConfigWindow::SetRedoHandler(ToolbarHandler handler) {
   redo_handler_ = std::move(handler);
 }
 
+void ConfigWindow::SetStartHandler(ToolbarHandler handler) {
+  start_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetStopHandler(ToolbarHandler handler) {
+  stop_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetStartEnabled(bool enabled) {
+  start_enabled_ = enabled;
+  if (start_button_ != nullptr) {
+    EnableWindow(start_button_, enabled ? TRUE : FALSE);
+  }
+}
+
+void ConfigWindow::SetWatchdogPollHandler(std::function<void()> handler) {
+  watchdog_poll_handler_ = std::move(handler);
+}
+
+void ConfigWindow::StartWatchdogPoll() {
+  if (handle_ == nullptr || !watchdog_poll_handler_) return;
+  watchdog_poll_running_ = true;
+  SetTimer(handle_, kWatchdogPollTimerId, kWatchdogPollIntervalMs, nullptr);
+}
+
+void ConfigWindow::StopWatchdogPoll() {
+  watchdog_poll_running_ = false;
+  if (handle_ != nullptr) KillTimer(handle_, kWatchdogPollTimerId);
+}
+
 bool ConfigWindow::HandleEditorKey(bool focus_in_edit, bool ctrl, bool shift,
                                    int vk) {
   if (!ctrl) return false;
@@ -870,6 +916,25 @@ void ConfigWindow::ValidateConfig() {
   std::wstring error;
   if (!validate_handler_(&error)) {
     SetStatus(error.empty() ? L"configuration is invalid" : error);
+  }
+}
+
+void ConfigWindow::StartWatchdog() {
+  // The button is disabled while the gate is closed, so this only guards the
+  // synthetic WM_COMMAND route: a closed gate must never launch a run.
+  if (!start_enabled_) return;
+  if (!start_handler_) return;
+  std::wstring error;
+  if (!start_handler_(&error)) {
+    SetStatus(error.empty() ? L"cannot start the watchdog" : error);
+  }
+}
+
+void ConfigWindow::StopWatchdog() {
+  if (!stop_handler_) return;
+  std::wstring error;
+  if (!stop_handler_(&error)) {
+    SetStatus(error.empty() ? L"cannot stop the watchdog" : error);
   }
 }
 
@@ -1048,6 +1113,15 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_CLOSE:
       OnClose();
       return 0;
+    case WM_TIMER: {
+      // Only the running liveness poll is dispatched; any other timer id (or a
+      // tick after the poll stopped) is not the watchdog's.
+      if (wparam == kWatchdogPollTimerId && watchdog_poll_running_ &&
+          watchdog_poll_handler_) {
+        watchdog_poll_handler_();
+      }
+      return 0;
+    }
     case WM_KEYDOWN: {
       // GetKeyState reads the thread's key state, which is why the routing
       // itself is a helper: a test can exercise it without physical input.
@@ -1079,6 +1153,12 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
           return 0;
         case kValidateButtonId:
           ValidateConfig();
+          return 0;
+        case kStartButtonId:
+          StartWatchdog();
+          return 0;
+        case kStopButtonId:
+          StopWatchdog();
           return 0;
         default:
           return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -1118,6 +1198,8 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         background_brush_ = nullptr;
         brush_color_ = CLR_INVALID;
       }
+      KillTimer(hwnd, kWatchdogPollTimerId);
+      watchdog_poll_running_ = false;
       handle_ = nullptr;
       list_view_ = nullptr;
       status_view_ = nullptr;
@@ -1125,6 +1207,8 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       remove_button_ = nullptr;
       save_button_ = nullptr;
       validate_button_ = nullptr;
+      start_button_ = nullptr;
+      stop_button_ = nullptr;
       detail_slide_label_ = nullptr;
       detail_slide_edit_ = nullptr;
       detail_label_label_ = nullptr;
