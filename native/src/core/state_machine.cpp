@@ -122,6 +122,10 @@ Duration StateMachine::EffectiveCoverMaxHold(const TargetPlan& target) const {
   return target.cover_max_hold.value_or(config_.cover_max_hold);
 }
 
+Duration StateMachine::EffectiveEdgeMaxLive(const TargetPlan& target) const {
+  return target.edge_max_live.value_or(config_.edge_max_live);
+}
+
 Duration StateMachine::ReturnCoverMaxHold() const {
   if (!current_target_slide_.has_value()) return config_.cover_max_hold;
   const TargetPlan* target = FindTarget(*current_target_slide_);
@@ -259,7 +263,11 @@ std::vector<Action> StateMachine::OnShowEnded(const Event& event) {
     Enter(State::Live);
     show_active_ = false;
     consecutive_trigger_failures_ = 0;
-    SetDeadline(TimeoutKind::EdgeLive, event.at + config_.edge_max_live);
+    const int slide = current_target_slide_.value_or(0);
+    const TargetPlan* target = FindTarget(slide);
+    SetDeadline(TimeoutKind::EdgeLive,
+                event.at + (target != nullptr ? EffectiveEdgeMaxLive(*target)
+                                              : config_.edge_max_live));
     auto actions = Journal("live", current_target_slide_.value_or(0));
     actions.push_back({ActionKind::CoverFadeOut,
                        current_target_slide_.value_or(0), "reveal Edge"});

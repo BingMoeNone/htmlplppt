@@ -1,10 +1,12 @@
 #include "test_main.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/presentation_host.h"
@@ -13,9 +15,11 @@
 
 using htmlppt::ClockPoint;
 using htmlppt::Duration;
+using htmlppt::FocusStrategy;
 using htmlppt::HostStatus;
 using htmlppt::State;
 using htmlppt::ScreenMetrics;
+using htmlppt::WindowId;
 using htmlppt::WindowInfo;
 using htmlppt::WindowRect;
 using htmlppt::WorkerHostConfig;
@@ -35,6 +39,47 @@ bool JournalContains(const std::vector<std::string>& journal,
     if (entry.find(text) != std::string::npos) return true;
   }
   return false;
+}
+
+// A WPS slideshow window the focus scorer accepts. The rect matters: the focus
+// layer only targets a window that covers 90% of the reference screen.
+WindowInfo MakeWpsShowWindow(WindowId id, std::uint32_t pid, int width,
+                             int height) {
+  WindowInfo window;
+  window.id = id;
+  window.pid = pid;
+  window.class_name = "screenClass";
+  window.title = "Slide Show";
+  window.rect = WindowRect{0, 0, width, height};
+  window.visible = true;
+  window.ws_popup = true;
+  window.has_min_box = false;
+  window.has_max_box = false;
+  return window;
+}
+
+// Drives one forward trigger from Monitoring to Returning, where the next cover
+// hold emits ResumeShow + FocusWps. The caller seeds plan/config/host and
+// rebuilds the runtime first, then finishes the return with one more cover hold.
+void ReachReturning(WorkerHarness& h, WindowInfo wps) {
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.Step();  // Warming -> Monitoring
+  h.presentation.show.slide = 2;
+  h.Step();  // leave-forward -> CoverIn
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> EdgeStarting + LaunchEdge
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
+  h.windows.windows = {MakeWindow(1, h.launcher.pid, "TEF-LIVE-STAGE")};
+  h.Step();  // EdgeReady -> ShowExit
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ShowExit);
+  h.presentation.show = MakeShowState(HostStatus::Ok, false, 0);
+  h.Step();  // ShowEnded -> Live
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Live);
+  h.windows.windows = {MakeWindow(2, h.launcher.pid, "TEF-LIVE-RETURN"),
+                       std::move(wps)};
+  h.Step();  // ReturnRequested -> Returning
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
 }
 
 } // namespace
@@ -651,4 +696,121 @@ HTMLPPT_TEST_CASE(worker_runtime_injects_resume_and_display_faults) {
       JournalContains(h.runtime.journal(), "fault injected: sleep-resume"));
   HTMLPPT_CHECK(
       JournalContains(h.runtime.journal(), "fault injected: multi-monitor"));
+}
+
+// focus.require=false means "do not force the WPS window": the FocusWps action
+// must not activate anything at all. The resume still proves the action fired.
+HTMLPPT_TEST_CASE(worker_runtime_focus_require_false_skips_wps_activation) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_require = false;
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.wps_pids = {77};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 1920, 1080));
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> ResumeShow + skipped FocusWps
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ReturnCoverOut);
+  HTMLPPT_CHECK_EQ(h.presentation.resume_slides.size(), std::size_t{1});
+  for (const auto id : h.windows.activate_calls) {
+    HTMLPPT_CHECK(id != WindowId{9});
+  }
+}
+
+// require=true keeps the normal activation, and the target's focus.strategy
+// must reach the focus controller instead of the global Auto chain.
+HTMLPPT_TEST_CASE(worker_runtime_applies_per_target_focus_strategy) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_strategy = "switch";
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.wps_pids = {77};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 1920, 1080));
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> ResumeShow + FocusWps
+  bool activated = false;
+  for (const auto& call : h.windows.activate_with_calls) {
+    if (call.first != WindowId{9}) continue;
+    activated = true;
+    HTMLPPT_CHECK(call.second == FocusStrategy::Switch);
+  }
+  HTMLPPT_CHECK(activated);
+}
+
+// The target's focus.timeout bounds the FocusWps attempt. With the idle poll
+// disabled the fake clock only moves inside the focus controller, so the Step's
+// elapsed time is the applied timeout.
+HTMLPPT_TEST_CASE(worker_runtime_applies_per_target_focus_timeout) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_timeout = Duration{250};
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.wps_pids = {77};
+  h.host.poll_interval = Duration{0};
+  h.rebuild();
+
+  // Only the return Edge window exists, so FocusWps cannot match and exhausts
+  // exactly its timeout before giving up.
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 1920, 1080));
+  h.windows.windows = {MakeWindow(2, h.launcher.pid, "TEF-LIVE-RETURN")};
+  const ClockPoint before = h.clock.now();
+  const Duration cover_wait =
+      h.host.cover.fade + h.host.cover.hold + Duration{1};
+  h.advance(cover_wait);
+  h.Step();  // CoverHold -> FocusWps times out after the target's 250 ms
+  HTMLPPT_CHECK_EQ(h.clock.now() - before, cover_wait + Duration{250});
+}
+
+// A target display override replaces the host screen for the show-window
+// scorer: this window is too small for the 1920x1080 host screen but big enough
+// for the target's 640x360 monitor.
+HTMLPPT_TEST_CASE(worker_runtime_applies_per_target_screen_on_trigger) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.screen_width = 640;
+  target.screen_height = 360;
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.wps_pids = {77};
+  h.host.screen = ScreenMetrics{1920, 1080};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 600, 330));
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> FocusWps with the target's screen
+  bool activated = false;
+  for (const auto id : h.windows.activate_calls) {
+    if (id == WindowId{9}) activated = true;
+  }
+  HTMLPPT_CHECK(activated);
+}
+
+// Without a display override the same window is rejected by the host screen, so
+// the previous test's activation really comes from the per-target value.
+HTMLPPT_TEST_CASE(worker_runtime_keeps_the_host_screen_without_an_override) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.wps_pids = {77};
+  h.host.screen = ScreenMetrics{1920, 1080};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 600, 330));
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> FocusWps cannot match the 1920x1080 screen
+  for (const auto id : h.windows.activate_calls) {
+    HTMLPPT_CHECK(id != WindowId{9});
+  }
 }

@@ -143,6 +143,14 @@ WorkerPlan MakePlanWithEverything() {
   first.on_failure = htmlppt::OnFailurePolicy::Strict;
   first.max_consecutive_trigger_failures = 2;
   first.cover_max_hold = Duration{7500};
+  // Per-target host settings: only the plan carries them from the config/worker
+  // handoff to the runtime, so the round-trip must preserve every field.
+  first.edge_max_live = Duration{90000};
+  first.focus_timeout = Duration{4500};
+  first.focus_strategy = "attach-alt";
+  first.screen_width = 2560;
+  first.screen_height = 1440;
+  first.focus_require = false;
 
   TargetPlan second;
   second.slide = 6;
@@ -230,6 +238,50 @@ HTMLPPT_TEST_CASE(worker_plan_falls_back_to_config_defaults) {
   HTMLPPT_CHECK_EQ(plan.machine.targets[0].cover_max_hold, Duration{9000});
 }
 
+// The machine plan is the only carrier for per-target edge/focus settings: the
+// worker reads it from disk, so an override that is not copied here is lost.
+HTMLPPT_TEST_CASE(worker_plan_copies_per_target_edge_and_focus_overrides) {
+  const Config config = ParseConfig(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "defaults": {
+      "edge": { "maxLiveMs": 420000 },
+      "focus": { "strategy": "auto", "require": true }
+    },
+    "targets": [
+      {
+        "slide": 3,
+        "html": "page3.html",
+        "label": "Three",
+        "edge": { "maxLiveMs": 15000 },
+        "focus": { "strategy": "switch", "require": false },
+        "display": { "monitor": 2 }
+      },
+      { "slide": 5, "html": "page5.html", "label": "Five" }
+    ]
+  })");
+  const ResolveResult resolved = ResolveTestTargets(config);
+  const WorkerPlan plan = BuildWorkerPlan(config, resolved, 12, "run-1");
+  HTMLPPT_CHECK_EQ(plan.machine.targets.size(), std::size_t{2});
+
+  const TargetPlan& overridden = plan.machine.targets[0];
+  HTMLPPT_CHECK_EQ(overridden.slide, 3);
+  HTMLPPT_CHECK_EQ(overridden.edge_max_live, Duration{15000});
+  HTMLPPT_CHECK_EQ(overridden.focus_strategy, std::string{"switch"});
+  HTMLPPT_CHECK(!overridden.focus_require);
+  // No config key feeds a focus timeout, so the plan leaves it to the host.
+  HTMLPPT_CHECK(!overridden.focus_timeout.has_value());
+  // Display metrics are a Windows fact: the app fills the screen, not core.
+  HTMLPPT_CHECK(!overridden.screen_width.has_value());
+  HTMLPPT_CHECK(!overridden.screen_height.has_value());
+
+  const TargetPlan& plain = plan.machine.targets[1];
+  HTMLPPT_CHECK_EQ(plain.slide, 5);
+  HTMLPPT_CHECK(!plain.edge_max_live.has_value());
+  HTMLPPT_CHECK(!plain.focus_strategy.has_value());
+  HTMLPPT_CHECK(plain.focus_require);
+}
+
 HTMLPPT_TEST_CASE(worker_plan_sorts_both_vectors_by_slide) {
   const Config config = ParseConfig(R"({
     "version": 1,
@@ -279,6 +331,12 @@ HTMLPPT_TEST_CASE(worker_plan_json_round_trip_preserves_every_field) {
     HTMLPPT_CHECK_EQ(actual.max_consecutive_trigger_failures,
                      expected.max_consecutive_trigger_failures);
     HTMLPPT_CHECK_EQ(actual.cover_max_hold, expected.cover_max_hold);
+    HTMLPPT_CHECK_EQ(actual.edge_max_live, expected.edge_max_live);
+    HTMLPPT_CHECK_EQ(actual.focus_timeout, expected.focus_timeout);
+    HTMLPPT_CHECK_EQ(actual.focus_strategy, expected.focus_strategy);
+    HTMLPPT_CHECK_EQ(actual.screen_width, expected.screen_width);
+    HTMLPPT_CHECK_EQ(actual.screen_height, expected.screen_height);
+    HTMLPPT_CHECK(actual.focus_require == expected.focus_require);
     HTMLPPT_CHECK(actual.enabled == expected.enabled);
   }
   for (std::size_t i = 0; i < in.targets.size(); ++i) {
@@ -314,6 +372,38 @@ HTMLPPT_TEST_CASE(worker_plan_json_rejects_target_count_mismatch) {
   std::string error;
   HTMLPPT_CHECK(!WorkerPlanFromJson(
                     R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3}]},"targets":[]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
+}
+
+HTMLPPT_TEST_CASE(worker_plan_json_rejects_non_positive_edge_max_live) {
+  std::string error;
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"edgeMaxLiveMs":0}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"focusTimeoutMs":-1}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+}
+
+HTMLPPT_TEST_CASE(worker_plan_json_rejects_a_bad_focus_strategy) {
+  std::string error;
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"focusStrategy":"bogus"}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(error.find("focusStrategy") != std::string::npos);
+}
+
+HTMLPPT_TEST_CASE(worker_plan_json_rejects_non_positive_screen_metrics) {
+  std::string error;
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"screenWidth":-5}]},"targets":[{"slide":3}]})",
                     &error)
                     .has_value());
   HTMLPPT_CHECK(!error.empty());

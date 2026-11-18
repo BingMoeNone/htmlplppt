@@ -378,9 +378,15 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
     return false;
   }
 
-  const WorkerPlan plan =
-      BuildWorkerPlan(config, resolved,
-                      static_cast<int>(deck.info->slides.size()), run_id);
+  WorkerPlan plan = BuildWorkerPlan(config, resolved,
+                                    static_cast<int>(deck.info->slides.size()),
+                                    run_id);
+  // The plan is the only channel to the worker, so the display metrics for each
+  // target must be resolved before the file is written. A run with no enabled
+  // targets skips the fill entirely.
+  if (!plan.machine.targets.empty()) {
+    ResolveTargetScreens(plan.machine, config, plan.targets);
+  }
   std::string write_error;
   if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
                            &write_error)) {
@@ -396,6 +402,26 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
 }
 
 } // namespace
+
+void ResolveTargetScreens(RunPlan& plan, const Config& config,
+                          const std::vector<ResolvedTarget>& resolved) {
+  // The plan's target and host-spec vectors are index aligned; the spec's
+  // ordinal points at the source config target that owns display.monitor.
+  const std::size_t count = std::min(plan.targets.size(), resolved.size());
+  for (std::size_t i = 0; i < count; ++i) {
+    const int ordinal = resolved[i].ordinal;
+    if (ordinal < 1) continue;
+    const auto index = static_cast<std::size_t>(ordinal - 1);
+    if (index >= config.active.targets.size()) continue;
+    const TargetConfig& source = config.active.targets[index];
+    if (!source.display.has_value()) continue;
+    const ScreenSelection selection =
+        SelectScreenMetrics(source.display->monitor);
+    if (selection.metrics.width <= 0 || selection.metrics.height <= 0) continue;
+    plan.targets[i].screen_width = selection.metrics.width;
+    plan.targets[i].screen_height = selection.metrics.height;
+  }
+}
 
 std::size_t TerminatePids(std::span<const std::uint32_t> pids) {
   std::size_t terminated = 0;

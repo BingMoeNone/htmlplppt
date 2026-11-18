@@ -739,6 +739,43 @@ HTMLPPT_TEST_CASE(state_machine_per_target_failure_threshold_override) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
 }
 
+// The edge.maxLiveMs override belongs to the target, not the run: a target that
+// asks for a short live window must time out on it even when the global value is
+// far longer, and a target without the override must keep using the global.
+HTMLPPT_TEST_CASE(state_machine_per_target_edge_max_live_override) {
+  StateMachineConfig config = MakeConfig();
+  config.edge_max_live = Duration{10000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].edge_max_live = Duration{100};
+
+  Machine m(config, plan);
+  m.ReachLive();
+  m.Advance(99);
+  HTMLPPT_CHECK(m.machine->Tick().empty());
+  HTMLPPT_CHECK(m.machine->state() == State::Live);
+  m.Advance(1);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+}
+
+HTMLPPT_TEST_CASE(state_machine_edge_max_live_falls_back_to_the_global_value) {
+  StateMachineConfig config = MakeConfig();
+  config.edge_max_live = Duration{10000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].edge_max_live = std::nullopt;
+
+  Machine m(config, plan);
+  m.ReachLive();
+  m.Advance(9999);
+  HTMLPPT_CHECK(m.machine->Tick().empty());
+  HTMLPPT_CHECK(m.machine->state() == State::Live);
+  m.Advance(2);  // now past the 10 s global deadline
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+}
+
 HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {
   Machine m;
   m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));

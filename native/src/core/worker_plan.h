@@ -51,8 +51,11 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
 // Maps the resolved configuration onto one TargetPlan per enabled target.
 // Resolved targets with slide <= 0 are dropped. Effective trigger, on_failure,
 // and cover max-hold fall back to the config defaults when the per-target value
-// is absent. Both vectors are sorted by slide so index i always addresses the
-// same target.
+// is absent. A per-target edge block copies its maxLiveMs and a per-target focus
+// block copies its strategy/require; both stay unset otherwise so the machine
+// and host keep their globals. The screen fields stay unset because display
+// metrics are a platform fact the app fills in (ResolveTargetScreens).
+// Both vectors are sorted by slide so index i always addresses the same target.
 WorkerPlan BuildWorkerPlan(const Config& config, const ResolveResult& resolved,
                            int slide_count, std::string run_id);
 

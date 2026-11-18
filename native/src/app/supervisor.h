@@ -6,10 +6,24 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/config.h"
+#include "core/resolve.h"
+#include "core/state_machine_types.h"
 
 namespace htmlppt {
+
+#ifdef _WIN32
+// Fills each machine target's screen_width/height from its source target's
+// display.monitor. Display metrics are a Windows fact, so this cannot live in
+// the platform-neutral plan builder; `resolved` is the plan's index-aligned
+// host-target vector, whose ordinal names the source config target. A source
+// target without a display block leaves both fields empty (the worker keeps the
+// host/default screen).
+void ResolveTargetScreens(RunPlan& plan, const Config& config,
+                          const std::vector<ResolvedTarget>& resolved);
+#endif
 
 // Terminates every pid in the list and returns how many were terminated. Shared
 // by startup reconciliation; the win32 suite drives it directly.

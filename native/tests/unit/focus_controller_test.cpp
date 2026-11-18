@@ -202,6 +202,26 @@ HTMLPPT_TEST_CASE(focus_controller_uses_the_configured_strategy) {
   HTMLPPT_CHECK(windows.strategies[0] == htmlppt::FocusStrategy::Switch);
 }
 
+// The worker re-applies a target's focus settings at every trigger instead of
+// rebuilding the controller, so SetTiming must take effect for the next attempt.
+HTMLPPT_TEST_CASE(focus_controller_set_timing_updates_strategy_and_timeout) {
+  FakeClock clock;
+  FakeWindows windows;
+  windows.windows = {MakeEdge(1, 100, 800, 600)};
+  windows.allow_activate = false;
+  FocusController controller(
+      windows, clock, FocusTiming{Duration{10}, Duration{100}});
+
+  FocusTiming timing{Duration{10}, Duration{30}, htmlppt::FocusStrategy::Switch};
+  controller.SetTiming(timing);
+  HTMLPPT_CHECK(!controller.FocusEdge(100));
+  // The 30 ms override bounds the attempt, not the constructor's 100 ms.
+  HTMLPPT_CHECK(clock.now() >= ClockPoint(Duration{30}));
+  HTMLPPT_CHECK(clock.now() < ClockPoint(Duration{100}));
+  HTMLPPT_CHECK(!windows.strategies.empty());
+  HTMLPPT_CHECK(windows.strategies.back() == htmlppt::FocusStrategy::Switch);
+}
+
 HTMLPPT_TEST_CASE(focus_strategy_parses_config_strings) {
   HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("auto") == htmlppt::FocusStrategy::Auto);
   HTMLPPT_CHECK(htmlppt::ParseFocusStrategy("attach-alt") == htmlppt::FocusStrategy::AttachAlt);

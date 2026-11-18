@@ -8,7 +8,12 @@ namespace htmlppt {
 
 FocusController::FocusController(WindowSystem& windows, Clock& clock,
                                  FocusTiming timing)
-    : windows_(windows), clock_(clock), timing_(timing) {
+    : windows_(windows), clock_(clock) {
+  SetTiming(timing);
+}
+
+void FocusController::SetTiming(FocusTiming timing) {
+  timing_ = timing;
   if (timing_.interval < Duration{1}) {
     timing_.interval = Duration{1};
   }

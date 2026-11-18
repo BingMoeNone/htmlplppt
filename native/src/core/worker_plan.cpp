@@ -152,6 +152,39 @@ bool ReadOptionalInt(const json& object, const char* key,
   return true;
 }
 
+// Optional positive integer (a millisecond timing or a screen dimension). Zero
+// and negative values would disable or invert the value at the other end of the
+// handoff, so they are rejected here rather than becoming an immediate timeout
+// or an invalid screen reference.
+bool ReadOptionalPositiveInt(const json& object, const char* key,
+                             const std::string& path, std::optional<int>* out,
+                             std::string* error) {
+  std::optional<int> value;
+  if (!ReadOptionalInt(object, key, path, &value, error)) return false;
+  if (value.has_value() && *value <= 0) {
+    SetError(error, path + ": expected a positive integer");
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+bool ReadOptionalString(const json& object, const char* key,
+                        const std::string& path, std::optional<std::string>* out,
+                        std::string* error) {
+  const auto it = object.find(key);
+  if (it == object.end() || it->is_null()) {
+    out->reset();
+    return true;
+  }
+  if (!it->is_string()) {
+    SetError(error, path + ": expected a string");
+    return false;
+  }
+  *out = it->get<std::string>();
+  return true;
+}
+
 bool ReadBool(const json& object, const char* key, const std::string& path,
               bool* out, std::string* error) {
   const auto it = object.find(key);
@@ -215,6 +248,60 @@ bool ReadTargetPlan(const json& value, const std::string& path,
   }
   if (cover_max_hold_ms.has_value()) {
     target->cover_max_hold = Duration{*cover_max_hold_ms};
+  }
+
+  std::optional<int> edge_max_live_ms;
+  if (!ReadOptionalPositiveInt(value, "edgeMaxLiveMs",
+                               path + ".edgeMaxLiveMs", &edge_max_live_ms,
+                               error)) {
+    return false;
+  }
+  if (edge_max_live_ms.has_value()) {
+    target->edge_max_live = Duration{*edge_max_live_ms};
+  }
+
+  std::optional<int> focus_timeout_ms;
+  if (!ReadOptionalPositiveInt(value, "focusTimeoutMs",
+                               path + ".focusTimeoutMs", &focus_timeout_ms,
+                               error)) {
+    return false;
+  }
+  if (focus_timeout_ms.has_value()) {
+    target->focus_timeout = Duration{*focus_timeout_ms};
+  }
+
+  std::optional<std::string> focus_strategy;
+  if (!ReadOptionalString(value, "focusStrategy", path + ".focusStrategy",
+                          &focus_strategy, error)) {
+    return false;
+  }
+  if (focus_strategy.has_value()) {
+    if (*focus_strategy != "auto" && *focus_strategy != "attach-alt" &&
+        *focus_strategy != "switch") {
+      SetError(error, path +
+                          ".focusStrategy: expected auto, attach-alt, or switch");
+      return false;
+    }
+    target->focus_strategy = std::move(*focus_strategy);
+  }
+
+  std::optional<int> screen_width;
+  if (!ReadOptionalPositiveInt(value, "screenWidth", path + ".screenWidth",
+                               &screen_width, error)) {
+    return false;
+  }
+  if (screen_width.has_value()) target->screen_width = *screen_width;
+
+  std::optional<int> screen_height;
+  if (!ReadOptionalPositiveInt(value, "screenHeight", path + ".screenHeight",
+                               &screen_height, error)) {
+    return false;
+  }
+  if (screen_height.has_value()) target->screen_height = *screen_height;
+
+  if (!ReadBool(value, "focusRequire", path + ".focusRequire",
+                &target->focus_require, error)) {
+    return false;
   }
   return ReadBool(value, "enabled", path + ".enabled", &target->enabled, error);
 }
@@ -302,6 +389,32 @@ nlohmann::ordered_json TargetPlanToJson(const TargetPlan& target) {
   } else {
     result["coverMaxHoldMs"] = nullptr;
   }
+  if (target.edge_max_live.has_value()) {
+    result["edgeMaxLiveMs"] = target.edge_max_live->count();
+  } else {
+    result["edgeMaxLiveMs"] = nullptr;
+  }
+  if (target.focus_timeout.has_value()) {
+    result["focusTimeoutMs"] = target.focus_timeout->count();
+  } else {
+    result["focusTimeoutMs"] = nullptr;
+  }
+  if (target.focus_strategy.has_value()) {
+    result["focusStrategy"] = *target.focus_strategy;
+  } else {
+    result["focusStrategy"] = nullptr;
+  }
+  if (target.screen_width.has_value()) {
+    result["screenWidth"] = *target.screen_width;
+  } else {
+    result["screenWidth"] = nullptr;
+  }
+  if (target.screen_height.has_value()) {
+    result["screenHeight"] = *target.screen_height;
+  } else {
+    result["screenHeight"] = nullptr;
+  }
+  result["focusRequire"] = target.focus_require;
   result["enabled"] = target.enabled;
   return result;
 }
@@ -365,6 +478,17 @@ WorkerPlan BuildWorkerPlan(const Config& config, const ResolveResult& resolved,
     } else {
       machine.cover_max_hold = Duration{config.defaults.cover.max_hold_ms};
     }
+    // The globals keep their state-machine/host defaults when the target has no
+    // override, so the fields stay unset instead of duplicating a value that the
+    // worker already derives from the effective config.
+    if (source->edge.has_value()) {
+      machine.edge_max_live = Duration{source->edge->max_live_ms};
+    }
+    if (source->focus.has_value()) {
+      machine.focus_strategy = source->focus->strategy;
+      machine.focus_require = source->focus->require;
+    }
+    // screen_width/height stay empty: display metrics are the app's fact.
 
     entries.push_back(Entry{std::move(machine), spec});
   }

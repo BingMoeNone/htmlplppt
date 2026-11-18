@@ -25,6 +25,11 @@ class FocusController {
  public:
   FocusController(WindowSystem& windows, Clock& clock, FocusTiming timing = {});
 
+  // Replaces the timing used by the next attempt. The worker applies each
+  // target's focus timeout/strategy at trigger start, so it must update the
+  // controller rather than rebuild it; the interval floor still applies.
+  void SetTiming(FocusTiming timing);
+
   bool FocusEdge(std::uint32_t edge_pid);
   // Single non-blocking attempt: one window selection and one activation, no
   // retry loop and no sleep. Callers that must keep the loop's poll cadence use

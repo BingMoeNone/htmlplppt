@@ -88,9 +88,22 @@ class WorkerRuntime : public WorkerDriver {
   void Handle(const Event& event);
   void Dispatch(const std::vector<Action>& actions);
   void Execute(const Action& action);
+  // Applies the in-flight target's focus/screen overrides on top of the host
+  // baseline. Called when a trigger starts; a target without an override keeps
+  // the baseline, so the previous target's values never leak forward.
+  void ApplyTargetSettings(int slide);
+  const TargetPlan* FindTarget(int slide) const;
+  // focus.require=false makes FocusWps inert; a slide without a target keeps the
+  // default requirement so the show-start focus still runs.
+  bool FocusRequired(int slide) const;
 
   WorkerPlan plan_;
   WorkerHostConfig host_;
+  // The global focus/screen values from the host config. Every trigger derives
+  // the effective settings from these instead of restoring the shared host
+  // fields after the target finishes.
+  FocusTiming base_focus_;
+  ScreenMetrics base_screen_;
   WorkerPorts ports_;
   CoverController cover_;
   EdgeController edge_;

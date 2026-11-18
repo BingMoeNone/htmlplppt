@@ -40,6 +40,8 @@ WorkerRuntime::WorkerRuntime(WorkerPlan plan, StateMachineConfig config,
                              WorkerPorts ports, WorkerHostConfig host)
     : plan_(std::move(plan)),
       host_(std::move(host)),
+      base_focus_(host_.focus),
+      base_screen_(host_.screen),
       ports_(ports),
       cover_(host_.cover, ports_.clock, ports_.overlay),
       edge_(ports_.launcher),
@@ -69,6 +71,10 @@ bool WorkerRuntime::Step() {
   ScreenMetrics changed_screen;
   if (ports_.overlay.ConsumeDisplayChange(&changed_screen)) {
     host_.screen = changed_screen;
+    // A detected display change is the new host baseline: a later trigger without
+    // a per-target display override must keep it rather than restoring the
+    // construction-time monitor.
+    base_screen_ = changed_screen;
     AppendJournal("display change: " + std::to_string(changed_screen.width) +
                   "x" + std::to_string(changed_screen.height));
   }
@@ -82,6 +88,7 @@ bool WorkerRuntime::Step() {
     host_.screen.width = host_.screen.width > 0 ? host_.screen.width / 2 : 1280;
     host_.screen.height =
         host_.screen.height > 0 ? host_.screen.height / 2 : 720;
+    base_screen_ = host_.screen;
     AppendJournal("fault injected: multi-monitor (" +
                   std::to_string(host_.screen.width) + "x" +
                   std::to_string(host_.screen.height) + ")");
@@ -302,6 +309,11 @@ void WorkerRuntime::Execute(const Action& action) {
   // escalate, or enter Faulted).
   switch (action.kind) {
     case ActionKind::CoverFadeIn:
+      // The trigger's cover fade is where the in-flight target's focus and
+      // display settings take effect. Re-applying them on the return/retry fades
+      // of the same target is idempotent, and the baseline rebuild means a later
+      // target without an override cannot inherit these values.
+      ApplyTargetSettings(action.slide);
       cover_.FadeIn();
       break;
     case ActionKind::CoverFadeOut:
@@ -360,8 +372,10 @@ void WorkerRuntime::Execute(const Action& action) {
       break;
     case ActionKind::FocusWps:
       // An empty pid list can never match a WPS window, so calling the
-      // controller would only burn its full focus timeout.
-      if (!host_.faults.focus_deny && !host_.wps_pids.empty()) {
+      // controller would only burn its full focus timeout. focus.require=false
+      // is an explicit "do not force WPS", so it performs no activation at all.
+      if (!host_.faults.focus_deny && !host_.wps_pids.empty() &&
+          FocusRequired(action.slide)) {
         focus_.FocusWps(host_.wps_pids, host_.screen);
       }
       break;
@@ -382,6 +396,42 @@ void WorkerRuntime::Execute(const Action& action) {
                     ")");
       break;
   }
+}
+
+const TargetPlan* WorkerRuntime::FindTarget(int slide) const {
+  for (const auto& target : plan_.machine.targets) {
+    if (target.slide == slide) return &target;
+  }
+  return nullptr;
+}
+
+bool WorkerRuntime::FocusRequired(int slide) const {
+  const TargetPlan* target = FindTarget(slide);
+  return target == nullptr || target->focus_require;
+}
+
+void WorkerRuntime::ApplyTargetSettings(int slide) {
+  FocusTiming timing = base_focus_;
+  ScreenMetrics screen = base_screen_;
+  const TargetPlan* target = FindTarget(slide);
+  if (target != nullptr) {
+    if (target->focus_timeout.has_value()) {
+      timing.timeout = *target->focus_timeout;
+    }
+    if (target->focus_strategy.has_value()) {
+      timing.strategy = ParseFocusStrategy(*target->focus_strategy);
+    }
+    // A screen override is only usable as a pair; one missing dimension keeps
+    // the host metrics instead of scoring windows against an invalid reference.
+    if (target->screen_width.has_value() &&
+        target->screen_height.has_value()) {
+      screen.width = *target->screen_width;
+      screen.height = *target->screen_height;
+    }
+  }
+  host_.focus = timing;
+  host_.screen = screen;
+  focus_.SetTiming(timing);
 }
 
 void WorkerRuntime::LaunchEdge(int slide) {

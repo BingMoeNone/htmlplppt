@@ -99,6 +99,15 @@ struct TargetPlan {
   OnFailurePolicy on_failure = OnFailurePolicy::SelfHeal;
   std::optional<int> max_consecutive_trigger_failures;
   std::optional<Duration> cover_max_hold;
+  // Per-target overrides carried from the config/host handoff. Unset means the
+  // machine's or the host's global value applies; the app layer fills the screen
+  // fields because display metrics are a platform fact.
+  std::optional<Duration> edge_max_live = std::nullopt;
+  std::optional<Duration> focus_timeout = std::nullopt;
+  std::optional<std::string> focus_strategy = std::nullopt;
+  std::optional<int> screen_width = std::nullopt;
+  std::optional<int> screen_height = std::nullopt;
+  bool focus_require = true;
   bool enabled = true;
 };
 
