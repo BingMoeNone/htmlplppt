@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <thread>
@@ -207,20 +208,48 @@ const char* ReconcileOutcomeName(ReconcileOutcome outcome) {
   return "unknown";
 }
 
+// The most recent run id in the tail that is not this run: its Edge profile is
+// the one a crash can leave behind. An empty id means there is no previous run.
+std::string PreviousRunId(const std::vector<JournalRecord>& tail,
+                          const std::string& run_id) {
+  for (auto it = tail.rbegin(); it != tail.rend(); ++it) {
+    if (it->run_id.empty() || it->run_id == run_id) continue;
+    return it->run_id;
+  }
+  return {};
+}
+
+// Edge runs with --user-data-dir=%TEMP%\htmlppt-<run>\<profile>. Requiring the
+// separator after the marker keeps run-1 from matching run-10, which the
+// substring query alone would accept.
+std::vector<std::uint32_t> LeftoverEdgePids(const std::string& previous_run_id) {
+  if (previous_run_id.empty()) return {};
+  const std::wstring marker = L"htmlppt-" + Widen(previous_run_id);
+  const std::wstring profile_prefix = marker + L"\\";
+  std::vector<std::uint32_t> pids;
+  for (const auto pid : ProcessIdsByCommandLineMarker(L"msedge.exe", marker)) {
+    const auto command_line = ProcessCommandLine(pid);
+    if (!command_line.has_value()) continue;
+    if (command_line->find(profile_prefix) == std::wstring::npos) continue;
+    pids.push_back(pid);
+  }
+  return pids;
+}
+
 // Reconciles the state a previous run may have left behind before the config is
 // resolved. The facts describe only what this process can observe: a leftover
-// Edge from the same run (its command line carries the run marker), the legacy
-// flags this run owns, and no overlay/WPS restore (a crashed worker's overlay
-// dies with it, and restoring WPS at supervisor start is out of scope). The
-// decision is journaled and never blocks startup: the normal plan/launch path
-// follows and supersedes whatever the previous run left behind.
+// Edge from the previous run (the tail names it; a fresh run id never appears in
+// that run's marker), the legacy flags this run owns, and no overlay/WPS restore
+// (a crashed worker's overlay dies with it, and restoring WPS at supervisor
+// start is out of scope). The decision is journaled and never blocks startup:
+// the normal plan/launch path follows and supersedes whatever was left behind.
 void ReconcilePreviousRun(Journal& journal,
                           const std::vector<JournalRecord>& previous_tail,
                           const SupervisorRunOptions& options,
                           const std::string& run_id) {
-  const std::wstring marker = L"htmlppt-" + Widen(run_id);
+  const std::string previous_run_id = PreviousRunId(previous_tail, run_id);
   const std::vector<std::uint32_t> edge_pids =
-      ProcessIdsByCommandLineMarker(L"msedge.exe", marker);
+      LeftoverEdgePids(previous_run_id);
 
   ReconcileFacts facts;
   facts.edge_process_alive = !edge_pids.empty();
@@ -235,19 +264,16 @@ void ReconcilePreviousRun(Journal& journal,
 
   const ReconcileDecision decision =
       ReconcileStartup(previous_tail, facts, run_id);
-  AppendJournal(journal, run_id, "Supervisor", "reconcile",
-                "reconcile: " +
-                    std::string(ReconcileOutcomeName(decision.outcome)) + " " +
-                    decision.reason);
+  std::string detail = "reconcile: " +
+                       std::string(ReconcileOutcomeName(decision.outcome));
+  if (!previous_run_id.empty()) {
+    detail += " previous=" + previous_run_id;
+  }
+  detail += " " + decision.reason;
+  AppendJournal(journal, run_id, "Supervisor", "reconcile", detail);
   if (!decision.kill_edge) return;
 
-  std::size_t killed = 0;
-  for (const auto pid : edge_pids) {
-    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-    if (process == nullptr) continue;
-    if (TerminateProcess(process, 1)) ++killed;
-    CloseHandle(process);
-  }
+  const std::size_t killed = TerminatePids(edge_pids);
   AppendJournal(journal, run_id, "Supervisor", "reconcile",
                 "reconcile: killed " + std::to_string(killed) + " of " +
                     std::to_string(edge_pids.size()) + " edge processes");
@@ -369,6 +395,17 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
 }
 
 } // namespace
+
+std::size_t TerminatePids(std::span<const std::uint32_t> pids) {
+  std::size_t terminated = 0;
+  for (const auto pid : pids) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (process == nullptr) continue;
+    if (TerminateProcess(process, 1)) ++terminated;
+    CloseHandle(process);
+  }
+  return terminated;
+}
 
 int RunDumpHelper(std::uint32_t pid, const std::filesystem::path& path) {
   return WriteMiniDump(pid, path) ? 0 : 1;

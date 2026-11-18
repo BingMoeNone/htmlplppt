@@ -6,11 +6,13 @@
 #include <objbase.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <span>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -252,14 +254,61 @@ HTMLPPT_TEST_CASE(win32_supervisor_reconciles_the_previous_journal) {
   HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
   const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
   // The previous record belongs to a foreign run that left a Live state behind,
-  // so the engine's decision is Cleanup; the outcome name is journaled verbatim.
-  HTMLPPT_CHECK(journal.find("reconcile: cleanup") != std::string::npos);
+  // so the engine's decision is Cleanup; the outcome and the previous run id
+  // (whose Edge profile must be queried) are journaled verbatim.
+  HTMLPPT_CHECK(journal.find("reconcile: cleanup previous=prev") !=
+                std::string::npos);
   const auto reconcile_at = journal.find("reconcile:");
   const auto plan_failed_at = journal.find("plan failed");
   HTMLPPT_CHECK(plan_failed_at != std::string::npos);
   HTMLPPT_CHECK(reconcile_at < plan_failed_at);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
+}
+
+// A1: a fresh state directory has no journal, so reconciliation must be a clean
+// no-op. This pins plan Review Focus #1: an empty journal can never drive the
+// startup into SafeMode.
+HTMLPPT_TEST_CASE(win32_supervisor_fresh_state_is_clean) {
+  const auto state_dir = TempStateDir();
+  const std::string run_id = RunId();
+  const auto result = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(run_id.begin(), run_id.end())},
+      10000);
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(journal.find("reconcile: clean") != std::string::npos);
+  HTMLPPT_CHECK(journal.find("safe-mode") == std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
+// A1 (review): the reconcile's only side effect is killing a stale Edge. The
+// kill loop is covered directly so the behaviour does not rest on a real
+// leftover browser: spawn a sleeper, terminate it through the seam, and prove
+// the process is gone.
+HTMLPPT_TEST_CASE(win32_terminate_pids_kills_a_process) {
+  JobHandle job;
+  ProcessHandle child;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(child.LaunchSuspended(
+      L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      {L"-NoProfile", L"-Command", L"Start-Sleep -Seconds 30"}, job));
+  HTMLPPT_CHECK(child.Resume());
+  const std::uint32_t pid = child.pid();
+  HTMLPPT_CHECK_EQ(
+      htmlppt::TerminatePids(std::span<const std::uint32_t>(&pid, 1)),
+      std::size_t{1});
+  // Termination is asynchronous: the process object signals once it is gone.
+  HTMLPPT_CHECK_EQ(WaitForSingleObject(child.process(), 5000),
+                   DWORD{WAIT_OBJECT_0});
+  DWORD exit_code = 0;
+  HTMLPPT_CHECK(GetExitCodeProcess(child.process(), &exit_code) != 0);
+  // TerminatePids kills with code 1, so an unexpected natural exit (0) fails.
+  HTMLPPT_CHECK_EQ(exit_code, DWORD{1});
 }
 
 HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {

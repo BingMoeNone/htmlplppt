@@ -1,13 +1,19 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "core/config.h"
 
 namespace htmlppt {
+
+// Terminates every pid in the list and returns how many were terminated. Shared
+// by startup reconciliation; the win32 suite drives it directly.
+std::size_t TerminatePids(std::span<const std::uint32_t> pids);
 
 // Options for the host commands. Only the supervisor resolves the config: it
 // carries the path plus the same CLI overrides --validate/--resolve use, and
