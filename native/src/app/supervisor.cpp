@@ -208,13 +208,14 @@ const char* ReconcileOutcomeName(ReconcileOutcome outcome) {
   return "unknown";
 }
 
-// The most recent run id in the tail that is not this run: its Edge profile is
-// the one a crash can leave behind. An empty id means there is no previous run.
-std::string PreviousRunId(const std::vector<JournalRecord>& tail,
-                          const std::string& run_id) {
+// The tail is read before this run writes its start record, so every record in
+// it belongs to a previous run — including a reused explicit --run-id (the smoke
+// script always uses "smoke"). The most recent non-empty id names the Edge
+// profile a crash can leave behind; an empty result means there is no previous
+// run.
+std::string PreviousRunId(const std::vector<JournalRecord>& tail) {
   for (auto it = tail.rbegin(); it != tail.rend(); ++it) {
-    if (it->run_id.empty() || it->run_id == run_id) continue;
-    return it->run_id;
+    if (!it->run_id.empty()) return it->run_id;
   }
   return {};
 }
@@ -230,7 +231,7 @@ std::vector<std::uint32_t> LeftoverEdgePids(const std::string& previous_run_id) 
   for (const auto pid : ProcessIdsByCommandLineMarker(L"msedge.exe", marker)) {
     const auto command_line = ProcessCommandLine(pid);
     if (!command_line.has_value()) continue;
-    if (command_line->find(profile_prefix) == std::wstring::npos) continue;
+    if (!CommandLineUsesProfile(*command_line, profile_prefix)) continue;
     pids.push_back(pid);
   }
   return pids;
@@ -247,7 +248,7 @@ void ReconcilePreviousRun(Journal& journal,
                           const std::vector<JournalRecord>& previous_tail,
                           const SupervisorRunOptions& options,
                           const std::string& run_id) {
-  const std::string previous_run_id = PreviousRunId(previous_tail, run_id);
+  const std::string previous_run_id = PreviousRunId(previous_tail);
   const std::vector<std::uint32_t> edge_pids =
       LeftoverEdgePids(previous_run_id);
 
@@ -405,6 +406,11 @@ std::size_t TerminatePids(std::span<const std::uint32_t> pids) {
     CloseHandle(process);
   }
   return terminated;
+}
+
+bool CommandLineUsesProfile(const std::wstring& command_line,
+                            const std::wstring& profile_prefix) {
+  return command_line.find(profile_prefix) != std::wstring::npos;
 }
 
 int RunDumpHelper(std::uint32_t pid, const std::filesystem::path& path) {

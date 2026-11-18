@@ -280,10 +280,54 @@ HTMLPPT_TEST_CASE(win32_supervisor_fresh_state_is_clean) {
   HTMLPPT_CHECK(result.completed);
   HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
   const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
-  HTMLPPT_CHECK(journal.find("reconcile: clean") != std::string::npos);
+  // Exact outcome text: "reconcile: clean" alone would also match "cleanup".
+  HTMLPPT_CHECK(journal.find("reconcile: clean empty journal") !=
+                std::string::npos);
   HTMLPPT_CHECK(journal.find("safe-mode") == std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
+}
+
+// A1 (re-review): the tail is read before this run's own start record, so even
+// a reused explicit --run-id (scripts/smoke-watchdog.ps1 always uses "smoke")
+// belongs to the previous run. Its id must still reach the reconcile line so the
+// previous run's Edge marker can be queried; filtering on "different id" would
+// silently drop the whole tail.
+HTMLPPT_TEST_CASE(win32_supervisor_reconciles_a_reused_run_id) {
+  const auto state_dir = TempStateDir();
+  {
+    std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
+    journal << "{\"event\":\"start\",\"state\":\"Live\",\"run_id\":\"smoke\","
+               "\"sequence\":0,\"timestamp\":\"2026-01-01T00:00:00Z\","
+               "\"slide\":1,\"detail\":\"worker started\"}\n";
+  }
+  const auto result = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id", L"smoke"},
+      10000);
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(journal.find("reconcile:") != std::string::npos);
+  // The outcome may vary with the machine's leftover processes; the reused id
+  // reaching the journal is the regression this case pins.
+  HTMLPPT_CHECK(journal.find("previous=smoke ") != std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
+// A1 (re-review): the previous run's marker must end at the profile path
+// separator, so htmlppt-run-1 never matches htmlppt-run-10.
+HTMLPPT_TEST_CASE(win32_profile_boundary_matches_only_the_exact_run) {
+  HTMLPPT_CHECK(htmlppt::CommandLineUsesProfile(
+      L"msedge.exe --user-data-dir=C:\\Temp\\htmlppt-run-1\\profile",
+      L"htmlppt-run-1\\"));
+  HTMLPPT_CHECK(!htmlppt::CommandLineUsesProfile(
+      L"msedge.exe --user-data-dir=C:\\Temp\\htmlppt-run-10\\profile",
+      L"htmlppt-run-1\\"));
+  HTMLPPT_CHECK(!htmlppt::CommandLineUsesProfile(
+      L"msedge.exe --user-data-dir=C:\\Temp\\htmlppt-run-1x\\profile",
+      L"htmlppt-run-1\\"));
 }
 
 // A1 (review): the reconcile's only side effect is killing a stale Edge. The
@@ -291,11 +335,21 @@ HTMLPPT_TEST_CASE(win32_supervisor_fresh_state_is_clean) {
 // leftover browser: spawn a sleeper, terminate it through the seam, and prove
 // the process is gone.
 HTMLPPT_TEST_CASE(win32_terminate_pids_kills_a_process) {
+  wchar_t windows_dir[MAX_PATH] = {};
+  const UINT windows_length = GetWindowsDirectoryW(windows_dir, MAX_PATH);
+  HTMLPPT_CHECK(windows_length > 0 && windows_length < MAX_PATH);
+  const auto powershell = std::filesystem::path(windows_dir) / L"System32" /
+                          L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+  std::error_code missing;
+  if (!std::filesystem::is_regular_file(powershell, missing)) {
+    std::cout << "SKIP: powershell.exe not found\n";
+    return;
+  }
   JobHandle job;
   ProcessHandle child;
   HTMLPPT_CHECK(job.Create());
   HTMLPPT_CHECK(child.LaunchSuspended(
-      L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      powershell.wstring(),
       {L"-NoProfile", L"-Command", L"Start-Sleep -Seconds 30"}, job));
   HTMLPPT_CHECK(child.Resume());
   const std::uint32_t pid = child.pid();

@@ -15,6 +15,12 @@ namespace htmlppt {
 // by startup reconciliation; the win32 suite drives it directly.
 std::size_t TerminatePids(std::span<const std::uint32_t> pids);
 
+// True when a command line contains the Edge profile path prefix, which includes
+// the trailing separator after the run marker: "htmlppt-run-1\" matches run-1
+// but not run-10.
+bool CommandLineUsesProfile(const std::wstring& command_line,
+                            const std::wstring& profile_prefix);
+
 // Options for the host commands. Only the supervisor resolves the config: it
 // carries the path plus the same CLI overrides --validate/--resolve use, and
 // writes the resulting plan into the state directory for the worker.
