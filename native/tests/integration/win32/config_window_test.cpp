@@ -781,6 +781,52 @@ HTMLPPT_TEST_CASE(win32_config_window_forwards_the_scan_button) {
   HTMLPPT_CHECK(IsWindow(handle) == 0);
 }
 
+// The mapping wizard is an app action like Scan: the view forwards the click,
+// the app owns the modal wizard and the "imported N targets" status, and a
+// rejection shows the app's reason (a deck without slide information, say).
+HTMLPPT_TEST_CASE(win32_config_window_forwards_the_wizard_button) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  HTMLPPT_CHECK(window.wizard_button() != nullptr);
+  const auto click_wizard = [&window] {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(window.wizard_button()), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(window.wizard_button()));
+  };
+
+  int opens = 0;
+  window.SetWizardHandler([&opens, &window](std::wstring* error) {
+    ++opens;
+    if (error != nullptr) error->clear();
+    window.SetStatus(L"imported 2 targets");
+    return true;
+  });
+  click_wizard();
+  HTMLPPT_CHECK_EQ(opens, 1);
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"imported 2 targets"));
+
+  window.SetWizardHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"the deck has no slide information";
+    return false;
+  });
+  click_wizard();
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"the deck has no slide information"));
+
+  // With no handler installed the click is a no-op, not a crash.
+  window.SetWizardHandler(nullptr);
+  click_wizard();
+  HTMLPPT_CHECK_EQ(opens, 1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
 // The export worker posts this private message; the app then feeds the finished
 // paths to SetThumbnails, so the view only routes it.
 HTMLPPT_TEST_CASE(win32_config_window_routes_the_thumbnails_ready_message) {

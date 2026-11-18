@@ -18,6 +18,7 @@
 #include "core/config.h"
 #include "core/config_editor.h"
 #include "core/deck_info.h"
+#include "core/mapping_wizard.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
 #include "core/types.h"
@@ -27,6 +28,7 @@
 #include "platform/win32/config_file_watcher.h"
 #include "platform/win32/config_window.h"
 #include "platform/win32/shared_blackbox.h"
+#include "platform/win32/wizard_window.h"
 #include "platform/win32/wps_host.h"
 
 namespace htmlppt {
@@ -187,6 +189,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // A scan writes into the process's own temp directory; fixed for the life of
   // the window so a rescan overwrites the previous deck's bitmaps.
   const std::filesystem::path thumbnail_dir = ThumbnailDir();
+  // The auto-mapping wizard's last-used HTML folder, seeded from the config's
+  // own directory so the first open already proposes that folder's files.
+  std::filesystem::path last_html_folder = config_path.parent_path();
   const bool allow_outside_folder = ui_options.allow_outside_folder;
   HANDLE watchdog_child = nullptr;
   bool watchdog_running = false;
@@ -436,6 +441,57 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     window.SetThumbnails(result.paths);
     window.SetStatus(L"scanned " + std::to_wstring(result.paths.size()) +
                      L" slides");
+  });
+
+  // The auto-mapping wizard (§9.3): proposes slide -> HTML pairs from the scanned
+  // deck and an HTML folder, previews them with a per-row include, and imports
+  // the checked rows as one undoable model edit. The deck is the same info the
+  // rest of the editor validates with; without it the wizard could only guess
+  // slide numbers, so it refuses and says so. The last folder a successful
+  // import used seeds the next wizard (the config's own directory before that).
+  window.SetWizardHandler([&window, &model, deck_info, &last_html_folder,
+                           refresh](std::wstring* error) {
+    if (deck_info == nullptr || deck_info->slides.empty()) {
+      if (error != nullptr) *error = L"the deck has no slide information";
+      return false;
+    }
+    WizardWindowOptions options;
+    // The wizard shows itself in Show(), which owns the modal loop.
+    options.show = false;
+    options.owner = window.handle();
+    options.title = L"htmlppt mapping wizard";
+    options.html_folder = last_html_folder;
+    options.slides.reserve(deck_info->slides.size());
+    for (const DeckSlideInfo& slide : deck_info->slides) {
+      options.slides.push_back(WizardSlide{slide.index, slide.title});
+    }
+
+    WizardWindow wizard;
+    if (!wizard.Create(options)) {
+      if (error != nullptr) *error = L"cannot open the mapping wizard";
+      return false;
+    }
+    if (!wizard.Show()) {
+      // Cancel/close is not an error, but no import happened: report it and
+      // leave the model and the last-used folder untouched.
+      window.SetStatus(L"mapping wizard cancelled");
+      return true;
+    }
+    const std::vector<WizardPair>& pairs = wizard.result().pairs;
+    std::string model_error;
+    if (!model.ImportTargets(pairs, &model_error)) {
+      if (error != nullptr) *error = Widen(model_error);
+      return false;
+    }
+    if (!wizard.html_folder().empty()) last_html_folder = wizard.html_folder();
+    // The import is one model edit; the usual refresh recomputes the rows, the
+    // Save gate, and the dirty flag. A blocking reason always wins the status
+    // line, exactly like the other editing actions.
+    const std::wstring reason = refresh();
+    const std::wstring imported =
+        L"imported " + std::to_wstring(pairs.size()) + L" targets";
+    window.SetStatus(reason.empty() ? imported : reason);
+    return true;
   });
 
   // Start launches one detached supervisor (the same exe re-entered with

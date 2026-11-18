@@ -28,6 +28,7 @@ constexpr int kValidateButtonId = 1005;
 constexpr int kStartButtonId = 1006;
 constexpr int kStopButtonId = 1007;
 constexpr int kScanButtonId = 1008;
+constexpr int kWizardButtonId = 1009;
 
 // How often the liveness poll checks a launched supervisor. Fast enough that a
 // crashed supervisor reopens Start promptly, slow enough to be free.
@@ -60,9 +61,9 @@ constexpr int kSlideThumbnailColumnWidth = kThumbnailWidth + 24;
 constexpr int kPaneApplyTop = 328;
 constexpr int kPaneApplyHeight = 28;
 constexpr int kPaneBottomMargin = 8;
-// The minimum width fits the whole toolbar: margin + seven 88 px buttons + six
-// gaps + a margin, with room to spare.
-constexpr int kMinClientWidth = 700;
+// The minimum width fits the whole toolbar: margin + eight 88 px buttons + seven
+// gaps + a margin (776 logical px), with a little room to spare.
+constexpr int kMinClientWidth = 780;
 constexpr int kMinClientHeight =
     kToolbarHeight + kPaneApplyTop + kPaneApplyHeight + kPaneBottomMargin +
     kStatusHeight;
@@ -355,11 +356,12 @@ void ConfigWindow::CreateChildren() {
   // One font for the whole window, created at the window's current DPI. It is
   // applied once every child exists, and recreated on WM_DPICHANGED.
   CreateFontForDpi();
-  // Toolbar: Add / Remove / Save / Validate / Scan deck / Start / Stop, created
-  // first so the tab order starts with the actions and the list keeps its own
-  // keyboard navigation. Scan only touches the view (it exports thumbnails), so
-  // it sits with the editor actions; Start and Stop are the watchdog actions and
-  // come last so a stray Enter never launches a run.
+  // Toolbar: Add / Remove / Save / Validate / Wizard / Scan deck / Start /
+  // Stop, created first so the tab order starts with the actions and the list
+  // keeps its own keyboard navigation. Wizard and Scan only touch the view or
+  // the model's imported rows, so they sit with the editor actions; Start and
+  // Stop are the watchdog actions and come last so a stray Enter never launches
+  // a run.
   const auto make_button = [&](const wchar_t* text, int id) {
     return CreateWindowExW(
         0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -371,6 +373,7 @@ void ConfigWindow::CreateChildren() {
   remove_button_ = make_button(L"Remove", kRemoveButtonId);
   save_button_ = make_button(L"Save", kSaveButtonId);
   validate_button_ = make_button(L"Validate", kValidateButtonId);
+  wizard_button_ = make_button(L"Wizard", kWizardButtonId);
   scan_button_ = make_button(L"Scan deck", kScanButtonId);
   start_button_ = make_button(L"Start", kStartButtonId);
   stop_button_ = make_button(L"Stop", kStopButtonId);
@@ -490,14 +493,14 @@ void ConfigWindow::ApplyFont() {
   // stays readable instead of clipping in geometry that has already grown.
   HWND children[] = {add_button_,          remove_button_,
                      save_button_,         validate_button_,
-                     scan_button_,         start_button_,
-                     stop_button_,         list_view_,
-                     status_view_,         detail_slide_label_,
-                     detail_slide_edit_,   detail_label_label_,
-                     detail_label_edit_,   detail_html_label_,
-                     detail_html_edit_,    detail_assets_label_,
-                     detail_assets_combo_, detail_enabled_check_,
-                     detail_apply_button_};
+                     wizard_button_,       scan_button_,
+                     start_button_,        stop_button_,
+                     list_view_,           status_view_,
+                     detail_slide_label_,  detail_slide_edit_,
+                     detail_label_label_,  detail_label_edit_,
+                     detail_html_label_,   detail_html_edit_,
+                     detail_assets_label_, detail_assets_combo_,
+                     detail_enabled_check_, detail_apply_button_};
   for (HWND child : children) {
     if (child != nullptr) {
       SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
@@ -518,8 +521,8 @@ void ConfigWindow::Layout(int width, int height) {
   const int button_height = Scale(kToolbarButtonHeight);
   const int button_width = Scale(kToolbarButtonWidth);
   HWND toolbar[] = {add_button_,      remove_button_, save_button_,
-                    validate_button_, scan_button_,   start_button_,
-                    stop_button_};
+                    validate_button_, wizard_button_, scan_button_,
+                    start_button_,    stop_button_};
   int toolbar_x = Scale(kToolbarMargin);
   for (HWND button : toolbar) {
     if (button == nullptr) continue;
@@ -889,6 +892,10 @@ void ConfigWindow::SetThumbnailsHandler(std::function<void()> handler) {
   thumbnails_handler_ = std::move(handler);
 }
 
+void ConfigWindow::SetWizardHandler(ToolbarHandler handler) {
+  wizard_handler_ = std::move(handler);
+}
+
 void ConfigWindow::SetStartEnabled(bool enabled) {
   start_enabled_ = enabled;
   if (start_button_ != nullptr) {
@@ -1070,6 +1077,16 @@ void ConfigWindow::ScanDeck() {
     // The app owns the "scanning deck" success line; the view only reports a
     // rejection.
     SetStatus(error.empty() ? L"cannot scan the deck" : error);
+  }
+}
+
+void ConfigWindow::OpenWizard() {
+  if (!wizard_handler_) return;
+  std::wstring error;
+  if (!wizard_handler_(&error)) {
+    // The app owns the success status ("imported N targets"); the view only
+    // reports a rejection.
+    SetStatus(error.empty() ? L"cannot open the mapping wizard" : error);
   }
 }
 
@@ -1321,6 +1338,9 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case kScanButtonId:
           ScanDeck();
           return 0;
+        case kWizardButtonId:
+          OpenWizard();
+          return 0;
         case kStartButtonId:
           StartWatchdog();
           return 0;
@@ -1379,6 +1399,7 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       save_button_ = nullptr;
       validate_button_ = nullptr;
       scan_button_ = nullptr;
+      wizard_button_ = nullptr;
       start_button_ = nullptr;
       stop_button_ = nullptr;
       detail_slide_label_ = nullptr;

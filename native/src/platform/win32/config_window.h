@@ -205,6 +205,10 @@ class ConfigWindow {
   // reports the outcome.
   void SetScanHandler(ToolbarHandler handler);
   void SetThumbnailsHandler(std::function<void()> handler);
+  // The auto-mapping wizard (§9.3). The app owns the modal window and the model
+  // import, and writes the success status ("imported N targets") itself; the
+  // view only forwards the click and reports a rejection.
+  void SetWizardHandler(ToolbarHandler handler);
 
   // Rebuilds the list's small image list from exported BMP paths (one per
   // slide, in slide order) and repaints the rows from it. A row shows the image
@@ -268,6 +272,7 @@ class ConfigWindow {
   HWND save_button() const { return save_button_; }
   HWND validate_button() const { return validate_button_; }
   HWND scan_button() const { return scan_button_; }
+  HWND wizard_button() const { return wizard_button_; }
   HWND start_button() const { return start_button_; }
   HWND stop_button() const { return stop_button_; }
 
@@ -310,6 +315,7 @@ class ConfigWindow {
   void SaveConfig();
   void ValidateConfig();
   void ScanDeck();
+  void OpenWizard();
   void StartWatchdog();
   void StopWatchdog();
   // Replaces the row images after a scan, or clears them for the rows the scan
@@ -330,6 +336,7 @@ class ConfigWindow {
   HWND save_button_ = nullptr;
   HWND validate_button_ = nullptr;
   HWND scan_button_ = nullptr;
+  HWND wizard_button_ = nullptr;
   HWND start_button_ = nullptr;
   HWND stop_button_ = nullptr;
   HWND detail_slide_label_ = nullptr;
@@ -365,6 +372,7 @@ class ConfigWindow {
   ToolbarHandler start_handler_;
   ToolbarHandler stop_handler_;
   ToolbarHandler scan_handler_;
+  ToolbarHandler wizard_handler_;
   std::function<void()> thumbnails_handler_;
   // The list's small image list and the slot each exported slide landed in.
   // thumbnail_indices_ is parallel to the paths of the last scan (one entry per
