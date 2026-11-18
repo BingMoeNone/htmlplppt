@@ -714,21 +714,35 @@ HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
     return true;
   });
 
-  // The pure routing the WM_KEYDOWN branch calls: Ctrl+Z undoes, Ctrl+Y and
-  // Ctrl+Shift+Z redo, and every other key falls through to DefWindowProc.
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  // The pure routing the message routes call: outside an EDIT, Ctrl+Z undoes,
+  // Ctrl+Y and Ctrl+Shift+Z redo, and every other key falls through.
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Z'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Y'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Y'));
   HTMLPPT_CHECK_EQ(redos, 1);
-  HTMLPPT_CHECK(window.HandleEditorKey(true, true, 'Z'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, true, 'Z'));
   HTMLPPT_CHECK_EQ(redos, 2);
   HTMLPPT_CHECK_EQ(undos, 1);
 
-  HTMLPPT_CHECK(!window.HandleEditorKey(false, false, 'Z'));
-  HTMLPPT_CHECK(!window.HandleEditorKey(false, true, 'Z'));
-  HTMLPPT_CHECK(!window.HandleEditorKey(true, false, 'A'));
+  // Focus in a detail EDIT: plain Ctrl+Z belongs to the control's own text undo
+  // and is not consumed, so the user does not lose in-field undo. Ctrl+Y and
+  // Ctrl+Shift+Z stay editor redo because the single-line EDIT has no native
+  // redo.
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, true, false, 'Z'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK_EQ(redos, 2);
+  HTMLPPT_CHECK(window.HandleEditorKey(true, true, false, 'Y'));
+  HTMLPPT_CHECK_EQ(redos, 3);
+  HTMLPPT_CHECK(window.HandleEditorKey(true, true, true, 'Z'));
+  HTMLPPT_CHECK_EQ(redos, 4);
+  HTMLPPT_CHECK_EQ(undos, 1);
+
+  HTMLPPT_CHECK(!window.HandleEditorKey(false, false, false, 'Z'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(false, false, true, 'Z'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(false, true, false, 'A'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, false, false, 'Z'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, false, false, 'Y'));
+  HTMLPPT_CHECK_EQ(undos, 1);
+  HTMLPPT_CHECK_EQ(redos, 4);
 
   // The WM_KEYDOWN route runs the same routing; without a physical Ctrl key
   // (a test cannot fake the thread's key state) an unrelated key must not
@@ -741,24 +755,31 @@ HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
     if (error != nullptr) *error = L"nothing to undo";
     return false;
   });
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Z'));
   wchar_t status[64] = {};
   GetWindowTextW(window.status_view(), status, 64);
   HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"nothing to undo"));
 
   // A failure without a message still gets a view-owned fallback.
   window.SetUndoHandler([](std::wstring*) { return false; });
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Z'));
   GetWindowTextW(window.status_view(), status, 64);
   HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"cannot undo"));
+
+  // A focused EDIT does not consume Ctrl+Z, so it never reaches (or reports
+  // from) the undo handler at all.
+  window.SetStatus(L"unchanged");
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, true, false, 'Z'));
+  GetWindowTextW(window.status_view(), status, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(status), std::wstring(L"unchanged"));
 
   // With no handler installed the shortcut is a no-op rather than a crash.
   window.SetUndoHandler(nullptr);
   window.SetRedoHandler(nullptr);
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Z'));
-  HTMLPPT_CHECK(window.HandleEditorKey(true, false, 'Y'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Z'));
+  HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Y'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK_EQ(redos, 2);
+  HTMLPPT_CHECK_EQ(redos, 4);
 
   window.Close();
   PumpUntilDestroyed(window.handle());

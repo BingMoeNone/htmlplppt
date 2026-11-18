@@ -74,6 +74,17 @@ std::wstring TextOf(HWND control) {
   return text;
 }
 
+// True when focus is in an EDIT control: the detail pane's text fields, or the
+// list's label edit if the view ever grows one (Win32 registers the class as
+// "Edit"). The comparison is case-insensitive so both spellings match.
+bool FocusIsEdit() {
+  const HWND focus = GetFocus();
+  if (focus == nullptr) return false;
+  wchar_t class_name[16] = {};
+  if (GetClassNameW(focus, class_name, 16) <= 0) return false;
+  return lstrcmpiW(class_name, L"Edit") == 0;
+}
+
 } // namespace
 
 bool ShouldCloseWindow(bool dirty, bool answer_save) {
@@ -561,7 +572,8 @@ void ConfigWindow::SetRedoHandler(ToolbarHandler handler) {
   redo_handler_ = std::move(handler);
 }
 
-bool ConfigWindow::HandleEditorKey(bool ctrl, bool shift, int vk) {
+bool ConfigWindow::HandleEditorKey(bool focus_in_edit, bool ctrl, bool shift,
+                                   int vk) {
   if (!ctrl) return false;
   ToolbarHandler* handler = nullptr;
   const wchar_t* fallback = nullptr;
@@ -569,6 +581,12 @@ bool ConfigWindow::HandleEditorKey(bool ctrl, bool shift, int vk) {
     if (shift) {
       handler = &redo_handler_;
       fallback = L"cannot redo";
+    } else if (focus_in_edit) {
+      // The focused detail EDIT owns its plain Ctrl+Z: leave the key to the
+      // control's native text undo instead of undoing the whole model. Ctrl+Y
+      // and Ctrl+Shift+Z stay editor redo below because a single-line EDIT has
+      // no native redo.
+      return false;
     } else {
       handler = &undo_handler_;
       fallback = L"cannot undo";
@@ -750,13 +768,17 @@ int ConfigWindow::RunMessageLoop() {
     const BOOL result = GetMessageW(&message, nullptr, 0, 0);
     if (result == -1) return -1;
     if (result == 0) return static_cast<int>(message.wParam);
-    // The editor shortcuts are window-wide: route them before DispatchMessage so
-    // a focused child control (the HTML edit, say) cannot consume Ctrl+Z before
-    // the app can undo the model. Every other key still reaches its control.
+    // The editor shortcuts are window-wide except for plain Ctrl+Z in a detail
+    // EDIT, which the control keeps for its own text undo (see
+    // HandleEditorKey). Routing before DispatchMessage keeps the shortcut from
+    // a focused child that would otherwise consume it; every other key still
+    // reaches its control.
     if (message.message == WM_KEYDOWN) {
+      const bool focus_in_edit = FocusIsEdit();
       const bool ctrl = GetKeyState(VK_CONTROL) < 0;
       const bool shift = GetKeyState(VK_SHIFT) < 0;
-      if (HandleEditorKey(ctrl, shift, static_cast<int>(message.wParam))) {
+      if (HandleEditorKey(focus_in_edit, ctrl, shift,
+                          static_cast<int>(message.wParam))) {
         continue;
       }
     }
@@ -835,9 +857,13 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_KEYDOWN: {
       // GetKeyState reads the thread's key state, which is why the routing
       // itself is a helper: a test can exercise it without physical input.
+      const bool focus_in_edit = FocusIsEdit();
       const bool ctrl = GetKeyState(VK_CONTROL) < 0;
       const bool shift = GetKeyState(VK_SHIFT) < 0;
-      if (HandleEditorKey(ctrl, shift, static_cast<int>(wparam))) return 0;
+      if (HandleEditorKey(focus_in_edit, ctrl, shift,
+                          static_cast<int>(wparam))) {
+        return 0;
+      }
       return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     case WM_COMMAND: {

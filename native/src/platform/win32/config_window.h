@@ -131,12 +131,15 @@ class ConfigWindow {
   // success status; the view only routes the keys and reports a failure.
   void SetUndoHandler(ToolbarHandler handler);
   void SetRedoHandler(ToolbarHandler handler);
-  // Routes one WM_KEYDOWN as an editor shortcut. Returns true when the key was
-  // an undo/redo shortcut and is therefore consumed; false for every other key,
-  // so the window never swallows unrelated input. With no handler installed the
-  // shortcut is a no-op. Public: the pure routing is the test seam, which avoids
-  // having to synthesise the thread's physical key state.
-  bool HandleEditorKey(bool ctrl, bool shift, int vk);
+  // Routes one WM_KEYDOWN as an editor shortcut. `focus_in_edit` is true when
+  // the focused control is a detail EDIT: plain Ctrl+Z then belongs to that
+  // control's own text undo and must not be consumed, while Ctrl+Y and
+  // Ctrl+Shift+Z still reach the editor because a single-line EDIT has no
+  // native redo. Returns true when the key was consumed; false for every other
+  // key, so the window never swallows unrelated input. With no handler
+  // installed the shortcut is a no-op. Public: the pure routing is the test
+  // seam, which avoids having to synthesise the thread's physical key state.
+  bool HandleEditorKey(bool focus_in_edit, bool ctrl, bool shift, int vk);
   // The Remove confirmation asks MessageBoxW(MB_YESNO); tests replace this so a
   // headless run never blocks on a modal dialog.
   void SetRemoveConfirmHandler(std::function<bool()> handler);
