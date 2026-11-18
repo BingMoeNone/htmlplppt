@@ -74,6 +74,13 @@ class SupervisorCore {
   std::vector<SupervisorAction> Start();
   std::vector<SupervisorAction> Handle(const WorkerEvent& event);
   std::vector<SupervisorAction> Tick();
+  // Re-arms the liveness trackers after the worker process was replaced without
+  // a restart deadline (config hot reload). The replacement's heartbeat
+  // sequence starts over, so the previous sequence would mask every new
+  // heartbeat and a healthy worker would look hung once the timeout passed.
+  // Ignored while the core is stopping or in safe mode, where no new worker is
+  // expected.
+  void NoteWorkerRestarted(ClockPoint at);
   std::optional<ClockPoint> NextDeadline() const { return restart_deadline_; }
   bool safe_mode() const { return safe_mode_; }
   int restart_count() const { return restart_count_; }

@@ -18,6 +18,7 @@
 #include "app/deck_info_loader.h"
 #include "app/supervisor.h"
 #include "app/watchdog_launcher.h"
+#include "platform/win32/config_file_watcher.h"
 #include "platform/win32/config_window.h"
 #include "platform/win32/shared_blackbox.h"
 
@@ -238,7 +239,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return true;
   });
 
-  window.SetSaveHandler([&model, config_path, refresh](std::wstring* error) {
+  window.SetSaveHandler([&window, &model, config_path, refresh, &watchdog_running,
+                         &run_id, exe, state_dir](std::wstring* error) {
     // Defence in depth: the button and the close prompt are already gated, but
     // a direct route must never flatten a profile-based config either.
     if (model.HasProfiles()) {
@@ -250,8 +252,21 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       if (error != nullptr) *error = Widen(save_error);
       return false;
     }
-    // A successful save clears dirty, so the gate closes until the next edit;
-    // the view reports "saved" itself.
+    // A live editor-launched run keeps reading its old file, so the save queues
+    // a hot reload; the supervisor applies it at the next safe point and logs a
+    // deferral until then. The status line names the queue instead of "saved".
+    if (watchdog_running && !run_id.empty()) {
+      DWORD reload_code = 1;
+      std::wstring reload_error;
+      if (RunAndWait(BuildReloadCommandLine(exe, state_dir, run_id), 5000,
+                     &reload_code, &reload_error) &&
+          reload_code == 0) {
+        window.SetSaveSuccessStatus(L"save reload requested");
+      } else {
+        window.SetSaveSuccessStatus(L"saved; reload request failed");
+      }
+    }
+    // A successful save clears dirty, so the gate closes until the next edit.
     refresh();
     return true;
   });
@@ -441,6 +456,33 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       window.SetStatus(WatchdogStatusText(run_id, state));
     }
   });
+
+  // External edits: the watcher only notifies; the decision lives here. A dirty
+  // editor keeps its edits and reports the conflict; a clean one reloads the
+  // file as a new clean baseline (the undo history never crosses a reload).
+  window.SetConfigChangedHandler([&window, &model, config_path, refresh,
+                                  &selected_index]() {
+    if (model.dirty()) {
+      window.SetStatus(L"config changed on disk; save to overwrite");
+      return;
+    }
+    std::string reload_error;
+    if (!model.ReloadFromDisk(config_path, &reload_error)) {
+      window.SetStatus(reload_error.empty()
+                           ? L"config changed on disk; reload failed"
+                           : Widen(reload_error));
+      return;
+    }
+    selected_index.reset();
+    refresh();
+    window.SetStatus(L"reloaded from disk");
+  });
+
+  // Started last: it only posts the message handled above, and its destructor
+  // stops the thread before the window is destroyed.
+  ConfigFileWatcher watcher;
+  watcher.Start(config_path.parent_path(), window.handle(),
+                kConfigChangedMessage);
 
   window.SetRows(rows);
   window.SetStatus(model.HasProfiles()

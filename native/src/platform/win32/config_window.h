@@ -81,6 +81,11 @@ using RemoveHandler =
 // one tick without waiting for a real timer.
 inline constexpr UINT kWatchdogPollTimerId = 7;
 
+// The private message the config-file watcher posts: the file changed on disk.
+// Public so the app and the tests can deliver the same notification the
+// ReadDirectoryChangesW thread posts.
+inline constexpr UINT kConfigChangedMessage = WM_APP + 1;
+
 // The close policy: a window with no pending edits always closes; a dirty one
 // only when the user answered the close prompt with Save and that save went
 // through (answer_save). Cancel and a failed save keep the window and its edits
@@ -193,6 +198,16 @@ class ConfigWindow {
   void SetWatchdogPollHandler(std::function<void()> handler);
   void StartWatchdogPoll();
   void StopWatchdogPoll();
+
+  // The config-file watcher notification. The app owns the decision (reload the
+  // clean model, or report the conflict to a dirty editor); the view only
+  // routes kConfigChangedMessage to the handler.
+  void SetConfigChangedHandler(std::function<void()> handler);
+
+  // The status line after a successful save. It defaults to "saved"; while an
+  // editor-launched run is live, the app sets "reload requested" because the
+  // save queued a hot reload instead of only writing the file.
+  void SetSaveSuccessStatus(std::wstring text);
   // Routes one WM_KEYDOWN as an editor shortcut. `focus_in_edit` is true when
   // the focused control is a detail EDIT: plain Ctrl+Z then belongs to that
   // control's own text undo and must not be consumed, while Ctrl+Y and
@@ -315,6 +330,9 @@ class ConfigWindow {
   ToolbarHandler stop_handler_;
   std::function<void()> watchdog_poll_handler_;
   bool watchdog_poll_running_ = false;
+  std::function<void()> config_changed_handler_;
+  // The app's success line for a save; "saved" unless a run is live.
+  std::wstring save_success_status_ = L"saved";
   std::function<bool()> remove_confirm_handler_;
   std::function<int()> close_prompt_handler_;
   bool save_enabled_ = false;

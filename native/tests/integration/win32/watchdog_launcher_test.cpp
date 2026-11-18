@@ -68,6 +68,24 @@ HTMLPPT_TEST_CASE(win32_build_stop_command_line_quotes_every_argument) {
           L"--run-id \"ui-1234\""));
 }
 
+HTMLPPT_TEST_CASE(win32_build_reload_command_line_quotes_every_argument) {
+  // The save path asks the running supervisor for a hot reload through the same
+  // --reload command a user can run by hand; every path and the run id is
+  // quoted so a deck folder with spaces still reaches the helper as one arg.
+  const std::filesystem::path exe(
+      L"C:\\Program Files\\htmlppt\\htmlppt-watchdog.exe");
+  const std::filesystem::path state_dir(
+      L"C:\\Users\\me\\My Decks\\.htmlppt-run");
+  const std::wstring line =
+      htmlppt::BuildReloadCommandLine(exe, state_dir, L"ui-1234");
+  HTMLPPT_CHECK_EQ(
+      line,
+      std::wstring(
+          L"\"C:\\Program Files\\htmlppt\\htmlppt-watchdog.exe\" --reload "
+          L"--state-dir \"C:\\Users\\me\\My Decks\\.htmlppt-run\" "
+          L"--run-id \"ui-1234\""));
+}
+
 HTMLPPT_TEST_CASE(win32_build_command_lines_double_embedded_quotes) {
   // A Windows file name cannot contain a quote, but a run id can, and the
   // builders must still produce one argument: doubling is the documented

@@ -68,6 +68,11 @@ inline std::wstring SupervisorStopEventName(std::string_view run_id) {
 int RunSupervisor(const SupervisorRunOptions& options);
 int RunWorker(const SupervisorRunOptions& options);
 int RunStop(std::string_view run_id);
+// Writes the empty <state_dir>/reload.request file the running supervisor polls
+// at each heartbeat and prints "reload requested". --reload needs no config (the
+// run already owns one), and creates the state directory when it is missing.
+int RunReload(std::string_view run_id,
+              const std::filesystem::path& state_dir);
 int RunStatus(std::string_view run_id,
               const std::filesystem::path& state_dir);
 // Writes a self-contained diagnostics package for a run: manifest, journal,

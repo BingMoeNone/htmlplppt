@@ -495,6 +495,65 @@ HTMLPPT_TEST_CASE(win32_config_window_forwards_the_toolbar_buttons) {
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
 }
 
+// The watcher posts a private message; the app installs the handler that
+// decides between reloading and reporting the conflict, so the routing is the
+// view's only job. The same message is posted by the real watcher thread.
+HTMLPPT_TEST_CASE(win32_config_window_routes_the_config_changed_message) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+
+  int changes = 0;
+  window.SetConfigChangedHandler([&changes] { ++changes; });
+  SendMessageW(handle, htmlppt::kConfigChangedMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(changes, 1);
+  SendMessageW(handle, htmlppt::kConfigChangedMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(changes, 2);
+  // With no handler a stray notification is a no-op, not a crash.
+  window.SetConfigChangedHandler(nullptr);
+  SendMessageW(handle, htmlppt::kConfigChangedMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(changes, 2);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+// A save during a live run queues a hot reload, so the success line must say so
+// instead of the default "saved"; the app still owns that decision.
+HTMLPPT_TEST_CASE(win32_config_window_save_success_status_is_the_apps) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  window.SetSaveHandler([](std::wstring* error) {
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  const auto click_save = [&window] {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(window.save_button()), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(window.save_button()));
+  };
+
+  window.SetSaveSuccessStatus(L"reload requested");
+  click_save();
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"reload requested"));
+
+  // Back to the default once no run is live.
+  window.SetSaveSuccessStatus(L"saved");
+  click_save();
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()), std::wstring(L"saved"));
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
 HTMLPPT_TEST_CASE(win32_config_window_start_button_follows_the_app_gate) {
   htmlppt::ConfigWindow window;
   htmlppt::ConfigWindowOptions options;

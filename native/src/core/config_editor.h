@@ -115,6 +115,13 @@ class ConfigEditorModel {
   // failed write still leaves the previous file untouched and removes the temp.
   bool SaveWithBackup(const std::filesystem::path& path, std::string* error);
 
+  // Replaces the model with `path`, read through the production loader, as a
+  // clean baseline: the undo/redo history never crosses an external reload. A
+  // file that does not load leaves the model untouched and reports the first
+  // issue; returns false.
+  bool ReloadFromDisk(const std::filesystem::path& path,
+                      std::string* error = nullptr);
+
  private:
   // The undo stack is capped so a long editing session stays bounded.
   static constexpr std::size_t kHistoryLimit = 50;

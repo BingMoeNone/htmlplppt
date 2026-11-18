@@ -59,6 +59,14 @@ std::wstring BuildStopCommandLine(const std::filesystem::path& exe,
                         QuoteArgument(run_id)});
 }
 
+std::wstring BuildReloadCommandLine(const std::filesystem::path& exe,
+                                    const std::filesystem::path& state_dir,
+                                    const std::wstring& run_id) {
+  return JoinArguments({QuoteArgument(exe.wstring()), L"--reload",
+                        L"--state-dir", QuoteArgument(state_dir.wstring()),
+                        L"--run-id", QuoteArgument(run_id)});
+}
+
 std::filesystem::path WatchdogStateDir(
     const std::filesystem::path& config_path) {
   std::error_code error;

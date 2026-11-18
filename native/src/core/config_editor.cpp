@@ -393,4 +393,24 @@ bool ConfigEditorModel::SaveWithBackup(const std::filesystem::path& path,
   return true;
 }
 
+bool ConfigEditorModel::ReloadFromDisk(const std::filesystem::path& path,
+                                       std::string* error) {
+  const ConfigLoadResult loaded = LoadConfigFile(path);
+  if (!loaded.config.has_value()) {
+    if (error != nullptr) {
+      *error = "cannot load " + Utf8Path(path);
+      if (!loaded.issues.empty()) {
+        *error += ": " + loaded.issues.front().message;
+      }
+    }
+    return false;
+  }
+  config_ = *loaded.config;
+  // The file on disk is the new clean baseline: an undo must never cross an
+  // external reload and resurrect content that is no longer on disk.
+  ResetHistory();
+  if (error != nullptr) error->clear();
+  return true;
+}
+
 } // namespace htmlppt

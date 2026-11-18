@@ -321,6 +321,26 @@ HTMLPPT_TEST_CASE(supervisor_started_during_backoff_is_ignored) {
   HTMLPPT_CHECK(core.NextDeadline().has_value());
 }
 
+// Hot reload replaces the worker process without a crash and without a
+// restart deadline: the replacement's heartbeat sequence starts over at 1,
+// which the old sequence tracker would reject forever. The explicit resync is
+// what keeps the new, healthy worker from being declared hung.
+HTMLPPT_TEST_CASE(supervisor_resyncs_liveness_after_a_worker_replacement) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 900));
+  clock.advance(Duration{1000});
+  core.NoteWorkerRestarted(clock.now());
+  // Startup heartbeats of the replacement restart the sequence at 1.
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1000});
+  core.Handle(Heartbeat(clock.now(), 2));
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
 HTMLPPT_TEST_CASE(supervisor_duplicate_started_does_not_reset_heartbeat) {
   FakeClock clock;
   SupervisorCore core(Config(), clock);

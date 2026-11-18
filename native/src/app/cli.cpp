@@ -34,6 +34,7 @@ enum class Command {
   Supervisor,
   Worker,
   Stop,
+  Reload,
   Status,
   Diagnostics,
   ConfigUi,
@@ -71,6 +72,8 @@ void PrintUsage(std::ostream& out) {
       << "  --supervisor           run the supervisor host (Windows only)\n"
       << "  --worker               run the worker host (Windows only)\n"
       << "  --stop                 stop a running supervisor (Windows only)\n"
+      << "  --reload               ask a running supervisor to reload the "
+         "config (needs --state-dir)\n"
       << "  --status               print the run black box (Windows only)\n"
       << "  --diagnostics          write a diagnostics package (needs --out PATH)\n"
       << "  --config-ui            open the native config editor (Windows only)\n"
@@ -198,6 +201,11 @@ ParseResult ParseCli(int argc, char** argv) {
       }
     } else if (argument == "--stop") {
       if (!SetCommand(&result.options, Command::Stop, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--reload") {
+      if (!SetCommand(&result.options, Command::Reload, &result.error)) {
         result.ok = false;
         return result;
       }
@@ -354,20 +362,31 @@ ParseResult ParseCli(int argc, char** argv) {
   }
   const bool host_command =
       command == Command::Supervisor || command == Command::Worker ||
-      command == Command::Stop || command == Command::Status ||
-      command == Command::Diagnostics;
+      command == Command::Stop || command == Command::Reload ||
+      command == Command::Status || command == Command::Diagnostics;
   if (!result.options.run_id.empty() && !host_command) {
     result.ok = false;
     result.error =
-        "--run-id is only valid with --supervisor, --worker, --stop, "
+        "--run-id is only valid with --supervisor, --worker, --stop, --reload, "
         "--status, or --diagnostics";
     return result;
   }
-  if ((command == Command::Stop || command == Command::Status ||
-       command == Command::Diagnostics) &&
+  if ((command == Command::Stop || command == Command::Reload ||
+       command == Command::Status || command == Command::Diagnostics) &&
       result.options.run_id.empty()) {
     result.ok = false;
-    result.error = "--run-id is required for --stop, --status, or --diagnostics";
+    result.error =
+        "--run-id is required for --stop, --reload, --status, or --diagnostics";
+    return result;
+  }
+  // --reload writes the request file into the run's state directory, so unlike
+  // --stop it has no event name to fall back on: guessing a directory would
+  // silently request a reload the supervisor never sees.
+  if (command == Command::Reload &&
+      (!result.options.overrides.state_dir.has_value() ||
+       result.options.overrides.state_dir->empty())) {
+    result.ok = false;
+    result.error = "--state-dir is required for --reload";
     return result;
   }
   if (command == Command::ConfigUi && result.options.config_path.empty()) {
@@ -514,6 +533,8 @@ int RunCli(int argc, char** argv) {
       return RunWorker(run_options);
     case Command::Stop:
       return RunStop(parsed.options.run_id);
+    case Command::Reload:
+      return RunReload(parsed.options.run_id, state_dir);
     case Command::Status:
       return RunStatus(parsed.options.run_id, state_dir);
     case Command::Diagnostics: {

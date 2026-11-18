@@ -29,6 +29,14 @@ std::wstring BuildStopCommandLine(const std::filesystem::path& exe,
                                   const std::filesystem::path& state_dir,
                                   const std::wstring& run_id);
 
+// The command line that asks the supervisor for `run_id` to hot reload: it
+// writes the reload request the supervisor polls in `state_dir`. --reload needs
+// no config -- the run already owns one -- but it does need the run's state
+// directory, so both are named explicitly and quoted like every other argument.
+std::wstring BuildReloadCommandLine(const std::filesystem::path& exe,
+                                    const std::filesystem::path& state_dir,
+                                    const std::wstring& run_id);
+
 // The state directory the editor gives an editor-launched run: a hidden
 // ".htmlppt-run" sibling of the config file. Keeping it next to the config
 // makes a run's plan and journal discoverable with the config without mixing

@@ -180,6 +180,64 @@ HTMLPPT_TEST_CASE(config_editor_apply_edit_keeps_a_match_target_on_match) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
+HTMLPPT_TEST_CASE(
+    config_editor_reload_from_disk_resets_history_and_reads_new_content) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  // Give the model a history and a dirty state first: an external reload must
+  // not leave an undo path that crosses it.
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(model.SetSlide(0, 4, &error));
+  HTMLPPT_CHECK(model.CanUndo());
+  HTMLPPT_CHECK(model.dirty());
+
+  // Another program rewrites the file.
+  Config external = MakeConfig(dir);
+  external.active.targets[0].slide = 7;
+  external.active.targets[0].html = "page2.html";
+  external.active.targets[0].label = "External";
+  std::ofstream(path, std::ios::binary | std::ios::trunc)
+      << htmlppt::ConfigToJson(external);
+
+  HTMLPPT_CHECK(model.ReloadFromDisk(path, &error));
+  HTMLPPT_CHECK(error.empty());
+  const auto rows = model.rows();
+  HTMLPPT_CHECK_EQ(rows.size(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(rows[0].slide, 7);
+  HTMLPPT_CHECK_EQ(rows[0].html, std::string{"page2.html"});
+  HTMLPPT_CHECK_EQ(rows[0].label, std::string{"External"});
+  // The reloaded file is the new clean baseline: nothing before it is undoable
+  // and the model is not dirty.
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  HTMLPPT_CHECK(!model.CanRedo());
+  HTMLPPT_CHECK_EQ(model.config().source_path, path);
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_reload_from_disk_keeps_the_model_on_a_bad_file) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(model.SetSlide(0, 6, &error));
+
+  // A corrupt external write must not throw the user's edits away: the load
+  // fails, the model is untouched and the error names the file.
+  std::ofstream(path, std::ios::binary | std::ios::trunc) << "{ not json";
+  HTMLPPT_CHECK(!model.ReloadFromDisk(path, &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(model.dirty());
+  HTMLPPT_CHECK_EQ(model.rows()[0].slide, 6);
+  HTMLPPT_CHECK(model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_editor_detects_multi_profile_configs) {
   const auto dir = MakeDir();
   // The editor writes ConfigToJson, which flattens to the effective profile and

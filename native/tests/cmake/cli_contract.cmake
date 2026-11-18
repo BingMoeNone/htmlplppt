@@ -53,3 +53,34 @@ endif()
 if (NOT supervisor_err MATCHES "config is required")
   message(FATAL_ERROR "--supervisor without --config: ${supervisor_err}")
 endif()
+
+# --reload is the editor's hot-reload request: it needs a run's state directory
+# but no config, prints the confirmation, and creates the empty request file the
+# running supervisor polls. The directory is created when missing.
+set(reload_dir "${CMAKE_CURRENT_BINARY_DIR}/reload-request-test")
+file(REMOVE_RECURSE "${reload_dir}")
+expect_result(reload_request 0 "reload requested"
+  --reload --state-dir "${reload_dir}" --run-id ui-contract)
+if (NOT EXISTS "${reload_dir}/reload.request")
+  message(FATAL_ERROR "--reload did not create reload.request")
+endif()
+file(SIZE "${reload_dir}/reload.request" reload_size)
+if (NOT reload_size EQUAL 0)
+  message(FATAL_ERROR "--reload request file is not empty")
+endif()
+file(REMOVE_RECURSE "${reload_dir}")
+
+# --reload names the state directory explicitly: without one there is no file
+# to write, so the CLI must refuse instead of guessing a location.
+execute_process(
+  COMMAND "${EXE}" --reload --run-id ui-contract
+  RESULT_VARIABLE reload_missing_state_rc
+  ERROR_VARIABLE reload_missing_state_err)
+if (NOT reload_missing_state_rc EQUAL 2)
+  message(FATAL_ERROR
+    "--reload without --state-dir: rc=${reload_missing_state_rc}")
+endif()
+if (NOT reload_missing_state_err MATCHES "state-dir")
+  message(FATAL_ERROR
+    "--reload without --state-dir: ${reload_missing_state_err}")
+endif()

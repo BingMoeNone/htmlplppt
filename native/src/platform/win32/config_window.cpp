@@ -764,6 +764,14 @@ void ConfigWindow::SetWatchdogPollHandler(std::function<void()> handler) {
   watchdog_poll_handler_ = std::move(handler);
 }
 
+void ConfigWindow::SetConfigChangedHandler(std::function<void()> handler) {
+  config_changed_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetSaveSuccessStatus(std::wstring text) {
+  save_success_status_ = std::move(text);
+}
+
 void ConfigWindow::StartWatchdogPoll() {
   if (handle_ == nullptr || !watchdog_poll_handler_) return;
   watchdog_poll_running_ = true;
@@ -905,7 +913,7 @@ void ConfigWindow::SaveConfig() {
   if (!save_handler_) return;
   std::wstring error;
   if (save_handler_(&error)) {
-    SetStatus(L"saved");
+    SetStatus(save_success_status_);
   } else {
     SetStatus(error.empty() ? L"save failed" : error);
   }
@@ -1122,6 +1130,11 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       }
       return 0;
     }
+    case kConfigChangedMessage:
+      // Posted by the config-file watcher; the app decides whether to reload or
+      // report a conflict.
+      if (config_changed_handler_) config_changed_handler_();
+      return 0;
     case WM_KEYDOWN: {
       // GetKeyState reads the thread's key state, which is why the routing
       // itself is a helper: a test can exercise it without physical input.

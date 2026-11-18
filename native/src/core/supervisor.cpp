@@ -108,6 +108,13 @@ std::vector<SupervisorAction> SupervisorCore::Tick() {
   return {};
 }
 
+void SupervisorCore::NoteWorkerRestarted(ClockPoint at) {
+  if (stopping_ || safe_mode_) return;
+  worker_running_ = true;
+  sequence_.reset(at);
+  progress_.reset(at);
+}
+
 std::optional<Duration> SupervisorCore::BackoffFor(int attempt) {
   if (config_.backoff.empty()) return std::nullopt;
   const std::size_t index = std::min<std::size_t>(

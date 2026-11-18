@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/utf8_path.h"
+
 #ifdef _WIN32
 #include <windows.h>
 
@@ -30,11 +32,11 @@
 #include "core/faults.h"
 #include "core/journal.h"
 #include "core/journal_reconcile.h"
+#include "core/reload_policy.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
 #include "core/state_machine.h"
 #include "core/supervisor.h"
-#include "core/utf8_path.h"
 #include "core/version.h"
 #include "core/worker_plan.h"
 #include "core/worker_runtime.h"
@@ -764,6 +766,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           }
           AppendJournal(journal, run_id, "Worker", "restart",
                         "worker restarted");
+          // A replacement process starts its heartbeat sequence over, so the
+          // liveness trackers of the dead worker must not judge it: without
+          // this resync every new heartbeat would look stale and a healthy
+          // worker would be declared hung once the timeout passed.
+          core.NoteWorkerRestarted(clock.now());
           break;
         case SupervisorActionKind::EnterSafeMode:
           AppendJournal(journal, run_id, "SafeMode", "action", action.detail);
@@ -785,6 +792,42 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // 0 it is a clean terminal end, not a crash: the worker finished on its own
   // (machine-driven stop or SafeMode) and must not be dumped or restarted.
   bool cleanup_received = false;
+  // True once the current request file's deferral was journalled, so a
+  // transition lasting seconds cannot write one line per heartbeat. Reset when
+  // the request disappears or is applied.
+  bool reload_defer_journaled = false;
+
+  // Hot reload: rebuild the plan exactly as startup does, then replace the
+  // worker through the existing restart batch. A failed rebuild leaves the old
+  // worker and its plan untouched and consumes the request, so a broken config
+  // cannot retry (and log) on every heartbeat; a fresh --reload asks again.
+  const auto apply_reload = [&]() -> std::optional<int> {
+    const auto request_path = state_dir / "reload.request";
+    std::string plan_error;
+    std::vector<std::string> plan_warnings;
+    if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error,
+                             &plan_warnings)) {
+      AppendJournal(journal, run_id, "Monitoring", "reload",
+                    "reload: failed " + plan_error);
+      std::cerr << "warning: reload failed: " << plan_error << "\n";
+      std::error_code remove_error;
+      std::filesystem::remove(request_path, remove_error);
+      return std::nullopt;
+    }
+    for (const auto& warning : plan_warnings) {
+      AppendJournal(journal, run_id, "Monitoring", "reload",
+                    "reload warning: " + warning);
+      std::cerr << "warning: reload: " << warning << "\n";
+    }
+    AppendJournal(journal, run_id, "Monitoring", "reload", "reload: applied");
+    std::error_code remove_error;
+    std::filesystem::remove(request_path, remove_error);
+    // A worker that was about to exit cleanly must not make its replacement
+    // look like a clean terminal end.
+    cleanup_received = false;
+    return apply({{SupervisorActionKind::TerminateWorker, "reload"},
+                  {SupervisorActionKind::RestartWorker, "reload"}});
+  };
 
   for (;;) {
     if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
@@ -825,17 +868,49 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       if (frame.has_value()) {
         switch (frame->header.type) {
           case FrameType::Heartbeat: {
+            // The payload is decoded once: progress feeds the liveness tracker
+            // and the state byte is the supervisor's only view of whether a
+            // reload request may be applied at this instant.
+            const auto payload = DecodeHeartbeatPayload(frame->payload);
             WorkerEvent event = MakeEvent(WorkerEventKind::Heartbeat,
                                           frame->header.sequence);
             // Progress travels in the payload; a worker without it still
             // heartbeats and is judged by sequence alone.
-            if (const auto payload =
-                    DecodeHeartbeatPayload(frame->payload);
-                payload.has_value()) {
+            if (payload.has_value()) {
               event.progress = payload->progress;
             }
             if (auto code = apply(core.Handle(event)); code.has_value()) {
               return *code;
+            }
+
+            // Hot reload (spec 9.6). --reload writes an empty request file;
+            // the plan may only be swapped while the worker is parked in
+            // Monitoring. Every other state is mid startup, switch/return or
+            // stop, so a request waits there and is journalled once.
+            std::error_code request_error;
+            const bool request_pending = std::filesystem::exists(
+                state_dir / "reload.request", request_error);
+            const bool monitoring =
+                payload.has_value() &&
+                payload->state == static_cast<std::uint8_t>(State::Monitoring);
+            const ReloadDecision decision =
+                DecideReload(request_pending, monitoring);
+            if (!request_pending) reload_defer_journaled = false;
+            if (decision == ReloadDecision::Defer) {
+              if (ShouldJournalDefer(decision, reload_defer_journaled)) {
+                reload_defer_journaled = true;
+                const std::string state_name =
+                    payload.has_value()
+                        ? StateName(static_cast<State>(payload->state))
+                        : std::string{"Unknown"};
+                AppendJournal(journal, run_id, state_name, "reload",
+                              "reload: deferred " + state_name);
+              }
+            } else if (decision == ReloadDecision::Apply) {
+              reload_defer_journaled = false;
+              if (auto code = apply_reload(); code.has_value()) {
+                return *code;
+              }
             }
             break;
           }
@@ -1274,3 +1349,37 @@ int RunDumpHelper(std::uint32_t, const std::filesystem::path&) {
 } // namespace htmlppt
 
 #endif // _WIN32
+
+namespace htmlppt {
+
+// --reload is platform-neutral: the request is a file the supervisor polls, not
+// a Win32 event. It needs no config (the run already owns one), only the run's
+// state directory, which it creates when missing.
+int RunReload(std::string_view run_id,
+              const std::filesystem::path& state_dir) {
+  if (run_id.empty() || state_dir.empty()) return 2;
+  std::error_code error;
+  std::filesystem::create_directories(state_dir, error);
+  if (error) {
+    std::cerr << "error: cannot create " << Utf8Path(state_dir) << ": "
+              << error.message() << "\n";
+    return 1;
+  }
+  const auto request = state_dir / "reload.request";
+  // An empty file is the complete protocol: the supervisor only asks whether it
+  // exists, so there is no partially written request to interpret.
+  std::ofstream output(request, std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    std::cerr << "error: cannot write " << Utf8Path(request) << "\n";
+    return 1;
+  }
+  output.close();
+  if (!output) {
+    std::cerr << "error: cannot finish " << Utf8Path(request) << "\n";
+    return 1;
+  }
+  std::cout << "reload requested\n";
+  return 0;
+}
+
+} // namespace htmlppt
