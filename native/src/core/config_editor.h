@@ -8,6 +8,7 @@
 
 #include "core/config.h"
 #include "core/deck_info.h"
+#include "core/mapping_wizard.h"
 #include "core/resolve.h"
 
 namespace htmlppt {
@@ -81,6 +82,13 @@ class ConfigEditorModel {
   // One dialog result -> one dirty transition and one error path.
   bool ApplyEdit(std::size_t index, const TargetEdit& edit, std::string* error);
   bool AddTarget(int slide, std::string html, std::string* error);
+  // Appends one target per pair as a single undoable edit: slide, html, and
+  // label (the slide title) come from the pair, and every target is enabled.
+  // The batch is rejected as a whole -- leaving the model untouched -- when it
+  // is empty, names an invalid slide or an empty html, repeats a slide within
+  // itself, or reuses an existing target's slide. Returns false with `error`
+  // set on rejection.
+  bool ImportTargets(const std::vector<WizardPair>& pairs, std::string* error);
   bool RemoveTarget(std::size_t index, std::string* error);
 
   // Full validation through the same resolver a run uses. Errors name the

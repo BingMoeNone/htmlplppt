@@ -8,6 +8,7 @@
 
 #include "core/config_editor.h"
 #include "core/deck_info.h"
+#include "core/mapping_wizard.h"
 #include "core/resolve.h"
 
 using htmlppt::Config;
@@ -16,6 +17,7 @@ using htmlppt::DeckInfo;
 using htmlppt::DeckSlideInfo;
 using htmlppt::ResolveOptions;
 using htmlppt::TargetConfig;
+using htmlppt::WizardPair;
 
 namespace {
 
@@ -713,6 +715,116 @@ HTMLPPT_TEST_CASE(config_editor_undo_preserves_profiles_and_the_config_path) {
   HTMLPPT_CHECK(model.HasProfiles());
   HTMLPPT_CHECK_EQ(model.config().active_profile, std::string{"demo"});
   HTMLPPT_CHECK_EQ(model.config().source_path, dir / "watcher.json");
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+namespace {
+
+WizardPair ImportPair(int slide, std::string title, std::string html) {
+  WizardPair pair;
+  pair.slide = slide;
+  pair.title = std::move(title);
+  pair.html = std::move(html);
+  return pair;
+}
+
+} // namespace
+
+HTMLPPT_TEST_CASE(config_editor_import_targets_appends_one_undoable_batch) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const std::vector<WizardPair> pairs = {
+      ImportPair(2, "Two", "page2.html"), ImportPair(3, "Three", "page1.html")};
+  std::string error;
+  HTMLPPT_CHECK(model.ImportTargets(pairs, &error));
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{3});
+  const auto rows = model.rows();
+  HTMLPPT_CHECK_EQ(rows[1].slide, 2);
+  HTMLPPT_CHECK_EQ(rows[1].label, std::string{"Two"});
+  HTMLPPT_CHECK_EQ(rows[1].html, std::string{"page2.html"});
+  HTMLPPT_CHECK(rows[1].enabled);
+  HTMLPPT_CHECK_EQ(rows[2].slide, 3);
+  HTMLPPT_CHECK_EQ(rows[2].label, std::string{"Three"});
+  HTMLPPT_CHECK_EQ(rows[2].html, std::string{"page1.html"});
+  HTMLPPT_CHECK(rows[2].enabled);
+  // The import is dirty like any other edit and is one undo step: a single undo
+  // restores the config exactly as it was before the batch.
+  HTMLPPT_CHECK(model.dirty());
+  HTMLPPT_CHECK(model.CanUndo());
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{1});
+  const auto restored = model.rows();
+  HTMLPPT_CHECK_EQ(restored[0].slide, 1);
+  HTMLPPT_CHECK_EQ(restored[0].html, std::string{"page1.html"});
+  HTMLPPT_CHECK_EQ(restored[0].label, std::string{"One"});
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_import_targets_rejects_duplicate_slides) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const std::string before = model.ToJson();
+  std::string error;
+
+  // A pair repeats an existing target's slide.
+  HTMLPPT_CHECK(!model.ImportTargets(
+      {ImportPair(2, "Two", "page2.html"),
+       ImportPair(1, "Again", "page1.html")},
+      &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(model.ToJson(), before);
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+
+  // Two pairs of the batch repeat the same slide.
+  error.clear();
+  HTMLPPT_CHECK(!model.ImportTargets(
+      {ImportPair(2, "Two", "page2.html"),
+       ImportPair(2, "Two again", "page1.html")},
+      &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(model.ToJson(), before);
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_import_targets_rejects_an_empty_batch) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  HTMLPPT_CHECK(!model.ImportTargets({}, &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{1});
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
+HTMLPPT_TEST_CASE(config_editor_import_targets_rejects_invalid_pairs) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const std::string before = model.ToJson();
+  std::string error;
+  HTMLPPT_CHECK(!model.ImportTargets({ImportPair(0, "None", "page1.html")},
+                                     &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(model.ToJson(), before);
+  HTMLPPT_CHECK(!model.CanUndo());
+
+  error.clear();
+  HTMLPPT_CHECK(!model.ImportTargets({ImportPair(2, "Two", "")}, &error));
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(model.ToJson(), before);
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }

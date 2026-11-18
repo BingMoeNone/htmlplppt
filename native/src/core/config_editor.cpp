@@ -219,6 +219,62 @@ bool ConfigEditorModel::AddTarget(int slide, std::string html,
   return true;
 }
 
+bool ConfigEditorModel::ImportTargets(const std::vector<WizardPair>& pairs,
+                                      std::string* error) {
+  if (pairs.empty()) {
+    if (error != nullptr) *error = "no pairs to import";
+    return false;
+  }
+  // Validate the whole batch before touching the model: a rejected import must
+  // leave the config, the history, and dirty() exactly as they were.
+  std::vector<int> imported_slides;
+  imported_slides.reserve(pairs.size());
+  for (const WizardPair& pair : pairs) {
+    if (pair.slide < 1) {
+      if (error != nullptr) *error = "slide must be >= 1";
+      return false;
+    }
+    if (pair.html.empty()) {
+      if (error != nullptr) *error = "html must not be empty";
+      return false;
+    }
+    for (const int slide : imported_slides) {
+      if (slide == pair.slide) {
+        if (error != nullptr) {
+          *error = "slide " + std::to_string(pair.slide) +
+                   " appears twice in the import";
+        }
+        return false;
+      }
+    }
+    for (const TargetConfig& target : config_.active.targets) {
+      if (target.slide.has_value() && *target.slide == pair.slide) {
+        if (error != nullptr) {
+          *error = "slide " + std::to_string(pair.slide) +
+                   " is already mapped by an existing target";
+        }
+        return false;
+      }
+    }
+    imported_slides.push_back(pair.slide);
+  }
+  // The whole batch is one undoable command: one pre-edit snapshot covers every
+  // target appended below.
+  RecordHistory();
+  for (const WizardPair& pair : pairs) {
+    TargetConfig target;
+    target.slide = pair.slide;
+    target.html = pair.html;
+    target.label = pair.title;
+    target.trigger = config_.defaults.trigger;
+    target.enabled = true;
+    config_.active.targets.push_back(std::move(target));
+  }
+  dirty_ = true;
+  if (error != nullptr) error->clear();
+  return true;
+}
+
 bool ConfigEditorModel::RemoveTarget(std::size_t index, std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
   RecordHistory();
