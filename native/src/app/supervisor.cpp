@@ -1137,6 +1137,25 @@ int RunWorker(const SupervisorRunOptions& options) {
                               legacy ? &*legacy : nullptr,
                               &runtime.journal());
 
+  // Legacy flag protocol (spec 11.3): mirror every loop state transition onto the
+  // VBS-era flag files. RunWorker is the only writer; the session just hands each
+  // post-step snapshot to this callback. The live target's Edge profile is still
+  // in the snapshot when the machine enters Live, so it is resolved lazily.
+  if (compat.has_value() && legacy.has_value()) {
+    session_config.on_step = MakeCompatFlagMirror(
+        *compat, *legacy,
+        [&plan](const StateSnapshot& snapshot) -> std::string {
+          if (!snapshot.current_target_slide.has_value()) return {};
+          for (const TargetPlan& target : plan->machine.targets) {
+            if (target.slide == *snapshot.current_target_slide) {
+              return target.edge_profile;
+            }
+          }
+          return {};
+        },
+        runtime.snapshot().state);
+  }
+
   std::string session_error;
   const int code = RunWorkerSession(runtime, client, *blackbox, session_config,
                                     &session_error);

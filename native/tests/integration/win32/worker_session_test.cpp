@@ -1,5 +1,12 @@
 #include "test_main.h"
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+#include "test_utils.h"
+
 #ifdef _WIN32
 #include <windows.h>
 
@@ -11,22 +18,30 @@
 #include <vector>
 
 #include "app/worker_session.h"
+#include "core/compat_flags.h"
 #include "core/supervisor.h"
 #include "core/supervisor_protocol.h"
 #include "fake_worker_driver.h"
 #include "platform/win32/named_pipe.h"
 #include "platform/win32/shared_blackbox.h"
 
+using htmlppt::CompatFlags;
+using htmlppt::CompatIdentity;
 using htmlppt::Duration;
 using htmlppt::Frame;
 using htmlppt::FrameType;
+using htmlppt::LegacyLog;
+using htmlppt::MakeCompatFlagMirror;
 using htmlppt::NamedPipeClient;
 using htmlppt::NamedPipeServer;
 using htmlppt::RunWorkerSession;
 using htmlppt::RunWithStartupHeartbeats;
 using htmlppt::SharedBlackbox;
+using htmlppt::State;
+using htmlppt::StateSnapshot;
 using htmlppt::WorkerSessionConfig;
 using htmlppt::test::FakeWorkerDriver;
+using htmlppt::test::TempDir;
 
 namespace {
 
@@ -57,6 +72,12 @@ bool StrictlyIncreasing(const std::vector<std::uint32_t>& values) {
     if (values[i] <= values[i - 1]) return false;
   }
   return true;
+}
+
+std::string ReadTextFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
 }
 
 } // namespace
@@ -578,4 +599,155 @@ HTMLPPT_TEST_CASE(worker_session_injected_supervisor_loss_does_not_stop_the_loop
   HTMLPPT_CHECK_EQ(driver.lost_calls, 1);
   HTMLPPT_CHECK_EQ(driver.lost_details.front(), std::string{"injected supervisor loss"});
   HTMLPPT_CHECK(saw_cleanup.load());
+}
+
+// A2: the session must publish every post-step snapshot to on_step. RunWorker
+// builds the legacy flag mirror from exactly these calls, so the states and their
+// order are part of the loop contract.
+HTMLPPT_TEST_CASE(worker_session_on_step_sees_every_post_step_state) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) return;
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  driver.scripted_states = {State::Monitoring, State::CoverIn, State::Live,
+                            State::Monitoring};
+  driver.steps_to_done = 4;
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  std::vector<State> observed;
+  config.on_step = [&observed](const StateSnapshot& snapshot) {
+    observed.push_back(snapshot.state);
+  };
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(error.empty());
+  const std::vector<State> expected{State::Monitoring, State::CoverIn,
+                                    State::Live, State::Monitoring};
+  HTMLPPT_CHECK_EQ(observed.size(), expected.size());
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    HTMLPPT_CHECK_EQ(observed[index], expected[index]);
+  }
+
+  channel->Close();
+  server.Close();
+}
+
+// A2: the callback RunWorker installs writes the mapped flags and one watch-log
+// line per write. A CoverIn -> Live -> Monitoring sequence must leave exactly the
+// four protocol files and must not touch another run's files.
+HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_sequence) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+  std::atomic<bool> client_ok{false};
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{50});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) return;
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  TempDir dir;
+  CompatFlags flags(dir.path(), CompatIdentity{"run-flags", 1234, ""});
+  LegacyLog log(dir.path());
+  // A different run owns the lock; the mirror must never delete or rewrite it.
+  CompatFlags other(dir.path(), CompatIdentity{"other-run", 5678, ""});
+  HTMLPPT_CHECK(other.WriteFlag(htmlppt::kLockFile, "other-lock"));
+
+  FakeWorkerDriver driver;
+  driver.step_sleep = Duration{1};
+  driver.scripted_states = {State::CoverIn, State::Live, State::Monitoring};
+  driver.steps_to_done = 3;
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  config.on_step = MakeCompatFlagMirror(
+      flags, log, [](const StateSnapshot&) {
+        return std::string{"tef-live-page1"};
+      });
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverFadeFlag), std::string{});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverReadyFlag), std::string{});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentArmFlag),
+                   std::string{"tef-live-page1|exit=0|ready=1"});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kEdgeClosedFlag), std::string{});
+  for (const std::string_view name :
+       {htmlppt::kCoverDoneFlag, htmlppt::kCoverStopFlag,
+        htmlppt::kCoverHideFlag, htmlppt::kAgentStopFlag,
+        htmlppt::kReturnRequestFlag}) {
+    HTMLPPT_CHECK(!std::filesystem::exists(dir.path() / std::string(name)));
+  }
+  for (const std::string_view name :
+       {htmlppt::kCoverFadeFlag, htmlppt::kCoverReadyFlag,
+        htmlppt::kAgentArmFlag, htmlppt::kEdgeClosedFlag}) {
+    HTMLPPT_CHECK(flags.IsOwned(name));
+  }
+
+  const std::string watch_log =
+      ReadTextFile(dir.path() / std::string(htmlppt::kWatchLog));
+  for (const std::string_view name :
+       {htmlppt::kCoverFadeFlag, htmlppt::kCoverReadyFlag,
+        htmlppt::kAgentArmFlag, htmlppt::kEdgeClosedFlag}) {
+    HTMLPPT_CHECK(watch_log.find(std::string(name)) != std::string::npos);
+  }
+  HTMLPPT_CHECK_EQ(
+      static_cast<std::size_t>(
+          std::count(watch_log.begin(), watch_log.end(), '\n')),
+      static_cast<std::size_t>(4));
+  HTMLPPT_CHECK(watch_log.find("tef-live-page1|exit=0|ready=1") !=
+                std::string::npos);
+
+  // Another run's flag is untouched: the mirror is ownership-aware.
+  HTMLPPT_CHECK_EQ(other.ReadFlag(htmlppt::kLockFile),
+                   std::string{"other-lock"});
+  HTMLPPT_CHECK(other.IsOwned(htmlppt::kLockFile));
+
+  channel->Close();
+  server.Close();
 }

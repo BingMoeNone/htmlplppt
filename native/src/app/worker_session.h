@@ -8,6 +8,8 @@
 #include <string_view>
 
 #include "core/clock.h"
+#include "core/compat_flags.h"
+#include "core/compat_mirror.h"
 #include "core/worker_driver.h"
 #include "core/worker_plan.h"
 
@@ -34,6 +36,12 @@ struct WorkerSessionConfig {
   // (spec 11.3: the legacy stop-live.vbs deletes watcher.lock). It must be
   // cheap -- the session throttles by calling it at the loop cadence only.
   std::function<bool()> external_stop;
+  // Called on the loop thread after every successful Step() with the post-step
+  // snapshot, including the step that ends the run. The worker installs the
+  // legacy flag mirror here; keeping the mapping out of the session keeps the
+  // loop platform-neutral. A callback must not touch COM and must stay cheap:
+  // it runs between two bounded polls.
+  std::function<void(const StateSnapshot&)> on_step;
   // Spec 6.6 fault injection: tell the driver the supervisor is gone right after
   // start, without breaking the pipe. The loop must keep running.
   bool inject_supervisor_loss = false;
@@ -44,6 +52,21 @@ struct WorkerSessionConfig {
 // ids; *error is cleared on success.
 bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
                              std::string* error);
+
+// Builds the on_step callback RunWorker installs for the legacy flag mirror. The
+// returned callback is value-semantic and owns the previous state, so copying
+// WorkerSessionConfig around the loop cannot lose a transition; `initial_state`
+// is the driver's state before the first Step. For every state change it asks
+// FlagsForStateTransition for the rows, writes each row through `flags` (which
+// stays ownership-aware and therefore never deletes another run's flags), and
+// appends one watch-log.txt line per successful write. `edge_profile` is read
+// only when the state enters Live, where it becomes the agent-arm payload, so
+// the caller can resolve the current target lazily. RunWorker is the only
+// production owner; the win32 suite installs the same callback on a fake driver.
+std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
+    CompatFlags& flags, LegacyLog& log,
+    std::function<std::string(const StateSnapshot&)> edge_profile,
+    State initial_state = State::Boot);
 
 // Sends heartbeats while `startup` runs on the calling thread. The caller keeps
 // its COM apartment; a helper thread only writes frames and blackbox records.

@@ -33,6 +33,10 @@ class FakeWorkerDriver final : public WorkerDriver {
     if (delay.count() > 0) {
       std::this_thread::sleep_for(delay);
     }
+    if (step_calls <= static_cast<int>(scripted_states.size())) {
+      state_snapshot.state =
+          scripted_states[static_cast<std::size_t>(step_calls - 1)];
+    }
     if (steps_to_done > 0 && step_calls >= steps_to_done) done_ = true;
     return !done_;
   }
@@ -54,6 +58,10 @@ class FakeWorkerDriver final : public WorkerDriver {
   const StateSnapshot& snapshot() const override { return state_snapshot; }
 
   StateSnapshot state_snapshot;
+  // One state per Step, applied before that Step returns. Empty keeps the state
+  // the test set on state_snapshot. The session's on_step callback tests script
+  // real transitions with it.
+  std::vector<State> scripted_states;
   int start_calls = 0;
   int step_calls = 0;
   // 0 means only a stop request finishes the run.

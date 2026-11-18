@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -187,6 +188,33 @@ bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
   return false;
 }
 
+std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
+    CompatFlags& flags, LegacyLog& log,
+    std::function<std::string(const StateSnapshot&)> edge_profile,
+    State initial_state) {
+  // The callback is copied into the session config (and into the heartbeat
+  // sender), so the transition cursor must be shared rather than captured by
+  // value: every copy has to see the same previous state.
+  const auto previous = std::make_shared<State>(initial_state);
+  return [&flags, &log, edge_profile = std::move(edge_profile),
+          previous](const StateSnapshot& snapshot) {
+    const State from = *previous;
+    *previous = snapshot.state;
+    if (from == snapshot.state) return;
+    const std::string profile =
+        edge_profile == nullptr ? std::string{} : edge_profile(snapshot);
+    for (const FlagWrite& row :
+         FlagsForStateTransition(from, snapshot.state, profile)) {
+      // A failed write must not claim a log line: the legacy tools read the log
+      // as the history of what actually reached the filesystem.
+      if (!flags.WriteFlag(row.name, row.payload)) continue;
+      log.Append(kWatchLog, "flag " + row.name +
+                                (row.payload.empty() ? std::string{}
+                                                     : " " + row.payload));
+    }
+  };
+}
+
 std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
                                        SharedBlackbox& blackbox,
                                        WorkerSessionConfig config,
@@ -275,6 +303,9 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
     // Published after the step returns, never before: a blocking Step must not
     // look like loop progress.
     published_progress.fetch_add(1, std::memory_order_relaxed);
+    // Every step, including the one that ends the run, so a final transition
+    // into Stopping/SafeMode/Exited is still mirrored.
+    if (config.on_step) config.on_step(driver.snapshot());
     if (!keep_going) break;
     published_state.store(static_cast<int>(driver.snapshot().state),
                           std::memory_order_relaxed);
