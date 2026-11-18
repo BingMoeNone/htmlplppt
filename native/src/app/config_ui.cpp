@@ -109,11 +109,14 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   }
 
   // The editor's own exe and the state directory an editor-launched run uses:
-  // both are fixed for the life of the window. The process handle below is the
+  // both are fixed for the life of the window. The run also gets the same
+  // outside-folder permission the editor validated with, so the two cannot
+  // disagree about a target's HTML path. The process handle below is the
   // one-run-at-a-time liveness source, so it is declared before the handlers
   // that launch, stop, and poll the run.
   const std::filesystem::path exe = CurrentExecutable();
   const std::filesystem::path state_dir = WatchdogStateDir(config_path);
+  const bool allow_outside_folder = ui_options.allow_outside_folder;
   HANDLE watchdog_child = nullptr;
   bool watchdog_running = false;
   std::wstring run_id;
@@ -278,7 +281,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // Save button uses; a config that cannot be saved is never launched.
   window.SetStartHandler([&window, &model, &watchdog_child, &watchdog_running,
                           &run_id, &last_state, config_path, exe, state_dir,
-                          refresh](std::wstring* error) {
+                          allow_outside_folder, refresh](std::wstring* error) {
     if (watchdog_running) {
       if (error != nullptr) *error = L"the watchdog is already running";
       return false;
@@ -323,8 +326,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     }
 
     const std::wstring new_run_id = MakeUiRunId(GetTickCount64());
-    const std::wstring command =
-        BuildSupervisorCommandLine(exe, config_path, state_dir, new_run_id);
+    const std::wstring command = BuildSupervisorCommandLine(
+        exe, config_path, state_dir, new_run_id, allow_outside_folder);
     PROCESS_INFORMATION child{};
     std::wstring launch_error;
     if (!LaunchDetached(command, &child, &launch_error)) {

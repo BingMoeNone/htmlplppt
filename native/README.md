@@ -326,7 +326,9 @@ native\build\htmlppt-watchdog.exe --config-ui --config watcher.json
 Windows only. Add `--deck-info deck-info.json` on a machine without WPS, exactly
 like `--validate`. The window is a thin Win32 view over `core/config_editor`,
 which edits the effective profile, validates through the same resolver a run
-uses, and saves atomically.
+uses, and saves atomically. `--allow-outside-folder` is forwarded to a run
+launched from the window, so the editor and the run resolve HTML paths with the
+same permission.
 
 1. The table lists one row per effective target: slide, label, HTML, assets
    mode, and the resolver's state. An error row carries its first issue in the

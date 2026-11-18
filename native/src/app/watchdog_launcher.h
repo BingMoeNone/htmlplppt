@@ -13,11 +13,14 @@ namespace htmlppt {
 // The command line that starts one supervisor for `config`, writing its run
 // state under `state_dir`. Every path and the run id is quoted, and an embedded
 // double quote is doubled, so a value with spaces (or a quote) still reaches the
-// child as one argument.
+// child as one argument. `allow_outside_folder` forwards the editor's
+// --allow-outside-folder to the supervisor, so a config the editor validated
+// with that permission resolves the same way during the run.
 std::wstring BuildSupervisorCommandLine(const std::filesystem::path& exe,
                                         const std::filesystem::path& config,
                                         const std::filesystem::path& state_dir,
-                                        const std::wstring& run_id);
+                                        const std::wstring& run_id,
+                                        bool allow_outside_folder);
 
 // The command line that asks the supervisor for `run_id` to stop. --stop acts
 // through the run id's named stop event; --state-dir is passed for symmetry

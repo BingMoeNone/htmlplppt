@@ -38,11 +38,17 @@ std::wstring JoinArguments(std::initializer_list<std::wstring> arguments) {
 std::wstring BuildSupervisorCommandLine(const std::filesystem::path& exe,
                                         const std::filesystem::path& config,
                                         const std::filesystem::path& state_dir,
-                                        const std::wstring& run_id) {
-  return JoinArguments({QuoteArgument(exe.wstring()), L"--supervisor",
-                        L"--config", QuoteArgument(config.wstring()),
-                        L"--state-dir", QuoteArgument(state_dir.wstring()),
-                        L"--run-id", QuoteArgument(run_id)});
+                                        const std::wstring& run_id,
+                                        bool allow_outside_folder) {
+  std::wstring line =
+      JoinArguments({QuoteArgument(exe.wstring()), L"--supervisor", L"--config",
+                     QuoteArgument(config.wstring()), L"--state-dir",
+                     QuoteArgument(state_dir.wstring()), L"--run-id",
+                     QuoteArgument(run_id)});
+  // The same permission the editor used for its own validation, in the CLI's
+  // option order (a bare switch, so it is appended unquoted).
+  if (allow_outside_folder) line += L" --allow-outside-folder";
+  return line;
 }
 
 std::wstring BuildStopCommandLine(const std::filesystem::path& exe,

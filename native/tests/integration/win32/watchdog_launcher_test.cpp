@@ -21,8 +21,10 @@ HTMLPPT_TEST_CASE(win32_build_supervisor_command_line_quotes_every_argument) {
       L"C:\\Users\\me\\My Decks\\watcher.json");
   const std::filesystem::path state_dir(
       L"C:\\Users\\me\\My Decks\\.htmlppt-run");
+  // Without the flag the line ends at the run id: the exact string also proves
+  // the run gets no outside-folder permission it did not ask for.
   const std::wstring line = htmlppt::BuildSupervisorCommandLine(
-      exe, config, state_dir, L"ui-1234");
+      exe, config, state_dir, L"ui-1234", /*allow_outside_folder=*/false);
   HTMLPPT_CHECK_EQ(
       line,
       std::wstring(
@@ -30,6 +32,27 @@ HTMLPPT_TEST_CASE(win32_build_supervisor_command_line_quotes_every_argument) {
           L"--supervisor --config \"C:\\Users\\me\\My Decks\\watcher.json\" "
           L"--state-dir \"C:\\Users\\me\\My Decks\\.htmlppt-run\" "
           L"--run-id \"ui-1234\""));
+}
+
+HTMLPPT_TEST_CASE(
+    win32_build_supervisor_command_line_forwards_allow_outside_folder) {
+  // The editor validated the config with --allow-outside-folder, so the run must
+  // resolve it with the same permission; the flag goes last, after the run id.
+  const std::filesystem::path exe(
+      L"C:\\Program Files\\htmlppt\\htmlppt-watchdog.exe");
+  const std::filesystem::path config(
+      L"C:\\Users\\me\\My Decks\\watcher.json");
+  const std::filesystem::path state_dir(
+      L"C:\\Users\\me\\My Decks\\.htmlppt-run");
+  const std::wstring line = htmlppt::BuildSupervisorCommandLine(
+      exe, config, state_dir, L"ui-1234", /*allow_outside_folder=*/true);
+  HTMLPPT_CHECK_EQ(
+      line,
+      std::wstring(
+          L"\"C:\\Program Files\\htmlppt\\htmlppt-watchdog.exe\" "
+          L"--supervisor --config \"C:\\Users\\me\\My Decks\\watcher.json\" "
+          L"--state-dir \"C:\\Users\\me\\My Decks\\.htmlppt-run\" "
+          L"--run-id \"ui-1234\" --allow-outside-folder"));
 }
 
 HTMLPPT_TEST_CASE(win32_build_stop_command_line_quotes_every_argument) {
@@ -53,7 +76,7 @@ HTMLPPT_TEST_CASE(win32_build_command_lines_double_embedded_quotes) {
   const std::filesystem::path config(L"C:\\Decks\\we\"ird\\watcher.json");
   const std::filesystem::path state_dir(L"C:\\Decks\\we\"ird\\state");
   const std::wstring supervisor_line = htmlppt::BuildSupervisorCommandLine(
-      exe, config, state_dir, L"ui 12\"34");
+      exe, config, state_dir, L"ui 12\"34", /*allow_outside_folder=*/false);
   HTMLPPT_CHECK_EQ(
       supervisor_line,
       std::wstring(
@@ -161,7 +184,8 @@ HTMLPPT_TEST_CASE(win32_supervisor_with_a_missing_config_exits_one) {
   const std::filesystem::path missing = directory.path() / L"missing.json";
   const std::filesystem::path state_dir = directory.path() / L"state";
   const std::wstring line = htmlppt::BuildSupervisorCommandLine(
-      std::filesystem::path(HTMLPPT_EXE_PATH), missing, state_dir, L"ui-test");
+      std::filesystem::path(HTMLPPT_EXE_PATH), missing, state_dir, L"ui-test",
+      /*allow_outside_folder=*/false);
   DWORD exit_code = 0;
   std::wstring error;
   HTMLPPT_CHECK(htmlppt::RunAndWait(line, 30000, &exit_code, &error));
