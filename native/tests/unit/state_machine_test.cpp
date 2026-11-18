@@ -256,6 +256,10 @@ HTMLPPT_TEST_CASE(state_machine_cover_hold_in_returning_resumes_show) {
   HTMLPPT_CHECK(resume != nullptr);
   HTMLPPT_CHECK_EQ(resume->slide, 5);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  // Routine return focus stays subject to the target's focus.require opt-out.
+  HTMLPPT_CHECK(!focus->emergency);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeOut));
   HTMLPPT_CHECK(HasJournalContaining(actions, "resumed at slide 5"));
   std::size_t resume_index = actions.size();
@@ -310,6 +314,11 @@ HTMLPPT_TEST_CASE(state_machine_cover_timeout_self_heals) {
   const auto* restore = FindAction(actions, ActionKind::RestoreShow);
   HTMLPPT_CHECK(restore != nullptr);
   HTMLPPT_CHECK_EQ(restore->slide, 5);
+  // Recovering from a switch failure hands WPS back to the operator; that focus
+  // is emergency-only and must bypass the target's routine focus opt-out.
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  HTMLPPT_CHECK(focus->emergency);
   HTMLPPT_CHECK(!m.machine->IsDone(5));
   HTMLPPT_CHECK_EQ(m.machine->Snapshot().consecutive_trigger_failures, 1);
   m.Advance(2001);
@@ -522,7 +531,11 @@ HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   // Spec 11.2: SafeMode must also leave the slideshow, hand WPS back to the
   // operator, and leave a diagnostic behind -- not just hide the cover.
   HTMLPPT_CHECK(HasAction(actions, ActionKind::ExitShow));
-  HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  // Handing the desktop back in SafeMode is not routine focus: it runs even when
+  // the target opted out with focus.require=false.
+  HTMLPPT_CHECK(focus->emergency);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
   // The screen is uncovered first, so the operator never sees a stuck black
   // screen while the show exits.

@@ -58,7 +58,8 @@ std::string_view ConfigSchema() {
       "type": "object",
       "properties": {
         "strategy": { "type": "string", "minLength": 1 },
-        "require": { "type": "boolean" }
+        "require": { "type": "boolean" },
+        "timeoutMs": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },

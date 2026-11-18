@@ -34,6 +34,10 @@ struct Action {
   ActionKind kind = ActionKind::Journal;
   int slide = 0;
   std::string detail;
+  // Emergency actions hand the desktop back to the operator (SafeMode restore,
+  // switch-failure recovery). They run even when the in-flight target opted out
+  // of routine focus with focus.require=false, and use the host baseline timing.
+  bool emergency = false;
 };
 
 enum class EventKind {

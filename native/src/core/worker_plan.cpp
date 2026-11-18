@@ -298,6 +298,12 @@ bool ReadTargetPlan(const json& value, const std::string& path,
     return false;
   }
   if (screen_height.has_value()) target->screen_height = *screen_height;
+  if (screen_width.has_value() != screen_height.has_value()) {
+    SetError(error, path +
+                        ".screenWidth: screenWidth and screenHeight must both be "
+                        "set");
+    return false;
+  }
 
   if (!ReadBool(value, "focusRequire", path + ".focusRequire",
                 &target->focus_require, error)) {
@@ -487,6 +493,14 @@ WorkerPlan BuildWorkerPlan(const Config& config, const ResolveResult& resolved,
     if (source->focus.has_value()) {
       machine.focus_strategy = source->focus->strategy;
       machine.focus_require = source->focus->require;
+      if (source->focus->timeout_ms.has_value()) {
+        machine.focus_timeout = Duration{*source->focus->timeout_ms};
+      }
+    } else {
+      // The show-start focus has no target; the plan still records the config
+      // default so a global opt-out is not silently overridden by the true
+      // TargetPlan default.
+      machine.focus_require = config.defaults.focus.require;
     }
     // screen_width/height stay empty: display metrics are the app's fact.
 
@@ -512,6 +526,10 @@ StateMachineConfig BuildStateMachineConfig(const Config& config) {
   machine.cover_hold = Duration{config.defaults.cover.hold_ms};
   machine.cover_max_hold = Duration{config.defaults.cover.max_hold_ms};
   machine.edge_max_live = Duration{config.defaults.edge.max_live_ms};
+  // The machine's own 6 s stands when the config has no focus timeout.
+  if (config.defaults.focus.timeout_ms.has_value()) {
+    machine.focus_timeout = Duration{*config.defaults.focus.timeout_ms};
+  }
   machine.max_consecutive_trigger_failures =
       config.defaults.max_consecutive_trigger_failures;
   machine.default_on_failure =
@@ -531,6 +549,7 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
   host.cover.max_hold = machine.cover_max_hold;
   host.focus.timeout = machine.focus_timeout;
   host.focus.strategy = ParseFocusStrategy(config.defaults.focus.strategy);
+  host.focus_require = config.defaults.focus.require;
   host.screen = facts.screen;
   host.wps_pids = facts.wps_pids;
   host.faults = facts.faults;

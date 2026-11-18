@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "app/supervisor.h"
@@ -69,6 +70,31 @@ HTMLPPT_TEST_CASE(win32_resolve_target_screens_tolerates_an_empty_plan) {
   RunPlan plan;
   ResolveTargetScreens(plan, config, {});
   HTMLPPT_CHECK(plan.targets.empty());
+}
+
+// An out-of-range display selector falls back to the primary, exactly like the
+// global display path, but the failure must be reportable so it can be warned
+// about and journaled instead of silently scoring against the wrong monitor.
+HTMLPPT_TEST_CASE(win32_resolve_target_screens_reports_a_selection_error) {
+  Config config;
+  TargetConfig target;
+  target.slide = 1;
+  DisplayConfig display;
+  display.monitor = "99";
+  target.display = display;
+  config.active.targets = {target};
+
+  RunPlan plan;
+  plan.targets = {MakePlanTarget(1)};
+  const std::vector<ResolvedTarget> resolved = {MakeSpec(1, 1)};
+
+  std::vector<std::string> warnings;
+  ResolveTargetScreens(plan, config, resolved, &warnings);
+  HTMLPPT_CHECK_EQ(warnings.size(), std::size_t{1});
+  HTMLPPT_CHECK(warnings[0].find("99") != std::string::npos);
+  // The fallback still fills usable metrics rather than leaving the plan empty.
+  HTMLPPT_CHECK(plan.targets[0].screen_width.has_value());
+  HTMLPPT_CHECK(*plan.targets[0].screen_width > 0);
 }
 
 #endif

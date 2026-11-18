@@ -29,6 +29,9 @@ struct DisplayConfig {
 struct FocusConfig {
   std::string strategy = "auto";
   bool require = true;
+  // How long a focus attempt may take. Unset means the built-in state-machine
+  // default (6 s); the editor round-trips it like the other focus fields.
+  std::optional<int> timeout_ms;
 };
 
 struct AssetsConfig {

@@ -665,3 +665,80 @@ HTMLPPT_TEST_CASE(config_rejects_an_unknown_focus_strategy) {
   HTMLPPT_CHECK_EQ(good.config->active.targets[0].focus->strategy,
                    std::string{"attach-alt"});
 }
+
+HTMLPPT_TEST_CASE(config_round_trips_the_focus_timeout) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": {
+      "focus": { "timeoutMs": 4000 }
+    },
+    "targets": [
+      {
+        "slide": 1,
+        "html": "a.html",
+        "focus": { "strategy": "attach-alt", "require": false,
+                   "timeoutMs": 2500 }
+      },
+      { "slide": 2, "html": "b.html" }
+    ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.config->defaults.focus.timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->defaults.focus.timeout_ms, 4000);
+  HTMLPPT_CHECK(result.config->active.targets[0].focus.has_value());
+  HTMLPPT_CHECK(result.config->active.targets[0].focus->timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->active.targets[0].focus->timeout_ms, 2500);
+  HTMLPPT_CHECK(!result.config->active.targets[1].focus.has_value());
+
+  // The editor's save path re-serializes the effective config; a field it drops
+  // would be lost the next time the operator saves.
+  const std::string json = htmlppt::ConfigToJson(*result.config);
+  HTMLPPT_CHECK(json.find("\"timeoutMs\": 4000") != std::string::npos);
+  HTMLPPT_CHECK(json.find("\"timeoutMs\": 2500") != std::string::npos);
+
+  const auto reloaded = Parse(json);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK(!HasError(reloaded));
+  HTMLPPT_CHECK_EQ(*reloaded.config->defaults.focus.timeout_ms, 4000);
+  HTMLPPT_CHECK_EQ(*reloaded.config->active.targets[0].focus->timeout_ms, 2500);
+}
+
+// A target focus block with no timeout keeps the defaults timeout, exactly like
+// strategy/require inherit from the base focus config.
+HTMLPPT_TEST_CASE(config_focus_timeout_inherits_from_defaults) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "focus": { "timeoutMs": 3500 } },
+    "targets": [
+      { "slide": 1, "html": "a.html", "focus": { "strategy": "switch" } }
+    ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.config->active.targets[0].focus.has_value());
+  HTMLPPT_CHECK(result.config->active.targets[0].focus->timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->active.targets[0].focus->timeout_ms, 3500);
+}
+
+HTMLPPT_TEST_CASE(config_rejects_a_non_positive_focus_timeout) {
+  const auto zero = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 1, "html": "a.html",
+                  "focus": { "timeoutMs": 0 } }]
+  })");
+  HTMLPPT_CHECK(HasError(zero));
+  HTMLPPT_CHECK(HasIssueAt(zero, "targets[0].focus.timeoutMs"));
+
+  const auto negative = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "focus": { "timeoutMs": -1 } },
+    "targets": [{ "slide": 1, "html": "a.html" }]
+  })");
+  HTMLPPT_CHECK(HasError(negative));
+  HTMLPPT_CHECK(HasIssueAt(negative, "defaults.focus.timeoutMs"));
+}

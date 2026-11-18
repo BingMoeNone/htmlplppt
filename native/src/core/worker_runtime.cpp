@@ -370,15 +370,20 @@ void WorkerRuntime::Execute(const Action& action) {
         focus_.TryFocusEdge(edge_.pid());
       }
       break;
-    case ActionKind::FocusWps:
+    case ActionKind::FocusWps: {
       // An empty pid list can never match a WPS window, so calling the
-      // controller would only burn its full focus timeout. focus.require=false
-      // is an explicit "do not force WPS", so it performs no activation at all.
-      if (!host_.faults.focus_deny && !host_.wps_pids.empty() &&
-          FocusRequired(action.slide)) {
-        focus_.FocusWps(host_.wps_pids, host_.screen);
-      }
+      // controller would only burn its full focus timeout.
+      if (host_.faults.focus_deny || host_.wps_pids.empty()) break;
+      const TargetPlan* target = FindTarget(action.slide);
+      // focus.require=false is an explicit "do not force WPS" for routine focus;
+      // an emergency hand-back must still run.
+      if (!action.emergency && !FocusRequired(action.slide)) break;
+      // A show-start focus has no target, and an emergency must not carry the
+      // in-flight target's timing/screen: both use the host baseline.
+      if (action.emergency || target == nullptr) ApplyBaselineSettings();
+      focus_.FocusWps(host_.wps_pids, host_.screen);
       break;
+    }
     // Kinds owned by later tasks. They are journaled rather than ignored so a
     // missing case stays visible instead of vanishing in a default branch. The
     // cleanup steps get their own labels: journaling the raw event detail twice
@@ -407,7 +412,15 @@ const TargetPlan* WorkerRuntime::FindTarget(int slide) const {
 
 bool WorkerRuntime::FocusRequired(int slide) const {
   const TargetPlan* target = FindTarget(slide);
-  return target == nullptr || target->focus_require;
+  // A slide without a target (the show-start focus) falls back to the host's
+  // effective default instead of TargetPlan's hard-coded true.
+  return target != nullptr ? target->focus_require : host_.focus_require;
+}
+
+void WorkerRuntime::ApplyBaselineSettings() {
+  host_.focus = base_focus_;
+  host_.screen = base_screen_;
+  focus_.SetTiming(base_focus_);
 }
 
 void WorkerRuntime::ApplyTargetSettings(int slide) {

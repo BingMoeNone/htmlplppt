@@ -37,14 +37,15 @@ struct WorkerHostFacts {
 struct WorkerHostConfig;  // defined in core/worker_runtime.h
 
 // Maps Config::defaults onto the state machine's timing and policy knobs. Knobs
-// the config cannot express keep the state machine defaults; the focus timeout
-// it leaves here is also what the worker host uses.
+// the config cannot express keep the state machine defaults; defaults.focus
+// .timeoutMs, when set, also becomes the worker host's global focus timeout.
 StateMachineConfig BuildStateMachineConfig(const Config& config);
 
 // Maps the same defaults plus the host facts onto the worker host config. The
 // cover timings and focus timeout come from BuildStateMachineConfig so the host
-// and the machine cannot drift. Include core/worker_runtime.h where the result
-// is used: WorkerHostConfig is only forward declared here.
+// and the machine cannot drift; focus.require is the global fallback for the
+// show-start focus, which has no target. Include core/worker_runtime.h where the
+// result is used: WorkerHostConfig is only forward declared here.
 WorkerHostConfig BuildWorkerHostConfig(const Config& config,
                                        const WorkerHostFacts& facts);
 
@@ -52,10 +53,12 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
 // Resolved targets with slide <= 0 are dropped. Effective trigger, on_failure,
 // and cover max-hold fall back to the config defaults when the per-target value
 // is absent. A per-target edge block copies its maxLiveMs and a per-target focus
-// block copies its strategy/require; both stay unset otherwise so the machine
-// and host keep their globals. The screen fields stay unset because display
-// metrics are a platform fact the app fills in (ResolveTargetScreens).
-// Both vectors are sorted by slide so index i always addresses the same target.
+// block copies its strategy/require/timeoutMs; without a focus block the plan
+// records the defaults' require so a config-level opt-out is not lost, while the
+// other focus fields stay unset so the host keeps its globals. The screen fields
+// stay unset because display metrics are a platform fact the app fills in
+// (ResolveTargetScreens). Both vectors are sorted by slide so index i always
+// addresses the same target.
 WorkerPlan BuildWorkerPlan(const Config& config, const ResolveResult& resolved,
                            int slide_count, std::string run_id);
 

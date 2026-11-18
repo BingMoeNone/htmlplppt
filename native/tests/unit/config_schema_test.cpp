@@ -51,6 +51,13 @@ HTMLPPT_TEST_CASE(config_schema_rejects_unknown_top_level_fields) {
   }
 }
 
+HTMLPPT_TEST_CASE(config_schema_focus_accepts_a_timeout) {
+  const auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
+  const auto& timeout = schema["$defs"]["focus"]["properties"]["timeoutMs"];
+  HTMLPPT_CHECK(timeout["type"] == "integer");
+  HTMLPPT_CHECK(timeout["minimum"] == 1);
+}
+
 HTMLPPT_TEST_CASE(config_schema_display_monitor_accepts_integer) {
   const auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
   const auto& monitor = schema["$defs"]["display"]["properties"]["monitor"];

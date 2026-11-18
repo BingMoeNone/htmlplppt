@@ -350,7 +350,8 @@ bool WriteTextFile(const std::filesystem::path& path,
 bool WriteSupervisorPlan(const SupervisorRunOptions& options,
                          const std::string& run_id,
                          const std::filesystem::path& state_dir,
-                         std::string* error) {
+                         std::string* error,
+                         std::vector<std::string>* warnings) {
   const auto loaded = LoadConfigFile(options.config_path, options.overrides);
   if (!loaded.config.has_value()) {
     *error = "cannot load config " + Utf8Path(options.config_path) + ": " +
@@ -385,7 +386,7 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
   // target must be resolved before the file is written. A run with no enabled
   // targets skips the fill entirely.
   if (!plan.machine.targets.empty()) {
-    ResolveTargetScreens(plan.machine, config, plan.targets);
+    ResolveTargetScreens(plan.machine, config, plan.targets, warnings);
   }
   std::string write_error;
   if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
@@ -404,7 +405,8 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
 } // namespace
 
 void ResolveTargetScreens(RunPlan& plan, const Config& config,
-                          const std::vector<ResolvedTarget>& resolved) {
+                          const std::vector<ResolvedTarget>& resolved,
+                          std::vector<std::string>* warnings) {
   // The plan's target and host-spec vectors are index aligned; the spec's
   // ordinal points at the source config target that owns display.monitor.
   const std::size_t count = std::min(plan.targets.size(), resolved.size());
@@ -417,6 +419,11 @@ void ResolveTargetScreens(RunPlan& plan, const Config& config,
     if (!source.display.has_value()) continue;
     const ScreenSelection selection =
         SelectScreenMetrics(source.display->monitor);
+    if (!selection.error.empty() && warnings != nullptr) {
+      warnings->push_back("target slide " +
+                          std::to_string(plan.targets[i].slide) + " display: " +
+                          selection.error);
+    }
     if (selection.metrics.width <= 0 || selection.metrics.height <= 0) continue;
     plan.targets[i].screen_width = selection.metrics.width;
     plan.targets[i].screen_height = selection.metrics.height;
@@ -631,7 +638,9 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // launched, so a bad config fails the run here instead of inside a restarted
   // worker.
   std::string plan_error;
-  if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error)) {
+  std::vector<std::string> plan_warnings;
+  if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error,
+                           &plan_warnings)) {
     AppendJournal(journal, run_id, "Plan", "plan failed", plan_error);
     std::cerr << "error: " << plan_error << "\n";
     blackbox.reset();
@@ -639,6 +648,12 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     CloseHandle(mutex);
     CloseHandle(stop_event);
     return 1;
+  }
+  for (const auto& warning : plan_warnings) {
+    // Same "warn and journal" contract as the worker's global display path, so
+    // an out-of-range per-target monitor is never a silent fallback.
+    AppendJournal(journal, run_id, "Plan", "display warning", warning);
+    std::cerr << "warning: " << warning << "\n";
   }
   AppendJournal(journal, run_id, "Plan", "plan", "worker plan written");
 

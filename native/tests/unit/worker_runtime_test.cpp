@@ -82,6 +82,28 @@ void ReachReturning(WorkerHarness& h, WindowInfo wps) {
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
 }
 
+// Completes the return cover cycle: the machine is back in Monitoring while the
+// runtime still carries whatever the finished target applied.
+void ReturnToMonitoring(WorkerHarness& h) {
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // CoverHold -> ReturnCoverOut
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::ReturnCoverOut);
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // hold done -> cover fade-out
+  h.advance(h.host.cover.fade + Duration{1});
+  h.Step();  // fade-out done -> CoverDone -> Monitoring
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+}
+
+// A show restart is a show start with no target: its FocusWps must run on the
+// host baseline, not on the values the previous target left behind.
+void RestartShow(WorkerHarness& h) {
+  h.presentation.show = MakeShowState(HostStatus::Ok, false, 0);
+  h.Step();  // show ended while monitoring
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Step();  // ShowStarted -> FocusWps
+}
+
 } // namespace
 
 HTMLPPT_TEST_CASE(worker_runtime_starts_show_and_tracks_slide_changes) {
@@ -810,6 +832,142 @@ HTMLPPT_TEST_CASE(worker_runtime_keeps_the_host_screen_without_an_override) {
   ReachReturning(h, MakeWpsShowWindow(9, 77, 600, 330));
   h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
   h.Step();  // CoverHold -> FocusWps cannot match the 1920x1080 screen
+  for (const auto id : h.windows.activate_calls) {
+    HTMLPPT_CHECK(id != WindowId{9});
+  }
+}
+
+// defaults.focus.require=false reaches the show-start focus through the host
+// config: no target exists for slide 0, so the plan entry cannot carry it.
+HTMLPPT_TEST_CASE(worker_runtime_show_start_honours_the_default_focus_require) {
+  WorkerHarness h;
+  h.host.focus_require = false;
+  h.host.wps_pids = {77};
+  h.rebuild();
+  h.windows.windows = {MakeWpsShowWindow(9, 77, 1920, 1080)};
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.Step();  // ShowStarted -> FocusWps, skipped by the default opt-out
+  HTMLPPT_CHECK(h.windows.activate_calls.empty());
+  HTMLPPT_CHECK(h.windows.activate_with_calls.empty());
+}
+
+// SafeMode hands the desktop back to the operator: the emergency restore focus
+// must run even when the target opted out of routine focus.
+HTMLPPT_TEST_CASE(worker_runtime_focus_require_false_still_restores_in_safe_mode) {
+  WorkerHarness h;
+  h.host.focus_require = false;
+  h.host.wps_pids = {77};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_require = false;
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+  h.windows.windows = {MakeWpsShowWindow(9, 77, 1920, 1080)};
+
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.Step();  // Monitoring; the routine show-start focus is opted out
+  HTMLPPT_CHECK(h.windows.activate_calls.empty());
+
+  h.presentation.show = MakeShowState(HostStatus::Unavailable, false, 0);
+  for (int i = 0; i < 40 && h.runtime.snapshot().state != State::SafeMode; ++i) {
+    h.advance(Duration{100});
+    h.Step();
+  }
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::SafeMode);
+  bool activated = false;
+  for (const auto id : h.windows.activate_calls) {
+    if (id == WindowId{9}) activated = true;
+  }
+  HTMLPPT_CHECK(activated);
+}
+
+// Switch-failure recovery is the same emergency hand-back, and it must not
+// inherit the in-flight target's focus strategy: the baseline chain applies.
+HTMLPPT_TEST_CASE(
+    worker_runtime_focus_require_false_still_recovers_from_switch_failure) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  h.host.focus_require = false;
+  h.host.wps_pids = {77};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_require = false;
+  target.focus_strategy = "switch";
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.Step();  // Monitoring
+  h.presentation.show.slide = 2;
+  h.Step();  // CoverIn
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.Step();  // EdgeStarting + LaunchEdge
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::EdgeStarting);
+  h.launcher.set_alive(false);
+  h.windows.windows = {MakeWpsShowWindow(9, 77, 1920, 1080)};
+  h.Step();  // EdgeClosed before ready -> recovery + emergency focus
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Monitoring);
+
+  bool activated = false;
+  for (const auto& call : h.windows.activate_with_calls) {
+    if (call.first != WindowId{9}) continue;
+    activated = true;
+    HTMLPPT_CHECK(call.second == FocusStrategy::Auto);
+  }
+  HTMLPPT_CHECK(activated);
+}
+
+// The show-start focus must be re-derived from the host baseline; otherwise a
+// previous target's focus.strategy would leak into the restarted show.
+HTMLPPT_TEST_CASE(worker_runtime_show_start_focus_uses_baseline_timing) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  h.host.wps_pids = {77};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.focus_strategy = "switch";
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 1920, 1080));
+  ReturnToMonitoring(h);
+  h.windows.activate_calls.clear();
+  h.windows.activate_with_calls.clear();
+  RestartShow(h);
+
+  bool activated = false;
+  for (const auto& call : h.windows.activate_with_calls) {
+    if (call.first != WindowId{9}) continue;
+    activated = true;
+    HTMLPPT_CHECK(call.second == FocusStrategy::Auto);
+  }
+  HTMLPPT_CHECK(activated);
+}
+
+// Same leak check for the screen: the target's 640x360 monitor made this window
+// acceptable, but the show-start focus must fall back to the 1920x1080 host
+// screen and reject it.
+HTMLPPT_TEST_CASE(worker_runtime_show_start_focus_uses_baseline_screen) {
+  WorkerHarness h;
+  h.config.startup_ignore = Duration{0};
+  h.host.wps_pids = {77};
+  h.host.screen = ScreenMetrics{1920, 1080};
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.screen_width = 640;
+  target.screen_height = 360;
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.rebuild();
+
+  ReachReturning(h, MakeWpsShowWindow(9, 77, 600, 330));
+  ReturnToMonitoring(h);
+  h.windows.activate_calls.clear();
+  h.windows.activate_with_calls.clear();
+  RestartShow(h);
+
   for (const auto id : h.windows.activate_calls) {
     HTMLPPT_CHECK(id != WindowId{9});
   }

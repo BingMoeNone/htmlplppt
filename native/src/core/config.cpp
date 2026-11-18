@@ -260,14 +260,22 @@ FocusConfig ParseFocus(const json& value, const std::string& path,
     AddError(issues, path, "must be an object");
     return result;
   }
-  CheckKnownKeys(value, {"strategy", "require"}, path, issues);
+  CheckKnownKeys(value, {"strategy", "require", "timeoutMs"}, path, issues);
   if (auto strategy = ReadString(value, "strategy", path, issues)) result.strategy = *strategy;
   if (auto required = ReadBool(value, "require", path, issues)) result.require = *required;
+  // Absent timeoutMs keeps the base value: a target focus block inherits the
+  // defaults, exactly like strategy/require.
+  if (auto timeout = ReadInt(value, "timeoutMs", path, issues)) {
+    result.timeout_ms = *timeout;
+  }
   if (result.strategy.empty()) {
     AddError(issues, FieldPath(path, "strategy"), "must not be empty");
   } else if (!IsOneOf(result.strategy, {"auto", "attach-alt", "switch"})) {
     AddError(issues, FieldPath(path, "strategy"),
              "must be auto, attach-alt, or switch");
+  }
+  if (result.timeout_ms.has_value() && *result.timeout_ms <= 0) {
+    AddError(issues, FieldPath(path, "timeoutMs"), "must be >= 1");
   }
   return result;
 }
@@ -583,7 +591,13 @@ nlohmann::ordered_json DisplayToJson(const DisplayConfig& display) {
 }
 
 nlohmann::ordered_json FocusToJson(const FocusConfig& focus) {
-  return {{"strategy", focus.strategy}, {"require", focus.require}};
+  nlohmann::ordered_json result{
+      {"strategy", focus.strategy},
+      {"require", focus.require},
+  };
+  // Serialized whenever set so the editor's save path cannot drop the timeout.
+  if (focus.timeout_ms.has_value()) result["timeoutMs"] = *focus.timeout_ms;
+  return result;
 }
 
 nlohmann::ordered_json AssetsToJson(const AssetsConfig& assets) {

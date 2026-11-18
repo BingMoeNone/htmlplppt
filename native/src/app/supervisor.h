@@ -20,9 +20,12 @@ namespace htmlppt {
 // the platform-neutral plan builder; `resolved` is the plan's index-aligned
 // host-target vector, whose ordinal names the source config target. A source
 // target without a display block leaves both fields empty (the worker keeps the
-// host/default screen).
+// host/default screen). A selection error is appended to `warnings` (used to
+// warn and journal) while the primary fallback metrics are still applied, the
+// same behaviour as the global display path.
 void ResolveTargetScreens(RunPlan& plan, const Config& config,
-                          const std::vector<ResolvedTarget>& resolved);
+                          const std::vector<ResolvedTarget>& resolved,
+                          std::vector<std::string>* warnings = nullptr);
 #endif
 
 // Terminates every pid in the list and returns how many were terminated. Shared

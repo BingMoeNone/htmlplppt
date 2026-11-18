@@ -124,7 +124,9 @@ Config LoadMappingConfig() {
       "maxConsecutiveTriggerFailures": 5,
       "cover": { "fadeMs": 250, "holdMs": 1500, "maxHoldMs": 9000 },
       "edge": { "maxLiveMs": 120000, "prewarmProfile": true,
-                "args": ["--kiosk"] }
+                "args": ["--kiosk"] },
+      "focus": { "strategy": "attach-alt", "require": false,
+                 "timeoutMs": 3500 }
     }
   })");
 }
@@ -246,7 +248,7 @@ HTMLPPT_TEST_CASE(worker_plan_copies_per_target_edge_and_focus_overrides) {
     "deck": "deck.pptx",
     "defaults": {
       "edge": { "maxLiveMs": 420000 },
-      "focus": { "strategy": "auto", "require": true }
+      "focus": { "strategy": "auto", "require": true, "timeoutMs": 5000 }
     },
     "targets": [
       {
@@ -254,7 +256,8 @@ HTMLPPT_TEST_CASE(worker_plan_copies_per_target_edge_and_focus_overrides) {
         "html": "page3.html",
         "label": "Three",
         "edge": { "maxLiveMs": 15000 },
-        "focus": { "strategy": "switch", "require": false },
+        "focus": { "strategy": "switch", "require": false,
+                   "timeoutMs": 1800 },
         "display": { "monitor": 2 }
       },
       { "slide": 5, "html": "page5.html", "label": "Five" }
@@ -268,9 +271,8 @@ HTMLPPT_TEST_CASE(worker_plan_copies_per_target_edge_and_focus_overrides) {
   HTMLPPT_CHECK_EQ(overridden.slide, 3);
   HTMLPPT_CHECK_EQ(overridden.edge_max_live, Duration{15000});
   HTMLPPT_CHECK_EQ(overridden.focus_strategy, std::string{"switch"});
+  HTMLPPT_CHECK_EQ(overridden.focus_timeout, Duration{1800});
   HTMLPPT_CHECK(!overridden.focus_require);
-  // No config key feeds a focus timeout, so the plan leaves it to the host.
-  HTMLPPT_CHECK(!overridden.focus_timeout.has_value());
   // Display metrics are a Windows fact: the app fills the screen, not core.
   HTMLPPT_CHECK(!overridden.screen_width.has_value());
   HTMLPPT_CHECK(!overridden.screen_height.has_value());
@@ -279,7 +281,32 @@ HTMLPPT_TEST_CASE(worker_plan_copies_per_target_edge_and_focus_overrides) {
   HTMLPPT_CHECK_EQ(plain.slide, 5);
   HTMLPPT_CHECK(!plain.edge_max_live.has_value());
   HTMLPPT_CHECK(!plain.focus_strategy.has_value());
+  // No target focus block: no per-target timeout override either, but the
+  // effective require comes from defaults so a global opt-out is not lost.
+  HTMLPPT_CHECK(!plain.focus_timeout.has_value());
   HTMLPPT_CHECK(plain.focus_require);
+}
+
+// defaults.focus.require must reach targets that have no focus block of their
+// own, otherwise a config-level opt-out silently keeps focusing.
+HTMLPPT_TEST_CASE(worker_plan_uses_the_default_focus_require_without_a_block) {
+  const Config config = ParseConfig(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "defaults": {
+      "focus": { "require": false, "timeoutMs": 3000 }
+    },
+    "targets": [{ "slide": 3, "html": "page3.html", "label": "Three" }]
+  })");
+  const ResolveResult resolved = ResolveTestTargets(config);
+  const WorkerPlan plan = BuildWorkerPlan(config, resolved, 12, "run-1");
+  HTMLPPT_CHECK_EQ(plan.machine.targets.size(), std::size_t{1});
+  HTMLPPT_CHECK(!plan.machine.targets[0].focus_require);
+
+  WorkerHostFacts facts;
+  const WorkerHostConfig host = BuildWorkerHostConfig(config, facts);
+  HTMLPPT_CHECK(!host.focus_require);
+  HTMLPPT_CHECK_EQ(host.focus.timeout, Duration{3000});
 }
 
 HTMLPPT_TEST_CASE(worker_plan_sorts_both_vectors_by_slide) {
@@ -407,6 +434,28 @@ HTMLPPT_TEST_CASE(worker_plan_json_rejects_non_positive_screen_metrics) {
                     &error)
                     .has_value());
   HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"screenHeight":0}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
+}
+
+// A screen override is a pair: scoring windows against a width with a stale
+// height would silently pick the wrong monitor, so a one-sided override is a
+// malformed plan.
+HTMLPPT_TEST_CASE(worker_plan_json_rejects_a_half_screen_override) {
+  std::string error;
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"screenWidth":1280}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK(!WorkerPlanFromJson(
+                    R"({"runId":"run-1","machine":{"slideCount":3,"targets":[{"slide":3,"screenHeight":720}]},"targets":[{"slide":3}]})",
+                    &error)
+                    .has_value());
+  HTMLPPT_CHECK(!error.empty());
 }
 
 HTMLPPT_TEST_CASE(worker_plan_json_rejects_invalid_json) {
@@ -523,9 +572,10 @@ HTMLPPT_TEST_CASE(worker_plan_maps_defaults_to_state_machine_config) {
   HTMLPPT_CHECK_EQ(machine.edge_max_live, Duration{120000});
   HTMLPPT_CHECK_EQ(machine.max_consecutive_trigger_failures, 5);
   HTMLPPT_CHECK(machine.default_on_failure == OnFailurePolicy::Safe);
-  // No config key feeds the focus timeout, so the state machine default stands
-  // and BuildWorkerHostConfig must follow it.
-  HTMLPPT_CHECK_EQ(machine.focus_timeout, Duration{6000});
+  // defaults.focus.timeoutMs feeds the machine (and through it the host), while
+  // an absent default keeps the state machine's own 6 s.
+  HTMLPPT_CHECK_EQ(machine.focus_timeout, Duration{3500});
+  HTMLPPT_CHECK_EQ(StateMachineConfig{}.focus_timeout, Duration{6000});
 }
 
 HTMLPPT_TEST_CASE(worker_plan_maps_defaults_and_host_facts_to_worker_host) {
@@ -551,6 +601,7 @@ HTMLPPT_TEST_CASE(worker_plan_maps_defaults_and_host_facts_to_worker_host) {
   HTMLPPT_CHECK_EQ(host.cover.max_hold, Duration{9000});
   HTMLPPT_CHECK_EQ(host.focus.timeout,
                    BuildStateMachineConfig(config).focus_timeout);
+  HTMLPPT_CHECK(!host.focus_require);
   // Host facts are not config: the remaining host timings keep their defaults.
   HTMLPPT_CHECK_EQ(host.focus.interval, Duration{100});
   HTMLPPT_CHECK_EQ(host.poll_interval, Duration{100});

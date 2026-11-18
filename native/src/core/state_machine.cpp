@@ -652,7 +652,7 @@ std::vector<Action> StateMachine::HandleSwitchFailure(ClockPoint at,
   actions.push_back(
       {ActionKind::RestoreShow, slide, "restore WPS after switch failure"});
   actions.push_back(
-      {ActionKind::FocusWps, slide, "focus WPS after switch failure"});
+      {ActionKind::FocusWps, slide, "focus WPS after switch failure", true});
   actions.push_back(
       {ActionKind::Journal, slide,
        "switch failure recovered; monitoring at slide " +
@@ -697,7 +697,8 @@ std::vector<Action> StateMachine::HandleStructuralFailure(std::string detail) {
   // and must leave a diagnostic record. The cover is hidden first so the
   // operator never stares at a black screen while these run.
   actions.push_back({ActionKind::ExitShow, slide, "safe mode: exit show"});
-  actions.push_back({ActionKind::FocusWps, slide, "safe mode: restore WPS"});
+  actions.push_back(
+      {ActionKind::FocusWps, slide, "safe mode: restore WPS", true});
   actions.push_back(
       {ActionKind::EnterSafeMode, slide, "structural failure"});
   actions.push_back({ActionKind::Diagnostic, slide, "safe mode: " + detail});

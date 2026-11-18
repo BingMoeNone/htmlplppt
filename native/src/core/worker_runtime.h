@@ -38,6 +38,10 @@ struct WorkerHostConfig {
   EdgeConfig edge;
   CoverTiming cover;
   FocusTiming focus;
+  // Global focus.require default. The plan carries an effective per-target value,
+  // but a show-start focus has no target, so the runtime needs the config-level
+  // opt-out here too.
+  bool focus_require = true;
   ScreenMetrics screen;
   std::vector<std::uint32_t> wps_pids;
   // Spec 6.6 fault switches. Off in production; see core/faults.h.
@@ -92,9 +96,12 @@ class WorkerRuntime : public WorkerDriver {
   // baseline. Called when a trigger starts; a target without an override keeps
   // the baseline, so the previous target's values never leak forward.
   void ApplyTargetSettings(int slide);
+  // Restores the host focus/screen baseline. Used by emergency hand-backs and by
+  // the target-less show-start focus so a finished target's settings never leak.
+  void ApplyBaselineSettings();
   const TargetPlan* FindTarget(int slide) const;
-  // focus.require=false makes FocusWps inert; a slide without a target keeps the
-  // default requirement so the show-start focus still runs.
+  // focus.require=false makes routine FocusWps inert; a slide without a target
+  // (the show-start focus) uses the host's global focus.require instead.
   bool FocusRequired(int slide) const;
 
   WorkerPlan plan_;
