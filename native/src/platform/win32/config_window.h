@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,12 +13,43 @@
 
 namespace htmlppt {
 
+// The editor's colour scheme. System follows the current user's Windows app
+// mode; Light and Dark force one regardless of the system setting.
+enum class ConfigWindowTheme { System, Light, Dark };
+
+// One scheme's colours, in one place. Every themed surface (window background,
+// list body, detail controls, status line) is painted from these values.
+struct ConfigWindowColors {
+  COLORREF background;
+  COLORREF text;
+  bool dark;
+};
+
+// White is the classic CLR_WINDOW default; Dark is the Windows dark surface
+// with light text. Exposed constants so the tests name the exact colours.
+inline constexpr ConfigWindowColors kConfigWindowLightColors{
+    RGB(255, 255, 255), RGB(0, 0, 0), false};
+inline constexpr ConfigWindowColors kConfigWindowDarkColors{
+    RGB(32, 32, 32), RGB(242, 242, 242), true};
+
+// True when the Windows app mode is dark. AppsUseLightTheme is a DWORD that is
+// 0 for dark; 1 and any other value mean light. A missing (or unreadable)
+// registry value falls back to light, so the input is an optional. Pure, so the
+// mapping is testable without touching the registry.
+bool DarkFromAppsUseLightTheme(std::optional<DWORD> apps_use_light_theme);
+
+// True when the window's immersive dark title bar is on. False both when the
+// flag is off and when the running Windows build has no such DWM attribute.
+bool IsDarkTitleBarEnabled(HWND hwnd);
+
 struct ConfigWindowOptions {
   std::wstring title;
   int width = 900;
   int height = 560;
   // Tests create the window hidden so a headless run never flashes a window.
   bool show = true;
+  // System (the default) resolves the app mode when the window is created.
+  ConfigWindowTheme theme = ConfigWindowTheme::System;
 };
 
 // The right-hand detail pane's field values, read back from the controls.
@@ -181,6 +213,10 @@ class ConfigWindow {
   // WM_DPICHANGED), applied to every child, and deleted with the window.
   void CreateFontForDpi();
   void ApplyFont();
+  // Paints every themed surface from colors_: the window's own erase brush,
+  // the list colours, the WM_CTLCOLOR brushes, and the DWM title bar. Brushes
+  // are DPI-independent, so WM_DPICHANGED only re-runs the (idempotent) apply.
+  void ApplyTheme();
   // One 96-DPI logical unit in the window's current layout DPI.
   int Scale(int value) const;
   void Layout(int width, int height);
@@ -216,6 +252,11 @@ class ConfigWindow {
   HWND detail_enabled_check_ = nullptr;
   HWND detail_apply_button_ = nullptr;
   HFONT font_ = nullptr;
+  // The resolved scheme for this window and its solid surface brush. The brush
+  // is created once per scheme and deleted with the window (WM_DESTROY).
+  ConfigWindowColors colors_ = kConfigWindowLightColors;
+  HBRUSH background_brush_ = nullptr;
+  COLORREF brush_color_ = CLR_INVALID;
   // The last snapshot from the model; the pane reads these rows, never the
   // list control's text.
   std::vector<DisplayRow> rows_;

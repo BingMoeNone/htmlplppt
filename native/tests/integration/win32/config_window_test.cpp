@@ -3,6 +3,9 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include <dwmapi.h>
+
+#include <optional>
 #include <string>
 
 #include "platform/win32/config_window.h"
@@ -63,6 +66,106 @@ void PumpUntilDestroyed(HWND hwnd) {
     }
     Sleep(10);
   }
+}
+
+// DWMWA_USE_IMMERSIVE_DARK_MODE as documented (20) and the pre-20H1 number.
+constexpr DWORD kDarkModeAttribute = 20;
+constexpr DWORD kDarkModeAttributeLegacy = 19;
+
+// The immersive dark-mode title bar attribute; nullopt when this Windows build
+// has no such attribute, in which case the title-bar assertion is skipped.
+std::optional<bool> QueryDarkTitleBar(HWND hwnd) {
+  BOOL value = FALSE;
+  HRESULT result =
+      DwmGetWindowAttribute(hwnd, kDarkModeAttribute, &value, sizeof value);
+  if (FAILED(result)) {
+    result = DwmGetWindowAttribute(hwnd, kDarkModeAttributeLegacy, &value,
+                                   sizeof value);
+  }
+  if (FAILED(result)) return std::nullopt;
+  return value != FALSE;
+}
+
+// The current user's AppsUseLightTheme value, read the same way the window's
+// System theme resolves it. Missing/unreadable folds into nullopt (light).
+std::optional<DWORD> ReadAppsUseLightThemeForTest() {
+  HKEY key = nullptr;
+  constexpr wchar_t kPersonalize[] =
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kPersonalize, 0, KEY_QUERY_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return std::nullopt;
+  }
+  DWORD value = 0;
+  DWORD size = sizeof value;
+  DWORD type = 0;
+  const LONG status =
+      RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, &type,
+                       reinterpret_cast<LPBYTE>(&value), &size);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS || type != REG_DWORD ||
+      size != sizeof value) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+// Reads the solid colour of the brush a WM_CTLCOLOR* handler returned.
+std::optional<COLORREF> BrushColor(HBRUSH brush) {
+  if (brush == nullptr) return std::nullopt;
+  LOGBRUSH logbrush{};
+  if (GetObjectW(brush, sizeof(logbrush), &logbrush) == 0) {
+    return std::nullopt;
+  }
+  return logbrush.lbColor;
+}
+
+// The single client-sized pixel a WM_ERASEBKGND handler painted at (1, 1).
+std::optional<COLORREF> ErasedBackgroundColor(HWND hwnd) {
+  RECT client{};
+  if (GetClientRect(hwnd, &client) == 0 || client.right <= 1 ||
+      client.bottom <= 1) {
+    return std::nullopt;
+  }
+  HDC window_dc = GetDC(hwnd);
+  if (window_dc == nullptr) return std::nullopt;
+  HDC memory_dc = CreateCompatibleDC(window_dc);
+  HBITMAP canvas = nullptr;
+  if (memory_dc != nullptr) {
+    canvas = CreateCompatibleBitmap(window_dc, client.right, client.bottom);
+  }
+  if (memory_dc == nullptr || canvas == nullptr) {
+    if (memory_dc != nullptr) DeleteDC(memory_dc);
+    ReleaseDC(hwnd, window_dc);
+    return std::nullopt;
+  }
+  const HGDIOBJ previous = SelectObject(memory_dc, canvas);
+  const LRESULT erased = SendMessageW(
+      hwnd, WM_ERASEBKGND, reinterpret_cast<WPARAM>(memory_dc), 0);
+  std::optional<COLORREF> color;
+  if (erased != 0) color = GetPixel(memory_dc, 1, 1);
+  SelectObject(memory_dc, previous);
+  DeleteObject(canvas);
+  DeleteDC(memory_dc);
+  ReleaseDC(hwnd, window_dc);
+  return color;
+}
+
+// Sends one WM_CTLCOLOR* to the window and reads the returned brush's colour;
+// `text_color`, when given, receives the text colour the handler set on the DC.
+std::optional<COLORREF> ControlSurfaceColor(HWND hwnd, UINT message,
+                                            HWND control,
+                                            COLORREF* text_color = nullptr) {
+  HDC dc = GetDC(hwnd);
+  if (dc == nullptr) return std::nullopt;
+  const LRESULT result =
+      SendMessageW(hwnd, message, reinterpret_cast<WPARAM>(dc),
+                   reinterpret_cast<LPARAM>(control));
+  if (text_color != nullptr) *text_color = GetTextColor(dc);
+  const std::optional<COLORREF> color =
+      BrushColor(reinterpret_cast<HBRUSH>(result));
+  ReleaseDC(hwnd, dc);
+  return color;
 }
 
 } // namespace
@@ -1123,4 +1226,136 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
     Sleep(10);
   }
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_dark_theme_uses_dark_surfaces) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  options.theme = htmlppt::ConfigWindowTheme::Dark;
+  HTMLPPT_CHECK(window.Create(options));
+  HTMLPPT_CHECK(window.list_view() != nullptr);
+
+  // The list body, the item label background, and the item text all come from
+  // the one dark colour pair.
+  HTMLPPT_CHECK_EQ(ListView_GetBkColor(window.list_view()),
+                   htmlppt::kConfigWindowDarkColors.background);
+  HTMLPPT_CHECK_EQ(ListView_GetTextBkColor(window.list_view()),
+                   htmlppt::kConfigWindowDarkColors.background);
+  HTMLPPT_CHECK_EQ(ListView_GetTextColor(window.list_view()),
+                   htmlppt::kConfigWindowDarkColors.text);
+
+  // The status line, a detail EDIT, and the assets drop-down list paint on the
+  // dark surface with light text (the brush and the DC's text colour).
+  COLORREF status_text = CLR_INVALID;
+  const std::optional<COLORREF> status_background = ControlSurfaceColor(
+      window.handle(), WM_CTLCOLORSTATIC, window.status_view(), &status_text);
+  HTMLPPT_CHECK(status_background.has_value());
+  HTMLPPT_CHECK_EQ(*status_background,
+                   htmlppt::kConfigWindowDarkColors.background);
+  HTMLPPT_CHECK_EQ(status_text, htmlppt::kConfigWindowDarkColors.text);
+
+  HWND edit = FindWindowExW(window.handle(), nullptr, L"EDIT", nullptr);
+  HTMLPPT_CHECK(edit != nullptr);
+  const std::optional<COLORREF> edit_background =
+      ControlSurfaceColor(window.handle(), WM_CTLCOLOREDIT, edit);
+  HTMLPPT_CHECK(edit_background.has_value());
+  HTMLPPT_CHECK_EQ(*edit_background,
+                   htmlppt::kConfigWindowDarkColors.background);
+
+  HWND combo = FindWindowExW(window.handle(), nullptr, L"COMBOBOX", nullptr);
+  HTMLPPT_CHECK(combo != nullptr);
+  const std::optional<COLORREF> combo_background =
+      ControlSurfaceColor(window.handle(), WM_CTLCOLORLISTBOX, combo);
+  HTMLPPT_CHECK(combo_background.has_value());
+  HTMLPPT_CHECK_EQ(*combo_background,
+                   htmlppt::kConfigWindowDarkColors.background);
+
+  // The window itself erases to the dark surface, so a resize never flashes a
+  // light rectangle around the themed children.
+  const std::optional<COLORREF> erased =
+      ErasedBackgroundColor(window.handle());
+  HTMLPPT_CHECK(erased.has_value());
+  HTMLPPT_CHECK_EQ(*erased, htmlppt::kConfigWindowDarkColors.background);
+
+  // The immersive dark title bar is a DWM attribute; a Windows build without it
+  // cannot honour the request, so the assertion is skipped there.
+  const std::optional<bool> title_bar_dark =
+      QueryDarkTitleBar(window.handle());
+  if (title_bar_dark.has_value()) {
+    HTMLPPT_CHECK(*title_bar_dark);
+    HTMLPPT_CHECK(htmlppt::IsDarkTitleBarEnabled(window.handle()));
+  }
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_light_theme_keeps_light_surfaces) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  options.theme = htmlppt::ConfigWindowTheme::Light;
+  HTMLPPT_CHECK(window.Create(options));
+
+  // White, the CLR_WINDOW default, is untouched.
+  HTMLPPT_CHECK_EQ(ListView_GetBkColor(window.list_view()), RGB(255, 255, 255));
+  HTMLPPT_CHECK_EQ(ListView_GetBkColor(window.list_view()),
+                   htmlppt::kConfigWindowLightColors.background);
+  HTMLPPT_CHECK_EQ(ListView_GetTextBkColor(window.list_view()),
+                   htmlppt::kConfigWindowLightColors.background);
+  HTMLPPT_CHECK_EQ(ListView_GetTextColor(window.list_view()),
+                   htmlppt::kConfigWindowLightColors.text);
+
+  COLORREF status_text = CLR_INVALID;
+  const std::optional<COLORREF> status_background = ControlSurfaceColor(
+      window.handle(), WM_CTLCOLORSTATIC, window.status_view(), &status_text);
+  HTMLPPT_CHECK(status_background.has_value());
+  HTMLPPT_CHECK_EQ(*status_background,
+                   htmlppt::kConfigWindowLightColors.background);
+  HTMLPPT_CHECK_EQ(status_text, htmlppt::kConfigWindowLightColors.text);
+
+  const std::optional<COLORREF> erased =
+      ErasedBackgroundColor(window.handle());
+  HTMLPPT_CHECK(erased.has_value());
+  HTMLPPT_CHECK_EQ(*erased, htmlppt::kConfigWindowLightColors.background);
+
+  // An explicit light theme turns the immersive dark title bar back off.
+  const std::optional<bool> title_bar_dark =
+      QueryDarkTitleBar(window.handle());
+  if (title_bar_dark.has_value()) {
+    HTMLPPT_CHECK(!*title_bar_dark);
+    HTMLPPT_CHECK(!htmlppt::IsDarkTitleBarEnabled(window.handle()));
+  }
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_system_theme_resolves_the_registry_value) {
+  // AppsUseLightTheme: 0 means dark; 1 (or any non-zero) and a missing value
+  // mean light.
+  HTMLPPT_CHECK(htmlppt::DarkFromAppsUseLightTheme(0));
+  HTMLPPT_CHECK(!htmlppt::DarkFromAppsUseLightTheme(1));
+  HTMLPPT_CHECK(!htmlppt::DarkFromAppsUseLightTheme(std::nullopt));
+
+  // The default option, System, reads the current user's app mode. Compare the
+  // window against that same registry value instead of assuming a machine.
+  const std::optional<DWORD> apps_use_light = ReadAppsUseLightThemeForTest();
+  const bool expect_dark = htmlppt::DarkFromAppsUseLightTheme(apps_use_light);
+  const htmlppt::ConfigWindowColors& expected =
+      expect_dark ? htmlppt::kConfigWindowDarkColors
+                  : htmlppt::kConfigWindowLightColors;
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  HTMLPPT_CHECK_EQ(ListView_GetBkColor(window.list_view()),
+                   expected.background);
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
 }

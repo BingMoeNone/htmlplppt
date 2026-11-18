@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <dwmapi.h>
 
 #include <charconv>
 #include <optional>
@@ -74,6 +75,65 @@ std::wstring TextOf(HWND control) {
   return text;
 }
 
+// DWMWA_USE_IMMERSIVE_DARK_MODE as documented (20) and the pre-20H1 number the
+// attribute used (19). A local constant keeps the build independent of how new
+// the SDK's dwmapi.h is.
+constexpr DWORD kDarkModeAttribute = 20;
+constexpr DWORD kDarkModeAttributeLegacy = 19;
+
+// The current user's AppsUseLightTheme value; nullopt when the key or the value
+// is missing/unreadable, which the caller treats as light.
+std::optional<DWORD> ReadAppsUseLightTheme() {
+  constexpr wchar_t kPersonalize[] =
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kPersonalize, 0, KEY_QUERY_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return std::nullopt;
+  }
+  DWORD value = 0;
+  DWORD size = sizeof value;
+  DWORD type = 0;
+  const LONG status =
+      RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, &type,
+                       reinterpret_cast<LPBYTE>(&value), &size);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS || type != REG_DWORD ||
+      size != sizeof value) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+// System resolves through the user's app mode; Light and Dark are fixed.
+ConfigWindowColors ColorsFor(ConfigWindowTheme theme) {
+  switch (theme) {
+    case ConfigWindowTheme::Dark:
+      return kConfigWindowDarkColors;
+    case ConfigWindowTheme::Light:
+      return kConfigWindowLightColors;
+    case ConfigWindowTheme::System:
+      break;
+  }
+  return DarkFromAppsUseLightTheme(ReadAppsUseLightTheme())
+             ? kConfigWindowDarkColors
+             : kConfigWindowLightColors;
+}
+
+// Flips the DWM immersive dark title bar. Attribute 20 is the current spelling;
+// older builds only know 19, so fall back once. A build without either cannot
+// honour the request, which is not an error.
+void SetDarkTitleBar(HWND hwnd, bool dark) {
+  if (hwnd == nullptr) return;
+  const BOOL enabled = dark ? TRUE : FALSE;
+  if (SUCCEEDED(DwmSetWindowAttribute(hwnd, kDarkModeAttribute, &enabled,
+                                      sizeof enabled))) {
+    return;
+  }
+  DwmSetWindowAttribute(hwnd, kDarkModeAttributeLegacy, &enabled,
+                        sizeof enabled);
+}
+
 // True when focus is in an EDIT control: the detail pane's text fields, or the
 // list's label edit if the view ever grows one (Win32 registers the class as
 // "Edit"). The comparison is case-insensitive so both spellings match.
@@ -86,6 +146,22 @@ bool FocusIsEdit() {
 }
 
 } // namespace
+
+bool DarkFromAppsUseLightTheme(std::optional<DWORD> apps_use_light_theme) {
+  return apps_use_light_theme.has_value() && *apps_use_light_theme == 0;
+}
+
+bool IsDarkTitleBarEnabled(HWND hwnd) {
+  if (hwnd == nullptr) return false;
+  BOOL value = FALSE;
+  HRESULT result =
+      DwmGetWindowAttribute(hwnd, kDarkModeAttribute, &value, sizeof value);
+  if (FAILED(result)) {
+    result = DwmGetWindowAttribute(hwnd, kDarkModeAttributeLegacy, &value,
+                                   sizeof value);
+  }
+  return SUCCEEDED(result) && value != FALSE;
+}
 
 bool ShouldCloseWindow(bool dirty, bool answer_save) {
   return !dirty || answer_save;
@@ -173,10 +249,20 @@ ConfigWindow::~ConfigWindow() {
     DeleteObject(font_);
     font_ = nullptr;
   }
+  if (background_brush_ != nullptr) {
+    DeleteObject(background_brush_);
+    background_brush_ = nullptr;
+  }
 }
 
 bool ConfigWindow::Create(const ConfigWindowOptions& options) {
   if (handle_ != nullptr) return false;
+
+  // Resolve the scheme before the window exists: the window paints its own
+  // background and its first WM_ERASEBKGND arrives before the children (and
+  // before a post-creation ApplyTheme) exist.
+  colors_ = ColorsFor(options.theme);
+  ApplyTheme();
 
   // Common Controls v6 is initialized once per process; the ListView arrives in
   // a later task but the control class must be available before creation.
@@ -316,6 +402,31 @@ void ConfigWindow::CreateChildren() {
   // Nothing is dirty before the first edit, so Save starts closed.
   SetSaveEnabled(false);
   ApplyFont();
+  // Children exist now, so the list colours and the DWM title bar can be set;
+  // the window's own erase brush was already created before it opened.
+  ApplyTheme();
+}
+
+void ConfigWindow::ApplyTheme() {
+  if (background_brush_ == nullptr || brush_color_ != colors_.background) {
+    if (background_brush_ != nullptr) {
+      DeleteObject(background_brush_);
+      background_brush_ = nullptr;
+    }
+    background_brush_ = CreateSolidBrush(colors_.background);
+    brush_color_ = colors_.background;
+  }
+  // The list view owns its body colour and the per-item label background; both
+  // must be themed or dark mode leaves white rectangles behind the text.
+  if (list_view_ != nullptr) {
+    ListView_SetBkColor(list_view_, colors_.background);
+    ListView_SetTextBkColor(list_view_, colors_.background);
+    ListView_SetTextColor(list_view_, colors_.text);
+  }
+  if (handle_ != nullptr) {
+    SetDarkTitleBar(handle_, colors_.dark);
+    InvalidateRect(handle_, nullptr, TRUE);
+  }
 }
 
 void ConfigWindow::CreateFontForDpi() {
@@ -811,15 +922,44 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
     case WM_SIZE:
       Layout(static_cast<int>(LOWORD(lparam)), static_cast<int>(HIWORD(lparam)));
       return 0;
+    case WM_ERASEBKGND: {
+      // The theme is per window, so the shared class brush cannot carry it:
+      // erase here from the resolved scheme instead of letting DefWindowProc
+      // paint the class's default light brush.
+      auto* dc = reinterpret_cast<HDC>(wparam);
+      RECT client{};
+      if (background_brush_ == nullptr || dc == nullptr ||
+          GetClientRect(hwnd, &client) == 0) {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+      }
+      FillRect(dc, &client, background_brush_);
+      return 1;
+    }
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+      // The status line, the detail labels/edits, the assets drop-down list,
+      // and the pane's check box all paint on the themed surface with the
+      // themed text colour. A disabled EDIT arrives as WM_CTLCOLORSTATIC.
+      auto* dc = reinterpret_cast<HDC>(wparam);
+      if (dc != nullptr) {
+        SetTextColor(dc, colors_.text);
+        SetBkColor(dc, colors_.background);
+      }
+      return reinterpret_cast<LRESULT>(background_brush_);
+    }
     case WM_DPICHANGED: {
       // The suggested rect in lparam is already in the new DPI's physical
       // pixels; apply it and re-scale every layout metric to the new DPI.
       const UINT new_dpi = HIWORD(wparam);
       if (new_dpi != 0) dpi_ = new_dpi;
       // Recreate and re-apply the font at the new DPI before laying out, so the
-      // scaled controls never render their old, clipped text.
+      // scaled controls never render their old, clipped text. The theme is
+      // re-applied too: its brushes are DPI-independent, but the apply is cheap
+      // and keeps every themed surface in step after the move.
       CreateFontForDpi();
       ApplyFont();
+      ApplyTheme();
       const auto* suggested = reinterpret_cast<const RECT*>(lparam);
       if (suggested != nullptr) {
         SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
@@ -918,6 +1058,11 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       if (font_ != nullptr) {
         DeleteObject(font_);
         font_ = nullptr;
+      }
+      if (background_brush_ != nullptr) {
+        DeleteObject(background_brush_);
+        background_brush_ = nullptr;
+        brush_color_ = CLR_INVALID;
       }
       handle_ = nullptr;
       list_view_ = nullptr;
