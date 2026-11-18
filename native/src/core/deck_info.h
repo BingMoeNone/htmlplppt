@@ -27,6 +27,30 @@ struct DeckInfoResult {
   std::vector<ConfigIssue> issues;
 };
 
+// The size of every exported slide thumbnail. The BMP export and the list's
+// image list share these values, so a thumbnail is never rescaled at draw time.
+inline constexpr int kThumbnailWidth = 96;
+inline constexpr int kThumbnailHeight = 72;
+
+// One slide's exported thumbnail: the 1-based slide number and the UTF-8 path
+// of its BMP. The export writes the file and the editor's list reads it back,
+// so the path is the contract between the two.
+struct SlideThumbnail {
+  int number = 0;
+  std::string image_path;
+};
+
+// One name per slide, in slide order, already joined to `dir`: slide-01.bmp,
+// slide-02.bmp, ... A deck of 100+ slides widens the zero-padded index so the
+// names still sort in slide order. A slide count of zero or less yields an
+// empty list.
+std::vector<std::string> ThumbnailFileNames(int slide_count,
+                                           const std::filesystem::path& dir);
+// The same list paired with each slide's 1-based number: the export uses the
+// pair to know which file belongs to which slide.
+std::vector<SlideThumbnail> SlideThumbnails(int slide_count,
+                                            const std::filesystem::path& dir);
+
 class DeckInfoProvider {
  public:
   virtual ~DeckInfoProvider() = default;

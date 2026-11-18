@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <commctrl.h>
 #include <shellapi.h>
 
 #include <functional>
@@ -85,6 +86,11 @@ inline constexpr UINT kWatchdogPollTimerId = 7;
 // Public so the app and the tests can deliver the same notification the
 // ReadDirectoryChangesW thread posts.
 inline constexpr UINT kConfigChangedMessage = WM_APP + 1;
+
+// The private message the app's thumbnail export worker posts: the deck scan
+// finished and the prepared paths are ready for SetThumbnails. Public so the
+// app and the tests can deliver the same notification the worker posts.
+inline constexpr UINT kThumbnailsReadyMessage = WM_APP + 2;
 
 // The close policy: a window with no pending edits always closes; a dirty one
 // only when the user answered the close prompt with Save and that save went
@@ -191,6 +197,22 @@ class ConfigWindow {
   void SetStartEnabled(bool enabled);
   bool start_enabled() const { return start_enabled_; }
 
+  // The deck scan: the handler starts the thumbnail export (it must return
+  // quickly -- the app exports through COM on a worker thread) and owns the
+  // "scanning" status line; the view reports a rejection. When the worker
+  // finishes it posts kThumbnailsReadyMessage; the handler installed by
+  // SetThumbnailsHandler then hands the prepared paths to SetThumbnails and
+  // reports the outcome.
+  void SetScanHandler(ToolbarHandler handler);
+  void SetThumbnailsHandler(std::function<void()> handler);
+
+  // Rebuilds the list's small image list from exported BMP paths (one per
+  // slide, in slide order) and repaints the rows from it: row i shows image i
+  // until the thumbnails run out, and a stale index is not reused. A path that
+  // does not load leaves that row without an image (index -1) instead of
+  // failing the list population, and an empty list clears every row's image.
+  void SetThumbnails(const std::vector<std::string>& paths);
+
   // The watchdog liveness poll. While a launched supervisor is alive the app
   // starts a 500 ms window timer; each tick calls this handler, which reaps the
   // child, reopens Start, and mirrors the run state. Installing no handler
@@ -243,6 +265,7 @@ class ConfigWindow {
   HWND remove_button() const { return remove_button_; }
   HWND save_button() const { return save_button_; }
   HWND validate_button() const { return validate_button_; }
+  HWND scan_button() const { return scan_button_; }
   HWND start_button() const { return start_button_; }
   HWND stop_button() const { return stop_button_; }
 
@@ -284,8 +307,17 @@ class ConfigWindow {
   void RemoveSelectedTarget();
   void SaveConfig();
   void ValidateConfig();
+  void ScanDeck();
   void StartWatchdog();
   void StopWatchdog();
+  // Replaces the row images after a scan, or clears them for the rows the scan
+  // left without one.
+  int AddThumbnail(const std::string& utf8_path);
+  void ApplyRowImages();
+  void DestroyThumbnails();
+  // The image list index of `row`'s thumbnail, or -1 when it has none. Rows and
+  // exported slides are both in slide order, so the position is the mapping.
+  int ThumbnailForRow(std::size_t row) const;
 
   HWND handle_ = nullptr;
   HWND list_view_ = nullptr;
@@ -294,6 +326,7 @@ class ConfigWindow {
   HWND remove_button_ = nullptr;
   HWND save_button_ = nullptr;
   HWND validate_button_ = nullptr;
+  HWND scan_button_ = nullptr;
   HWND start_button_ = nullptr;
   HWND stop_button_ = nullptr;
   HWND detail_slide_label_ = nullptr;
@@ -328,6 +361,16 @@ class ConfigWindow {
   ToolbarHandler redo_handler_;
   ToolbarHandler start_handler_;
   ToolbarHandler stop_handler_;
+  ToolbarHandler scan_handler_;
+  std::function<void()> thumbnails_handler_;
+  // The list's small image list and the slot each exported slide landed in.
+  // thumbnail_indices_ is parallel to the paths of the last scan (one entry per
+  // slide); -1 is a slide whose BMP did not load. The list view keeps its own
+  // pointer to `thumbnails_`, which is why it is detached before the list is
+  // destroyed.
+  HIMAGELIST thumbnails_ = nullptr;
+  int thumbnail_capacity_ = 0;
+  std::vector<int> thumbnail_indices_;
   std::function<void()> watchdog_poll_handler_;
   bool watchdog_poll_running_ = false;
   std::function<void()> config_changed_handler_;

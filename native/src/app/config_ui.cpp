@@ -1,15 +1,20 @@
 #include "app/config_ui.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
 
 #include <windows.h>
 
+#include "core/clock.h"
 #include "core/config.h"
 #include "core/config_editor.h"
 #include "core/deck_info.h"
@@ -22,6 +27,7 @@
 #include "platform/win32/config_file_watcher.h"
 #include "platform/win32/config_window.h"
 #include "platform/win32/shared_blackbox.h"
+#include "platform/win32/wps_host.h"
 
 namespace htmlppt {
 namespace {
@@ -101,6 +107,21 @@ std::optional<ConfigStamp> ReadConfigStamp(const std::filesystem::path& path) {
   return ConfigStamp{size, mtime};
 }
 
+// Where a deck scan writes its thumbnails: one directory per editor process
+// under the user's temp dir, so a rescan overwrites the previous deck's bitmaps
+// instead of leaving a directory behind for every click. The export creates the
+// directory; a failed create is reported by the scan itself.
+std::filesystem::path ThumbnailDir() {
+  const std::wstring suffix =
+      L"htmlppt-thumbs-" + std::to_wstring(GetCurrentProcessId());
+  wchar_t buffer[MAX_PATH] = {};
+  const DWORD length = GetTempPathW(MAX_PATH, buffer);
+  if (length > 0 && length < MAX_PATH) {
+    return std::filesystem::path(buffer) / suffix;
+  }
+  return std::filesystem::temp_directory_path() / suffix;
+}
+
 } // namespace
 
 int RunConfigUi(const ConfigUiOptions& ui_options) {
@@ -133,6 +154,20 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // Declared before the window so it outlives the handlers stored in it.
   std::optional<std::size_t> selected_index;
 
+  // The deck scan's outcome, written by the export worker and read on the UI
+  // thread after kThumbnailsReadyMessage; the mutex orders the two, since the
+  // posted message is the only other synchronisation between them. Declared
+  // before the window too: the handlers reference them, and the thread is
+  // joined before the window is destroyed.
+  struct ScanResult {
+    std::vector<std::string> paths;
+    std::string error;
+    bool ok = false;
+  };
+  std::mutex scan_mutex;
+  ScanResult scan_result;
+  std::thread scan_thread;
+
   ConfigWindow window;
   ConfigWindowOptions options;
   options.title = L"htmlppt config - " + config_path.wstring();
@@ -149,6 +184,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // that launch, stop, and poll the run.
   const std::filesystem::path exe = CurrentExecutable();
   const std::filesystem::path state_dir = WatchdogStateDir(config_path);
+  // A scan writes into the process's own temp directory; fixed for the life of
+  // the window so a rescan overwrites the previous deck's bitmaps.
+  const std::filesystem::path thumbnail_dir = ThumbnailDir();
   const bool allow_outside_folder = ui_options.allow_outside_folder;
   HANDLE watchdog_child = nullptr;
   bool watchdog_running = false;
@@ -324,6 +362,77 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     const std::wstring reason = refresh();
     window.SetStatus(reason.empty() ? L"redone" : reason);
     return true;
+  });
+
+  // Scan deck exports one thumbnail per slide of the model's deck. The COM
+  // export is slow and must not freeze the editor, so it runs on a worker
+  // thread that owns its own COM apartment and WPS host; the worker only
+  // prepares the paths, and the UI thread repaints the list when it posts
+  // kThumbnailsReadyMessage. The deck comes from the live model, so a scan
+  // follows the config being edited rather than the file on disk.
+  window.SetScanHandler([&window, &model, &scan_mutex, &scan_result,
+                         &scan_thread, thumbnail_dir](std::wstring* error) {
+    if (scan_thread.joinable()) {
+      if (error != nullptr) *error = L"a deck scan is already running";
+      return false;
+    }
+    const std::filesystem::path deck = ResolveDeckPath(model.config());
+    if (deck.empty()) {
+      if (error != nullptr) *error = L"the config has no deck to scan";
+      return false;
+    }
+    const HWND handle = window.handle();
+    if (handle == nullptr) {
+      if (error != nullptr) *error = L"the config window is not open";
+      return false;
+    }
+    scan_thread = std::thread([handle, deck, thumbnail_dir, &scan_mutex,
+                               &scan_result]() {
+      SteadyClock clock;
+      WpsHostConfig host_config;
+      // One attempt: the scan is a user-initiated extra, and a failed launch
+      // must report quickly instead of retrying behind the editor.
+      host_config.launch_attempts = 1;
+      WpsHost host(clock, host_config);
+      std::vector<std::string> paths;
+      std::string export_error;
+      const bool ok = host.ExportSlideThumbnails(deck, thumbnail_dir, &paths,
+                                                 &export_error);
+      host.Release();
+      {
+        const std::lock_guard<std::mutex> lock(scan_mutex);
+        scan_result.ok = ok;
+        scan_result.paths = std::move(paths);
+        scan_result.error = std::move(export_error);
+      }
+      // Posted last: the message is the worker's "results are ready" edge.
+      PostMessageW(handle, kThumbnailsReadyMessage, 0, 0);
+    });
+    window.SetStatus(L"scanning deck...");
+    return true;
+  });
+
+  // The worker finished: read the prepared paths and hand them to the view. The
+  // join is immediate because posting the message was the worker's last action;
+  // it also means no scan thread can outlive the window. A failed scan clears
+  // the previous deck's thumbnails rather than leaving them under new rows.
+  window.SetThumbnailsHandler([&window, &scan_mutex, &scan_result,
+                               &scan_thread]() {
+    if (scan_thread.joinable()) scan_thread.join();
+    ScanResult result;
+    {
+      const std::lock_guard<std::mutex> lock(scan_mutex);
+      result = scan_result;
+    }
+    if (!result.ok) {
+      window.SetThumbnails({});
+      window.SetStatus(result.error.empty() ? L"deck scan failed"
+                                           : Widen(result.error));
+      return;
+    }
+    window.SetThumbnails(result.paths);
+    window.SetStatus(L"scanned " + std::to_wstring(result.paths.size()) +
+                     L" slides");
   });
 
   // Start launches one detached supervisor (the same exe re-entered with
@@ -537,6 +646,10 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // for a clean, runnable config that no supervisor already owns.
   refresh();
   const int result = window.RunMessageLoop();
+  // A scan worker that is still running when the loop ends posts to a window
+  // that is about to be destroyed, so it is joined here before the window goes
+  // away; its result is simply discarded.
+  if (scan_thread.joinable()) scan_thread.join();
   // The supervisor is detached on purpose (a UI crash must not kill a running
   // watchdog), so closing the editor only releases the local child handle.
   if (watchdog_child != nullptr) {

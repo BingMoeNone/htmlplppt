@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "core/clock.h"
 #include "core/deck_info.h"
@@ -48,6 +49,17 @@ class WpsHost final : public PresentationHost,
   void Release() override;
 
   DeckInfoResult Load(const std::filesystem::path& deck_path) override;
+
+  // Exports one BMP per slide into `out_dir` through COM (Slide.Export at the
+  // list's 96x72 thumbnail size) and fills `slides_out` with the UTF-8 paths, in
+  // slide order. The deck is opened read-only for the scan and closed again on
+  // every path, including a failure; a failed export reports the first reason in
+  // `error` and leaves `slides_out` empty. This is a long COM call: the caller
+  // runs it off the UI thread.
+  bool ExportSlideThumbnails(const std::filesystem::path& deck,
+                             const std::filesystem::path& out_dir,
+                             std::vector<std::string>* slides_out,
+                             std::string* error);
 
  private:
   HostResult EnsureApp();

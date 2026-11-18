@@ -7,9 +7,13 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "platform/win32/config_window.h"
 
@@ -39,6 +43,9 @@ HTMLPPT_TEST_CASE(win32_config_window_creates_and_closes) {
 #include <commctrl.h>
 
 #include "core/config_editor.h"
+#include "core/deck_info.h"
+#include "core/utf8_path.h"
+#include "test_utils.h"
 
 namespace {
 
@@ -222,6 +229,77 @@ std::optional<COLORREF> ControlSurfaceColor(HWND hwnd, UINT message,
       BrushColor(reinterpret_cast<HBRUSH>(result));
   ReleaseDC(hwnd, dc);
   return color;
+}
+
+// Writes the bytes of a real 24-bit BMP: file header, BITMAPINFOHEADER, and
+// bottom-up rows padded to a 4-byte boundary, all one solid colour.
+bool WriteBmpFile(const std::filesystem::path& path, int width, int height,
+                  COLORREF color) {
+  const int stride = (width * 3 + 3) / 4 * 4;
+  const auto pixels =
+      static_cast<std::size_t>(stride) * static_cast<std::size_t>(height);
+  const auto file_size = static_cast<std::uint32_t>(54 + pixels);
+  std::vector<unsigned char> bytes(54 + pixels, 0);
+  const auto put16 = [&bytes](std::size_t offset, unsigned value) {
+    bytes[offset] = static_cast<unsigned char>(value & 0xFF);
+    bytes[offset + 1] = static_cast<unsigned char>((value >> 8) & 0xFF);
+  };
+  const auto put32 = [&bytes](std::size_t offset, std::uint32_t value) {
+    bytes[offset] = static_cast<unsigned char>(value & 0xFF);
+    bytes[offset + 1] = static_cast<unsigned char>((value >> 8) & 0xFF);
+    bytes[offset + 2] = static_cast<unsigned char>((value >> 16) & 0xFF);
+    bytes[offset + 3] = static_cast<unsigned char>((value >> 24) & 0xFF);
+  };
+  bytes[0] = 'B';
+  bytes[1] = 'M';
+  put32(2, file_size);
+  put32(10, 54);  // pixel data offset
+  put32(14, 40);  // BITMAPINFOHEADER size
+  put32(18, static_cast<std::uint32_t>(width));
+  put32(22, static_cast<std::uint32_t>(height));
+  put16(26, 1);   // planes
+  put16(28, 24);  // bits per pixel
+  put32(34, static_cast<std::uint32_t>(pixels));
+  put32(38, 2835);  // 72 DPI, pixels per metre
+  put32(42, 2835);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const std::size_t offset = static_cast<std::size_t>(54 + y * stride) +
+                                 static_cast<std::size_t>(x) * 3;
+      bytes[offset] = GetBValue(color);
+      bytes[offset + 1] = GetGValue(color);
+      bytes[offset + 2] = GetRValue(color);
+    }
+  }
+  std::ofstream out(path, std::ios::binary);
+  if (!out) return false;
+  out.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  return out.good();
+}
+
+// Writes one real BMP per slide under `dir`, using the production file names,
+// and returns the UTF-8 paths the app hands to SetThumbnails. The test images
+// are 2x2: LoadImage scales a bitmap to the requested 96x72.
+std::vector<std::string> WriteThumbnails(const std::filesystem::path& dir,
+                                         int count) {
+  const std::vector<std::string> names = htmlppt::ThumbnailFileNames(count, dir);
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    HTMLPPT_CHECK(WriteBmpFile(htmlppt::PathFromUtf8(names[i]), 2, 2,
+                               RGB(0x20, 0x80, 0xE0)));
+  }
+  return names;
+}
+
+// The image index a list row currently draws, or -1 when it has no image. The
+// SDK macro ListView_GetItemImage is not in every commctrl.h, so the item the
+// control reports is read directly.
+int RowImage(HWND list, int row) {
+  LVITEMW item{};
+  item.mask = LVIF_IMAGE;
+  item.iItem = row;
+  if (ListView_GetItem(list, &item) == FALSE) return -1;
+  return item.iImage;
 }
 
 } // namespace
@@ -493,6 +571,203 @@ HTMLPPT_TEST_CASE(win32_config_window_forwards_the_toolbar_buttons) {
     Sleep(10);
   }
   HTMLPPT_CHECK(IsWindow(window.handle()) == 0);
+}
+
+// A scan exports one BMP per slide; the list shows them in its small image
+// slot, one image per row, and a row the deck has no thumbnail for keeps -1.
+HTMLPPT_TEST_CASE(win32_config_window_shows_slide_thumbnails) {
+  htmlppt::test::TempDir dir;
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  HTMLPPT_CHECK(window.list_view() != nullptr);
+
+  std::vector<htmlppt::DisplayRow> rows(3);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].index = i;
+    rows[i].slide = static_cast<int>(i) + 1;
+    rows[i].html = "page.html";
+    rows[i].state = "resolved";
+  }
+  window.SetRows(rows);
+  // No scan yet: every row has no image.
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), -1);
+
+  const std::vector<std::string> paths = WriteThumbnails(dir.path(), 2);
+  window.SetThumbnails(paths);
+  // The two exported slides fill the first two rows in slide order; the third
+  // row has no thumbnail of its own and stays imageless.
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), 0);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), 1);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), -1);
+  // The list draws from its small image list, which carries both bitmaps.
+  HIMAGELIST images = ListView_GetImageList(window.list_view(), LVSIL_SMALL);
+  HTMLPPT_CHECK(images != nullptr);
+  HTMLPPT_CHECK_EQ(ImageList_GetImageCount(images), 2);
+  // Report view clips an item image to the first column, so the SLIDE column
+  // must be at least as wide as a thumbnail while thumbnails are shown.
+  HTMLPPT_CHECK(ListView_GetColumnWidth(window.list_view(), 0) >=
+                Scaled(96, window.dpi()));
+
+  // Thumbnails are decoration: the rows and their text are untouched.
+  HTMLPPT_CHECK_EQ(ListView_GetItemCount(window.list_view()), 3);
+  wchar_t text[64] = {};
+  ListView_GetItemText(window.list_view(), 1, 0, text, 64);
+  HTMLPPT_CHECK_EQ(std::wstring(text), std::wstring(L"2"));
+
+  // A second scan with more slides replaces the slots instead of appending.
+  const std::vector<std::string> three = WriteThumbnails(dir.path(), 3);
+  window.SetThumbnails(three);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), 2);
+  HTMLPPT_CHECK_EQ(ImageList_GetImageCount(
+                       ListView_GetImageList(window.list_view(), LVSIL_SMALL)),
+                   3);
+
+  // Clearing the scan removes the images again without touching the rows.
+  window.SetThumbnails({});
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), -1);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), -1);
+  HTMLPPT_CHECK_EQ(ImageList_GetImageCount(
+                       ListView_GetImageList(window.list_view(), LVSIL_SMALL)),
+                   0);
+  HTMLPPT_CHECK_EQ(ListView_GetItemCount(window.list_view()), 3);
+  // With no thumbnails left the column returns to its narrow width.
+  HTMLPPT_CHECK_EQ(ListView_GetColumnWidth(window.list_view(), 0),
+                   Scaled(70, window.dpi()));
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+// A missing or broken bitmap is a per-row fallback, never a failure of the list
+// population: the rows survive, other images keep their own index, and a later
+// scan repopulates everything.
+HTMLPPT_TEST_CASE(win32_config_window_keeps_rows_when_a_thumbnail_is_broken) {
+  htmlppt::test::TempDir dir;
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  std::vector<htmlppt::DisplayRow> rows(3);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rows[i].index = i;
+    rows[i].slide = static_cast<int>(i) + 1;
+    rows[i].html = "page.html";
+    rows[i].state = "resolved";
+  }
+  window.SetRows(rows);
+  const std::vector<std::string> paths = WriteThumbnails(dir.path(), 2);
+  window.SetThumbnails(paths);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), 0);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), 1);
+
+  // Every path broken: all rows lose their image, none of them disappears.
+  const std::string missing =
+      htmlppt::Utf8Path(dir.path() / "missing.bmp");
+  window.SetThumbnails({missing});
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), -1);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), -1);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), -1);
+  HTMLPPT_CHECK_EQ(ListView_GetItemCount(window.list_view()), 3);
+
+  // A broken bitmap between two good ones keeps the following row's image at
+  // its own index instead of renumbering it.
+  window.SetThumbnails({paths[0], missing, paths[1]});
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), 0);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 1), -1);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), 1);
+
+  // The window is still healthy: a fresh scan repopulates it.
+  window.SetThumbnails(paths);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 0), 0);
+  HTMLPPT_CHECK_EQ(RowImage(window.list_view(), 2), -1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+// The scan button forwards to the app, which starts the export and owns the
+// "scanning" status; a rejected scan shows the handler's reason.
+HTMLPPT_TEST_CASE(win32_config_window_forwards_the_scan_button) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  HTMLPPT_CHECK(window.scan_button() != nullptr);
+  const auto click_scan = [&window] {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(window.scan_button()), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(window.scan_button()));
+  };
+
+  int scans = 0;
+  window.SetScanHandler([&scans, &window](std::wstring* error) {
+    ++scans;
+    if (error != nullptr) error->clear();
+    window.SetStatus(L"scanning deck");
+    return true;
+  });
+  click_scan();
+  HTMLPPT_CHECK_EQ(scans, 1);
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"scanning deck"));
+
+  window.SetScanHandler([](std::wstring* error) {
+    if (error != nullptr) *error = L"the config has no deck";
+    return false;
+  });
+  click_scan();
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"the config has no deck"));
+
+  // A handler that reports nothing still gets a readable failure.
+  window.SetScanHandler([](std::wstring* error) {
+    if (error != nullptr) error->clear();
+    return false;
+  });
+  click_scan();
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"cannot scan the deck"));
+
+  // With no handler installed the click is a no-op, not a crash.
+  window.SetScanHandler(nullptr);
+  click_scan();
+  HTMLPPT_CHECK_EQ(scans, 1);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
+// The export worker posts this private message; the app then feeds the finished
+// paths to SetThumbnails, so the view only routes it.
+HTMLPPT_TEST_CASE(win32_config_window_routes_the_thumbnails_ready_message) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+
+  int ready = 0;
+  window.SetThumbnailsHandler([&ready] { ++ready; });
+  SendMessageW(handle, htmlppt::kThumbnailsReadyMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(ready, 1);
+  SendMessageW(handle, htmlppt::kThumbnailsReadyMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(ready, 2);
+  // With no handler a stray notification is a no-op.
+  window.SetThumbnailsHandler(nullptr);
+  SendMessageW(handle, htmlppt::kThumbnailsReadyMessage, 0, 0);
+  HTMLPPT_CHECK_EQ(ready, 2);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
 }
 
 // The watcher posts a private message; the app installs the handler that
@@ -1538,8 +1813,10 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
   HTMLPPT_CHECK_EQ(created.bottom - created.top, Scaled(560, initial));
 
   // Fonts must scale with the DPI as well: geometry-only scaling left the text
-  // at its old size and clipped it inside the controls.
-  RECT at_96{40, 40, 40 + 1000, 40 + 700};
+  // at its old size and clipped it inside the controls. The suggested rect is
+  // wider than the window's minimum tracking size at either DPI, so the move
+  // below is not clamped by WM_GETMINMAXINFO.
+  RECT at_96{40, 40, 40 + 1200, 40 + 800};
   SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(96, 96),
                reinterpret_cast<LPARAM>(&at_96));
   HTMLPPT_CHECK_EQ(window.dpi(), UINT{96});
@@ -1550,7 +1827,7 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
 
   // A DPI change moves the window onto the suggested rect and re-lays the
   // controls out at the new DPI.
-  RECT suggested{40, 40, 40 + 1000, 40 + 700};
+  RECT suggested{40, 40, 40 + 1200, 40 + 800};
   SendMessageW(window.handle(), WM_DPICHANGED, MAKEWPARAM(144, 144),
                reinterpret_cast<LPARAM>(&suggested));
   HTMLPPT_CHECK_EQ(window.dpi(), UINT{144});
@@ -1558,8 +1835,8 @@ HTMLPPT_TEST_CASE(win32_config_window_scales_with_the_dpi) {
   HTMLPPT_CHECK(GetWindowRect(window.handle(), &moved) != 0);
   HTMLPPT_CHECK_EQ(moved.left, 40);
   HTMLPPT_CHECK_EQ(moved.top, 40);
-  HTMLPPT_CHECK_EQ(moved.right - moved.left, 1000);
-  HTMLPPT_CHECK_EQ(moved.bottom - moved.top, 700);
+  HTMLPPT_CHECK_EQ(moved.right - moved.left, 1200);
+  HTMLPPT_CHECK_EQ(moved.bottom - moved.top, 800);
 
   // The font is recreated and re-applied to every child on the DPI change; the
   // ListView and a toolbar button both carry the new, taller font.

@@ -1,9 +1,11 @@
 #include "platform/win32/wps_host.h"
 
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "core/config_issue.h"
+#include "core/utf8_path.h"
 
 namespace htmlppt {
 namespace {
@@ -447,6 +449,105 @@ DeckInfoResult WpsHost::LoadOpenDeckInfo(bool close_after) {
   result.info = std::move(info);
   close_deck();
   return result;
+}
+
+bool WpsHost::ExportSlideThumbnails(const std::filesystem::path& deck,
+                                    const std::filesystem::path& out_dir,
+                                    std::vector<std::string>* slides_out,
+                                    std::string* error) {
+  const auto fail = [error](std::string message) {
+    if (error != nullptr) *error = std::move(message);
+    return false;
+  };
+  if (slides_out != nullptr) slides_out->clear();
+  if (error != nullptr) error->clear();
+  if (deck.empty()) return fail("no deck to scan");
+  if (out_dir.empty()) return fail("no thumbnail directory to write to");
+  std::error_code directory_error;
+  std::filesystem::create_directories(out_dir, directory_error);
+  if (directory_error) {
+    return fail("could not create the thumbnail directory: " +
+                directory_error.message());
+  }
+
+  const HostResult app_result = EnsureApp();
+  if (!app_result.ok()) {
+    return fail("WPS COM is unavailable: " + app_result.detail);
+  }
+  // A scan always opens its own read-only copy: the deck must be readable even
+  // while a run presents it, and the scan owns the copy it closes. A COM
+  // implementation that only opens without a window is preferred, but WPS
+  // refuses some decks that way, so fall back the same way Load does.
+  if (presentation_) {
+    (void)InvokeMethod(presentation_.get(), L"Close", {}, nullptr);
+    presentation_.Reset();
+    deck_path_.clear();
+  }
+  bool close_after = false;
+  HostResult opened = OpenDeck(deck, false);
+  if (!opened.ok() && opened.status == HostStatus::Failed) {
+    opened = OpenDeck(deck, true);
+  }
+  if (opened.ok()) {
+    close_after = true;
+  } else {
+    return fail("could not open the deck through WPS: " + opened.detail);
+  }
+  // The deck is closed on every path from here on: an export that fails
+  // half-way must not leave a hidden presentation behind.
+  const auto close_deck = [&]() {
+    if (!close_after) return;
+    (void)InvokeMethod(presentation_.get(), L"Close", {}, nullptr);
+    presentation_.Reset();
+    deck_path_.clear();
+    close_after = false;
+  };
+
+  HostResult call;
+  DispatchPtr slides = GetObject(presentation_.get(), L"Slides", &call);
+  if (!slides) {
+    const std::string detail = call.detail;
+    close_deck();
+    return fail("could not read Slides: " + detail);
+  }
+  int count = 0;
+  if (!GetIntProperty(slides.get(), L"Count", &count, &call)) {
+    const std::string detail = call.detail;
+    close_deck();
+    return fail("could not read Slides.Count: " + detail);
+  }
+  if (count < 0) {
+    close_deck();
+    return fail("Slides.Count is negative");
+  }
+
+  std::vector<std::string> exported;
+  for (const SlideThumbnail& thumbnail : SlideThumbnails(count, out_dir)) {
+    DispatchPtr slide = GetItem(slides.get(), thumbnail.number, &call);
+    if (!slide) {
+      const std::string detail = call.detail;
+      close_deck();
+      return fail("could not read slide " + std::to_string(thumbnail.number) +
+                  ": " + detail);
+    }
+    std::vector<ComVariant> args;
+    args.push_back(MakeString(PathFromUtf8(thumbnail.image_path).wstring()));
+    args.push_back(MakeString(L"BMP"));
+    args.push_back(MakeInt(kThumbnailWidth));
+    args.push_back(MakeInt(kThumbnailHeight));
+    call = InvokeMethod(slide.get(), L"Export", std::move(args), nullptr);
+    if (!call.ok()) {
+      const std::string detail = call.detail;
+      close_deck();
+      return fail("slide " + std::to_string(thumbnail.number) +
+                  " thumbnail export failed: " + detail);
+    }
+    exported.push_back(thumbnail.image_path);
+  }
+  close_deck();
+  if (slides_out != nullptr) *slides_out = std::move(exported);
+  if (error != nullptr) error->clear();
+  return true;
 }
 
 DeckInfoResult WpsHost::Load(const std::filesystem::path& deck_path) {

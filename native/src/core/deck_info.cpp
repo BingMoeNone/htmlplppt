@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/config_issue.h"
+#include "core/utf8_path.h"
 
 namespace htmlppt {
 namespace {
@@ -45,6 +46,40 @@ std::optional<int> ReadIndexValue(const json& value, const std::string& path,
 }
 
 } // namespace
+
+std::vector<std::string> ThumbnailFileNames(int slide_count,
+                                           const std::filesystem::path& dir) {
+  std::vector<std::string> names;
+  if (slide_count <= 0) return names;
+  // At least two digits, so slide-01..slide-09 sort naturally; a deck that
+  // reaches three digits widens every name together instead of splitting the
+  // ordering ("slide-100.bmp" must not sort before "slide-99.bmp").
+  int width = 2;
+  for (std::int64_t limit = 100; slide_count >= limit; limit *= 10) ++width;
+  names.reserve(static_cast<std::size_t>(slide_count));
+  for (int number = 1; number <= slide_count; ++number) {
+    std::string index = std::to_string(number);
+    if (static_cast<int>(index.size()) < width) {
+      index.insert(0, static_cast<std::size_t>(width) - index.size(), '0');
+    }
+    names.push_back(Utf8Path(dir / ("slide-" + index + ".bmp")));
+  }
+  return names;
+}
+
+std::vector<SlideThumbnail> SlideThumbnails(int slide_count,
+                                            const std::filesystem::path& dir) {
+  const std::vector<std::string> names = ThumbnailFileNames(slide_count, dir);
+  std::vector<SlideThumbnail> thumbnails;
+  thumbnails.reserve(names.size());
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    SlideThumbnail thumbnail;
+    thumbnail.number = static_cast<int>(i) + 1;
+    thumbnail.image_path = names[i];
+    thumbnails.push_back(std::move(thumbnail));
+  }
+  return thumbnails;
+}
 
 std::string ComputeDeckFingerprint(const std::filesystem::path& deck_path) {
   if (deck_path.empty()) return {};

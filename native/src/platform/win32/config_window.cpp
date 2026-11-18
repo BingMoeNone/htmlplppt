@@ -11,6 +11,7 @@
 #include <system_error>
 #include <utility>
 
+#include "core/deck_info.h"
 #include "platform/win32/utf8_win32.h"
 
 namespace htmlppt {
@@ -26,6 +27,7 @@ constexpr int kSaveButtonId = 1004;
 constexpr int kValidateButtonId = 1005;
 constexpr int kStartButtonId = 1006;
 constexpr int kStopButtonId = 1007;
+constexpr int kScanButtonId = 1008;
 
 // How often the liveness poll checks a launched supervisor. Fast enough that a
 // crashed supervisor reopens Start promptly, slow enough to be free.
@@ -46,15 +48,21 @@ constexpr int kToolbarGap = 8;
 constexpr int kDetailWidth = 300;
 constexpr int kDetailMargin = 12;
 
+// The list's SLIDE column holds the row's thumbnail once a scan has run, so it
+// widens to the image plus room for the slide number; without thumbnails it
+// stays narrow. Both widths are 96-DPI logical units.
+constexpr int kSlideColumnWidth = 70;
+constexpr int kSlideThumbnailColumnWidth = kThumbnailWidth + 24;
+
 // The pane's Apply button sits below the fields at this offset, with a small
 // bottom margin before the status line. A window smaller than the sum below
 // would clip the pane, so WM_GETMINMAXINFO refuses to shrink past it.
 constexpr int kPaneApplyTop = 328;
 constexpr int kPaneApplyHeight = 28;
 constexpr int kPaneBottomMargin = 8;
-// The minimum width fits the whole toolbar: margin + six 88 px buttons + five
+// The minimum width fits the whole toolbar: margin + seven 88 px buttons + six
 // gaps + a margin, with room to spare.
-constexpr int kMinClientWidth = 600;
+constexpr int kMinClientWidth = 700;
 constexpr int kMinClientHeight =
     kToolbarHeight + kPaneApplyTop + kPaneApplyHeight + kPaneBottomMargin +
     kStatusHeight;
@@ -270,6 +278,13 @@ ConfigWindow::~ConfigWindow() {
     DeleteObject(background_brush_);
     background_brush_ = nullptr;
   }
+  // A window that never got as far as WM_DESTROY still owns its image list.
+  if (thumbnails_ != nullptr) {
+    ImageList_Destroy(thumbnails_);
+    thumbnails_ = nullptr;
+    thumbnail_capacity_ = 0;
+  }
+  thumbnail_indices_.clear();
 }
 
 bool ConfigWindow::Create(const ConfigWindowOptions& options) {
@@ -340,10 +355,11 @@ void ConfigWindow::CreateChildren() {
   // One font for the whole window, created at the window's current DPI. It is
   // applied once every child exists, and recreated on WM_DPICHANGED.
   CreateFontForDpi();
-  // Toolbar: Add / Remove / Save / Validate / Start / Stop, created first so
-  // the tab order starts with the actions and the list keeps its own keyboard
-  // navigation. Start and Stop are the watchdog actions; they sit after the
-  // editor actions so a stray Enter never launches a run.
+  // Toolbar: Add / Remove / Save / Validate / Scan deck / Start / Stop, created
+  // first so the tab order starts with the actions and the list keeps its own
+  // keyboard navigation. Scan only touches the view (it exports thumbnails), so
+  // it sits with the editor actions; Start and Stop are the watchdog actions and
+  // come last so a stray Enter never launches a run.
   const auto make_button = [&](const wchar_t* text, int id) {
     return CreateWindowExW(
         0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -355,6 +371,7 @@ void ConfigWindow::CreateChildren() {
   remove_button_ = make_button(L"Remove", kRemoveButtonId);
   save_button_ = make_button(L"Save", kSaveButtonId);
   validate_button_ = make_button(L"Validate", kValidateButtonId);
+  scan_button_ = make_button(L"Scan deck", kScanButtonId);
   start_button_ = make_button(L"Start", kStartButtonId);
   stop_button_ = make_button(L"Stop", kStopButtonId);
 
@@ -368,7 +385,7 @@ void ConfigWindow::CreateChildren() {
 
   const wchar_t* headings[] = {L"SLIDE", L"LABEL", L"HTML", L"ASSETS",
                                L"STATE"};
-  const int widths[] = {70, 180, 380, 90, 110};
+  const int widths[] = {kSlideColumnWidth, 180, 380, 90, 110};
   for (int i = 0; i < 5; ++i) {
     LVCOLUMNW column{};
     column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -473,13 +490,14 @@ void ConfigWindow::ApplyFont() {
   // stays readable instead of clipping in geometry that has already grown.
   HWND children[] = {add_button_,          remove_button_,
                      save_button_,         validate_button_,
-                     start_button_,        stop_button_,
-                     list_view_,           status_view_,
-                     detail_slide_label_,  detail_slide_edit_,
-                     detail_label_label_,  detail_label_edit_,
-                     detail_html_label_,   detail_html_edit_,
-                     detail_assets_label_, detail_assets_combo_,
-                     detail_enabled_check_, detail_apply_button_};
+                     scan_button_,         start_button_,
+                     stop_button_,         list_view_,
+                     status_view_,         detail_slide_label_,
+                     detail_slide_edit_,   detail_label_label_,
+                     detail_label_edit_,   detail_html_label_,
+                     detail_html_edit_,    detail_assets_label_,
+                     detail_assets_combo_, detail_enabled_check_,
+                     detail_apply_button_};
   for (HWND child : children) {
     if (child != nullptr) {
       SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
@@ -500,7 +518,8 @@ void ConfigWindow::Layout(int width, int height) {
   const int button_height = Scale(kToolbarButtonHeight);
   const int button_width = Scale(kToolbarButtonWidth);
   HWND toolbar[] = {add_button_,      remove_button_, save_button_,
-                    validate_button_, start_button_,  stop_button_};
+                    validate_button_, scan_button_,   start_button_,
+                    stop_button_};
   int toolbar_x = Scale(kToolbarMargin);
   for (HWND button : toolbar) {
     if (button == nullptr) continue;
@@ -570,13 +589,16 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
     const auto& row = rows[i];
     const std::wstring slide = std::to_wstring(row.slide);
     LVITEMW item{};
-    item.mask = LVIF_TEXT | LVIF_PARAM;
+    item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
     item.iItem = static_cast<int>(i);
     item.iSubItem = 0;
     item.pszText = const_cast<wchar_t*>(slide.c_str());
     // The model's own index, not the loop position: later tasks address the
     // model through this value.
     item.lParam = static_cast<LPARAM>(row.index);
+    // The scan's image for this row, or -1 when it has none; a later scan
+    // repaints the same rows through ApplyRowImages.
+    item.iImage = ThumbnailForRow(i);
     const int inserted = ListView_InsertItem(list_view_, &item);
     if (inserted < 0) continue;
     const auto set_text = [&](int column, const std::string& text) {
@@ -605,6 +627,104 @@ void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
   suppress_selection_notify_ = previous_suppress;
   UpdateDetailEnabled();
   NotifySelection();
+}
+
+int ConfigWindow::ThumbnailForRow(std::size_t row) const {
+  if (row >= thumbnail_indices_.size()) return -1;
+  return thumbnail_indices_[row];
+}
+
+int ConfigWindow::AddThumbnail(const std::string& utf8_path) {
+  if (thumbnails_ == nullptr) return -1;
+  const std::wstring path = Widen(utf8_path);
+  if (path.empty()) return -1;
+  // LoadImage stretches the file to the list's slot size (a real WPS export is
+  // already 96x72), so the bitmap always fits the image list. The handle is
+  // owned here and released after the list has copied it.
+  HBITMAP bitmap = reinterpret_cast<HBITMAP>(
+      LoadImageW(nullptr, path.c_str(), IMAGE_BITMAP, kThumbnailWidth,
+                 kThumbnailHeight, LR_LOADFROMFILE | LR_LOADTRANSPARENT));
+  if (bitmap == nullptr) return -1;
+  // AddMasked copies the bitmap into the list; -1 means the list refused it,
+  // which is the same per-row fallback as a file that does not load.
+  const int index =
+      ImageList_AddMasked(thumbnails_, bitmap, RGB(255, 255, 255));
+  DeleteObject(bitmap);
+  return index;
+}
+
+void ConfigWindow::ApplyRowImages() {
+  if (list_view_ == nullptr) return;
+  // Only the image changes, so the row texts and the selection survive. The
+  // item-change notification carries LVIF_IMAGE, not LVIF_STATE, so it cannot
+  // bounce back as a selection; the guard is belt and braces.
+  const bool previous_suppress = suppress_selection_notify_;
+  suppress_selection_notify_ = true;
+  for (std::size_t i = 0; i < rows_.size(); ++i) {
+    LVITEMW item{};
+    item.mask = LVIF_IMAGE;
+    item.iItem = static_cast<int>(i);
+    item.iSubItem = 0;
+    item.iImage = ThumbnailForRow(i);
+    ListView_SetItem(list_view_, &item);
+  }
+  suppress_selection_notify_ = previous_suppress;
+}
+
+void ConfigWindow::DestroyThumbnails() {
+  // The control holds a bare pointer to the image list, so detach it before the
+  // handle is destroyed.
+  if (list_view_ != nullptr && thumbnails_ != nullptr) {
+    ListView_SetImageList(list_view_, nullptr, LVSIL_SMALL);
+  }
+  if (thumbnails_ != nullptr) {
+    ImageList_Destroy(thumbnails_);
+    thumbnails_ = nullptr;
+  }
+  thumbnail_capacity_ = 0;
+  thumbnail_indices_.clear();
+}
+
+void ConfigWindow::SetThumbnails(const std::vector<std::string>& paths) {
+  const int wanted = static_cast<int>(paths.size());
+  // The image list fixes its slot size and its count when it is created, so the
+  // same slide count reuses the slots and anything else gets a fresh list. The
+  // destruction also drops the previous scan's mapping, which is what keeps a
+  // stale index from pointing at a new deck's image.
+  if (wanted == 0 || thumbnails_ == nullptr || wanted > thumbnail_capacity_) {
+    DestroyThumbnails();
+  }
+  if (wanted > 0 && list_view_ != nullptr) {
+    if (thumbnails_ == nullptr) {
+      thumbnails_ = ImageList_Create(kThumbnailWidth, kThumbnailHeight,
+                                     ILC_COLOR32 | ILC_MASK, wanted, 0);
+      if (thumbnails_ != nullptr) {
+        thumbnail_capacity_ = wanted;
+        ListView_SetImageList(list_view_, thumbnails_, LVSIL_SMALL);
+      }
+    } else {
+      // Reuse: every slot is rewritten below, so no old image can survive.
+      ImageList_RemoveAll(thumbnails_);
+    }
+    if (thumbnails_ != nullptr) {
+      thumbnail_indices_.clear();
+      thumbnail_indices_.reserve(paths.size());
+      for (const std::string& path : paths) {
+        thumbnail_indices_.push_back(AddThumbnail(path));
+      }
+    }
+  }
+  // Report view clips an item image to its first column, so the SLIDE column
+  // grows to the thumbnail while one is shown and returns to its narrow width
+  // once the list has no thumbnails at all.
+  if (list_view_ != nullptr) {
+    ListView_SetColumnWidth(list_view_, 0,
+                            Scale(thumbnails_ != nullptr
+                                      ? kSlideThumbnailColumnWidth
+                                      : kSlideColumnWidth));
+  }
+  ApplyRowImages();
+  if (list_view_ != nullptr) InvalidateRect(list_view_, nullptr, TRUE);
 }
 
 void ConfigWindow::SetStatus(const std::wstring& text) {
@@ -751,6 +871,14 @@ void ConfigWindow::SetStartHandler(ToolbarHandler handler) {
 
 void ConfigWindow::SetStopHandler(ToolbarHandler handler) {
   stop_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetScanHandler(ToolbarHandler handler) {
+  scan_handler_ = std::move(handler);
+}
+
+void ConfigWindow::SetThumbnailsHandler(std::function<void()> handler) {
+  thumbnails_handler_ = std::move(handler);
 }
 
 void ConfigWindow::SetStartEnabled(bool enabled) {
@@ -924,6 +1052,16 @@ void ConfigWindow::ValidateConfig() {
   std::wstring error;
   if (!validate_handler_(&error)) {
     SetStatus(error.empty() ? L"configuration is invalid" : error);
+  }
+}
+
+void ConfigWindow::ScanDeck() {
+  if (!scan_handler_) return;
+  std::wstring error;
+  if (!scan_handler_(&error)) {
+    // The app owns the "scanning deck" success line; the view only reports a
+    // rejection.
+    SetStatus(error.empty() ? L"cannot scan the deck" : error);
   }
 }
 
@@ -1135,6 +1273,11 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       // report a conflict.
       if (config_changed_handler_) config_changed_handler_();
       return 0;
+    case kThumbnailsReadyMessage:
+      // Posted by the app's thumbnail export worker; the app feeds the finished
+      // paths to SetThumbnails and reports the outcome.
+      if (thumbnails_handler_) thumbnails_handler_();
+      return 0;
     case WM_KEYDOWN: {
       // GetKeyState reads the thread's key state, which is why the routing
       // itself is a helper: a test can exercise it without physical input.
@@ -1166,6 +1309,9 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
           return 0;
         case kValidateButtonId:
           ValidateConfig();
+          return 0;
+        case kScanButtonId:
+          ScanDeck();
           return 0;
         case kStartButtonId:
           StartWatchdog();
@@ -1213,6 +1359,14 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       }
       KillTimer(hwnd, kWatchdogPollTimerId);
       watchdog_poll_running_ = false;
+      // The list view is gone with the window, so its image list can be freed
+      // without detaching it first.
+      if (thumbnails_ != nullptr) {
+        ImageList_Destroy(thumbnails_);
+        thumbnails_ = nullptr;
+        thumbnail_capacity_ = 0;
+      }
+      thumbnail_indices_.clear();
       handle_ = nullptr;
       list_view_ = nullptr;
       status_view_ = nullptr;
@@ -1220,6 +1374,7 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       remove_button_ = nullptr;
       save_button_ = nullptr;
       validate_button_ = nullptr;
+      scan_button_ = nullptr;
       start_button_ = nullptr;
       stop_button_ = nullptr;
       detail_slide_label_ = nullptr;
