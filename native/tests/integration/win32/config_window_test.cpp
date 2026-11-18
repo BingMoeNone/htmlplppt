@@ -4,7 +4,10 @@
 #include <windows.h>
 
 #include <dwmapi.h>
+#include <shellapi.h>
+#include <shlobj.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 
@@ -66,6 +69,59 @@ void PumpUntilDestroyed(HWND hwnd) {
     }
     Sleep(10);
   }
+}
+
+// A unique path under the user's temp directory. The caller creates and removes
+// the file or directory it names.
+std::wstring UniqueTempPath(const wchar_t* suffix) {
+  wchar_t directory[MAX_PATH] = {};
+  const DWORD length = GetTempPathW(MAX_PATH, directory);
+  if (length == 0 || length >= MAX_PATH) return {};
+  static unsigned counter = 0;
+  ++counter;
+  return std::wstring(directory) + L"htmlppt-b3-" +
+         std::to_wstring(GetCurrentProcessId()) + L"-" +
+         std::to_wstring(counter) + suffix;
+}
+
+// Builds the block WM_DROPFILES carries: one DROPFILES header with fWide = TRUE
+// followed by a double-null-terminated UTF-16 path list. GMEM_MOVEABLE is what
+// DragFinish expects to free; GMEM_ZEROINIT supplies the list's two terminators.
+HGLOBAL MakeDropFiles(const std::wstring& path) {
+  const SIZE_T size = sizeof(DROPFILES) + (path.size() + 2) * sizeof(wchar_t);
+  HGLOBAL block = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size);
+  if (block == nullptr) return nullptr;
+  auto* data = static_cast<BYTE*>(GlobalLock(block));
+  if (data == nullptr) {
+    GlobalFree(block);
+    return nullptr;
+  }
+  auto* header = reinterpret_cast<DROPFILES*>(data);
+  header->pFiles = sizeof(DROPFILES);
+  header->fWide = TRUE;
+  std::memcpy(data + sizeof(DROPFILES), path.c_str(),
+              path.size() * sizeof(wchar_t));
+  GlobalUnlock(block);
+  return block;
+}
+
+// Sends one synthetic WM_DROPFILES. The window's handler owns the block and
+// frees it through DragFinish, so the test never frees it: an invalid handle
+// proves the handler freed it exactly once (a leak would leave it valid, and a
+// second free would corrupt the heap instead).
+void SendDrop(HWND hwnd, const std::wstring& path) {
+  HGLOBAL block = MakeDropFiles(path);
+  HTMLPPT_CHECK(block != nullptr);
+  SendMessageW(hwnd, WM_DROPFILES, reinterpret_cast<WPARAM>(block), 0);
+  HTMLPPT_CHECK_EQ(GlobalFlags(block),
+                   static_cast<UINT>(GMEM_INVALID_HANDLE));
+}
+
+// Reads the status line into a fixed buffer.
+std::wstring StatusText(HWND status_view) {
+  wchar_t status[128] = {};
+  GetWindowTextW(status_view, status, 128);
+  return status;
 }
 
 // DWMWA_USE_IMMERSIVE_DARK_MODE as documented (20) and the pre-20H1 number.
@@ -893,6 +949,152 @@ HTMLPPT_TEST_CASE(win32_should_close_window_honours_dirty_and_answer) {
   HTMLPPT_CHECK(htmlppt::ShouldCloseWindow(false, false));
   HTMLPPT_CHECK(!htmlppt::ShouldCloseWindow(true, false));
   HTMLPPT_CHECK(htmlppt::ShouldCloseWindow(true, true));
+}
+
+HTMLPPT_TEST_CASE(win32_classify_drop_decides_by_kind_and_selection) {
+  // A file dropped on a selected row fills the HTML field and applies the edit.
+  HTMLPPT_CHECK(htmlppt::ClassifyDrop(false, true) ==
+                htmlppt::DropDecision::ApplyHtml);
+  // A file with no selection still fills the field, but the view asks for a
+  // target instead of applying an edit to nothing.
+  HTMLPPT_CHECK(htmlppt::ClassifyDrop(false, false) ==
+                htmlppt::DropDecision::RejectNoSelection);
+  // A folder is never an .html file, with or without a selection; the directory
+  // rejection wins so the status names the real problem.
+  HTMLPPT_CHECK(htmlppt::ClassifyDrop(true, true) ==
+                htmlppt::DropDecision::RejectDirectory);
+  HTMLPPT_CHECK(htmlppt::ClassifyDrop(true, false) ==
+                htmlppt::DropDecision::RejectDirectory);
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_drops_an_html_file_onto_the_selected_row) {
+  const std::wstring html_path = UniqueTempPath(L".html");
+  HTMLPPT_CHECK(!html_path.empty());
+  const HANDLE file =
+      CreateFileW(html_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                  FILE_ATTRIBUTE_NORMAL, nullptr);
+  HTMLPPT_CHECK(file != INVALID_HANDLE_VALUE);
+  CloseHandle(file);
+
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  // DragAcceptFiles marks the window with WS_EX_ACCEPTFILES, which is how the
+  // shell knows to deliver a drop to it.
+  HTMLPPT_CHECK((GetWindowLongPtrW(window.handle(), GWL_EXSTYLE) &
+                 WS_EX_ACCEPTFILES) != 0);
+
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].label = "Live";
+  rows[0].html = "page.html"; rows[0].state = "resolved";
+  window.SetRows(rows);
+  window.SelectRow(0);
+
+  htmlppt::DetailFields captured;
+  int calls = 0;
+  window.SetEditHandler(
+      [&](const htmlppt::DetailFields& fields, std::wstring* error) {
+        captured = fields;
+        ++calls;
+        if (error != nullptr) error->clear();
+        window.SetStatus(L"applied");
+        return true;
+      });
+  SendDrop(window.handle(), html_path);
+
+  // The dropped path fills the HTML field and the installed handler applies it,
+  // with the rest of the pane unchanged.
+  HTMLPPT_CHECK_EQ(calls, 1);
+  HTMLPPT_CHECK_EQ(window.detail_fields().html, html_path);
+  HTMLPPT_CHECK_EQ(captured.html, html_path);
+  HTMLPPT_CHECK_EQ(captured.slide, std::wstring(L"3"));
+  HTMLPPT_CHECK_EQ(captured.label, std::wstring(L"Live"));
+  // The apply path owns the status; the view adds nothing of its own.
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()), std::wstring(L"applied"));
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+  DeleteFileW(html_path.c_str());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_drop_without_a_selection_asks_for_a_target) {
+  const std::wstring html_path = UniqueTempPath(L".html");
+  HTMLPPT_CHECK(!html_path.empty());
+  const HANDLE file =
+      CreateFileW(html_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                  FILE_ATTRIBUTE_NORMAL, nullptr);
+  HTMLPPT_CHECK(file != INVALID_HANDLE_VALUE);
+  CloseHandle(file);
+
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
+  rows[0].state = "resolved";
+  window.SetRows(rows);
+  // SetRows keeps no selection: the pane is disabled and must not be applied.
+  HTMLPPT_CHECK(!window.detail_enabled());
+
+  int calls = 0;
+  window.SetEditHandler([&calls](const htmlppt::DetailFields&,
+                                 std::wstring* error) {
+    ++calls;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  SendDrop(window.handle(), html_path);
+
+  // The field still shows the file (so the user can pick a row and continue),
+  // but no edit is applied and the status asks for a target.
+  HTMLPPT_CHECK_EQ(calls, 0);
+  HTMLPPT_CHECK_EQ(window.detail_fields().html, html_path);
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"select a target first"));
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+  DeleteFileW(html_path.c_str());
+}
+
+HTMLPPT_TEST_CASE(win32_config_window_rejects_a_dropped_folder) {
+  const std::wstring directory = UniqueTempPath(L"-folder");
+  HTMLPPT_CHECK(!directory.empty());
+  HTMLPPT_CHECK(CreateDirectoryW(directory.c_str(), nullptr) != 0);
+
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  std::vector<htmlppt::DisplayRow> rows(1);
+  rows[0].index = 0; rows[0].slide = 3; rows[0].html = "page.html";
+  rows[0].state = "resolved";
+  window.SetRows(rows);
+  window.SelectRow(0);
+
+  int calls = 0;
+  window.SetEditHandler([&calls](const htmlppt::DetailFields&,
+                                 std::wstring* error) {
+    ++calls;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  SendDrop(window.handle(), directory);
+
+  // A folder is refused before it touches the fields or the model.
+  HTMLPPT_CHECK_EQ(calls, 0);
+  HTMLPPT_CHECK_EQ(window.detail_fields().html, std::wstring(L"page.html"));
+  HTMLPPT_CHECK_EQ(StatusText(window.status_view()),
+                   std::wstring(L"drop an .html file, not a folder"));
+
+  window.Close();
+  PumpUntilDestroyed(window.handle());
+  HTMLPPT_CHECK(window.handle() == nullptr);
+  RemoveDirectoryW(directory.c_str());
 }
 
 HTMLPPT_TEST_CASE(win32_config_window_close_policy_prompts_only_when_dirty) {

@@ -4,6 +4,7 @@
 
 #include <commctrl.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 
 #include <charconv>
 #include <optional>
@@ -167,6 +168,14 @@ bool ShouldCloseWindow(bool dirty, bool answer_save) {
   return !dirty || answer_save;
 }
 
+DropDecision ClassifyDrop(bool is_directory, bool has_selection) {
+  // A folder is never an .html file; refusing it wins over "no selection" so
+  // the status line names the real problem.
+  if (is_directory) return DropDecision::RejectDirectory;
+  if (!has_selection) return DropDecision::RejectNoSelection;
+  return DropDecision::ApplyHtml;
+}
+
 std::wstring EditStatusText(const std::wstring& reason) {
   return reason.empty() ? L"applied" : reason;
 }
@@ -295,6 +304,9 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
       CW_USEDEFAULT, CW_USEDEFAULT, options.width, options.height, nullptr,
       nullptr, GetModuleHandleW(nullptr), this);
   if (handle_ == nullptr) return false;
+  // The shell only delivers WM_DROPFILES to a window that accepts drops; this
+  // also sets WS_EX_ACCEPTFILES on the window.
+  DragAcceptFiles(handle_, TRUE);
   // The options are 96-DPI logical units. Scale the initial size to the DPI of
   // the monitor the window opened on before creating and laying out children.
   dpi_ = GetDpiForWindow(handle_);
@@ -659,6 +671,40 @@ void ConfigWindow::ApplyDetail() {
   }
 }
 
+void ConfigWindow::HandleDroppedFiles(HDROP drop) {
+  // A drop carries at least one path. A failed query leaves the pane and the
+  // status alone instead of applying an empty HTML field.
+  const UINT needed = DragQueryFileW(drop, 0, nullptr, 0);
+  if (needed == 0) return;
+  // `needed` excludes the terminator, so the buffer takes one more character
+  // than the text and the copy returns the text length to trim to.
+  std::wstring path(static_cast<std::size_t>(needed) + 1, L'\0');
+  const UINT copied = DragQueryFileW(
+      drop, 0, path.data(), static_cast<UINT>(path.size()));
+  if (copied == 0) return;
+  path.resize(static_cast<std::size_t>(copied));
+
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  const bool is_directory =
+      attributes != INVALID_FILE_ATTRIBUTES &&
+      (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  switch (ClassifyDrop(is_directory, detail_enabled())) {
+    case DropDecision::RejectDirectory:
+      SetStatus(L"drop an .html file, not a folder");
+      return;
+    case DropDecision::RejectNoSelection:
+      // Show the path so the user can pick a row and then Apply, but never
+      // apply an edit with no target to apply it to.
+      SetWindowTextW(detail_html_edit_, path.c_str());
+      SetStatus(L"select a target first");
+      return;
+    case DropDecision::ApplyHtml:
+      SetWindowTextW(detail_html_edit_, path.c_str());
+      ApplyDetail();
+      return;
+  }
+}
+
 void ConfigWindow::SetAddHandler(ToolbarHandler handler) {
   add_handler_ = std::move(handler);
 }
@@ -989,6 +1035,14 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         info->ptMinTrackSize.x = minimum.right - minimum.left;
         info->ptMinTrackSize.y = minimum.bottom - minimum.top;
       }
+      return 0;
+    }
+    case WM_DROPFILES: {
+      // DragFinish releases the shell's block exactly once on every path
+      // through the handler, including both rejections.
+      const HDROP drop = reinterpret_cast<HDROP>(wparam);
+      HandleDroppedFiles(drop);
+      DragFinish(drop);
       return 0;
     }
     case WM_CLOSE:

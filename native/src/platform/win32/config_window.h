@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <shellapi.h>
+
 #include <functional>
 #include <optional>
 #include <string>
@@ -80,6 +82,12 @@ using RemoveHandler =
 // through (answer_save). Cancel and a failed save keep the window and its edits
 // open.
 bool ShouldCloseWindow(bool dirty, bool answer_save);
+
+// What a WM_DROPFILES drop should do: apply the dropped .html to the selected
+// row, ask the user to pick a target first, or refuse a folder. Pure, so the
+// accept/reject policy is testable without a real shell drop.
+enum class DropDecision { ApplyHtml, RejectDirectory, RejectNoSelection };
+DropDecision ClassifyDrop(bool is_directory, bool has_selection);
 
 // The status line after a successful edit: an empty reason means the handler's
 // refresh found nothing blocking, so the edit was applied; otherwise the reason
@@ -225,6 +233,10 @@ class ConfigWindow {
   void UpdateDetailEnabled();
   void NotifySelection();
   bool ConfirmRemove();
+  // WM_DROPFILES: fills the detail pane's HTML field from the first dropped
+  // path and applies it through the edit handler when a row is selected. A
+  // folder is refused with a status message; the caller frees the drop.
+  void HandleDroppedFiles(HDROP drop);
   // WM_CLOSE: destroy when clean, otherwise ask and save, discard, or stay.
   void OnClose();
   int ConfirmClose();
