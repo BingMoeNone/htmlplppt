@@ -135,7 +135,17 @@ bool WorkerRuntime::Step() {
       deadline.has_value() && *deadline > now && *deadline < wake) {
     wake = *deadline;
   }
+  if (safe_point_ != nullptr) {
+    // The safe point is this bounded wait, not the gap between Steps: the poll
+    // interval is where a Monitoring worker spends its time, so a heartbeat can
+    // observe it. Any other state is mid startup/switch/stop and must read false.
+    safe_point_->store(machine_.state() == State::Monitoring,
+                       std::memory_order_relaxed);
+  }
   ports_.clock.sleep_until(wake);
+  if (safe_point_ != nullptr) {
+    safe_point_->store(false, std::memory_order_relaxed);
+  }
   if (!was_faulted && machine_.state() == State::Faulted) {
     // A fault observed in this Step cannot be retried before the next one. The
     // window opens after this iteration's bounded idle wait, so the earliest

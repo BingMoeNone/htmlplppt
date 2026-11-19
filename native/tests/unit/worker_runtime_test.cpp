@@ -1,11 +1,14 @@
 #include "test_main.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -971,4 +974,52 @@ HTMLPPT_TEST_CASE(worker_runtime_show_start_focus_uses_baseline_screen) {
   for (const auto id : h.windows.activate_calls) {
     HTMLPPT_CHECK(id != WindowId{9});
   }
+}
+
+// The safe point is the loop's bounded idle wait, not the microsecond between
+// two Steps: a worker parked in Monitoring must advertise it for essentially the
+// whole poll interval, which is what lets a 200 ms heartbeat observe it. The real
+// SteadyClock is required here; the fake clock returns from sleep_until without
+// passing time.
+HTMLPPT_TEST_CASE(worker_runtime_marks_the_parked_poll_as_a_safe_point) {
+  htmlppt::SteadyClock clock;
+  htmlppt::WorkerPlan plan;
+  htmlppt::StateMachineConfig config;
+  WorkerHostConfig host;
+  host.active_poll_interval = Duration{50};
+  host.poll_interval = Duration{50};
+  htmlppt::test::FakePresentationHost presentation;
+  htmlppt::test::FakeOverlay overlay;
+  htmlppt::test::FakeLauncher launcher;
+  htmlppt::test::FakeWindowSystem windows;
+  presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  htmlppt::WorkerRuntime runtime(
+      plan, config,
+      htmlppt::WorkerPorts{presentation, overlay, launcher, windows, clock},
+      host);
+
+  std::atomic<bool> safe_point{false};
+  runtime.SetSafePointFlag(&safe_point);
+  runtime.Start();
+  std::thread loop([&runtime] { runtime.Step(); });
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!safe_point.load(std::memory_order_relaxed) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // The Step thread is parked in Monitoring: Monitoring heartbeats may apply a
+  // reload here.
+  HTMLPPT_CHECK(safe_point.load(std::memory_order_relaxed));
+  loop.join();
+  // The flag covers only the wait; a Step that returned (or is about to run) is
+  // not a safe point.
+  HTMLPPT_CHECK(!safe_point.load(std::memory_order_relaxed));
+  HTMLPPT_CHECK_EQ(runtime.snapshot().state, State::Monitoring);
+
+  runtime.RequestStop("test stop");
+  HTMLPPT_CHECK(!runtime.Step());
+  HTMLPPT_CHECK(runtime.done());
+  HTMLPPT_CHECK(!safe_point.load(std::memory_order_relaxed));
 }

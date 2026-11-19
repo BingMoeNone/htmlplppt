@@ -503,14 +503,14 @@ HTMLPPT_TEST_CASE(worker_session_slow_step_is_not_reported_hung) {
   server.Close();
 }
 
-// Hot reload may only run at a real safe point. The heartbeat's state byte can
-// read Monitoring while the loop is inside Step (the helper thread copies the
-// last published state), so the session publishes a separate safe-point flag:
-// false before every Step, true only after a Step returns in Monitoring. The
-// `external_stop` hook parks the loop twice, once before the first Step (no
-// safe point) and once after it returned in Monitoring (safe point), so both
-// states are observed deterministically rather than in a microsecond window.
-HTMLPPT_TEST_CASE(worker_session_marks_a_safe_point_only_between_steps) {
+// Hot reload may only run at a real safe point. The runtime owns that fact: the
+// state byte can read Monitoring while the loop is inside Step, and the
+// microsecond between two Steps is too narrow for a 200 ms heartbeat, so the
+// driver sets a flag for its whole bounded Monitoring wait and the session copies
+// it into every heartbeat. The fake driver models that wait. The `external_stop`
+// hook parks the loop before the first Step, where no driver wait is running and
+// the flag must stay clear; the Step parks below then advertise it.
+HTMLPPT_TEST_CASE(worker_session_heartbeat_carries_the_driver_safe_point) {
   NamedPipeServer server;
   const std::wstring pipe_name = UniquePipeName();
   HTMLPPT_CHECK(server.Create(pipe_name));
@@ -562,13 +562,14 @@ HTMLPPT_TEST_CASE(worker_session_marks_a_safe_point_only_between_steps) {
 
   FakeWorkerDriver driver;
   driver.state_snapshot.state = State::Monitoring;
-  driver.step_sleep = Duration{1};
+  // Long enough that several 10 ms heartbeats fall inside each parked wait.
+  driver.step_sleep = Duration{300};
   driver.steps_to_done = 2;
   std::atomic<int> stop_checks{0};
   WorkerSessionConfig config;
   config.heartbeat_interval = Duration{10};
   config.external_stop = [&stop_checks] {
-    if (stop_checks.fetch_add(1) < 2) {
+    if (stop_checks.fetch_add(1) == 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     return false;
@@ -585,7 +586,7 @@ HTMLPPT_TEST_CASE(worker_session_marks_a_safe_point_only_between_steps) {
   HTMLPPT_CHECK_EQ(driver.step_calls, 2);
 
   bool before_step = false;
-  bool between_steps = false;
+  bool while_parked = false;
   for (const Sample& sample : samples) {
     // Every sample is a Monitoring heartbeat, so only the flag distinguishes
     // the two cases.
@@ -596,13 +597,14 @@ HTMLPPT_TEST_CASE(worker_session_marks_a_safe_point_only_between_steps) {
     }
     if (sample.progress >= 1 &&
         (sample.flags & htmlppt::kHeartbeatFlagSafePoint) != 0) {
-      between_steps = true;
+      while_parked = true;
     }
   }
-  // Parked before the first Step: Monitoring state, no safe point.
+  // Parked before the first Step: Monitoring state, no driver wait, no flag.
   HTMLPPT_CHECK(before_step);
-  // Parked after the first Monitoring Step returned: a real safe point.
-  HTMLPPT_CHECK(between_steps);
+  // Parked inside the second Step, which runs in Monitoring: the heartbeat
+  // carries the driver's safe point.
+  HTMLPPT_CHECK(while_parked);
 
   channel->Close();
   server.Close();

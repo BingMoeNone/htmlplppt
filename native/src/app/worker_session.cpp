@@ -83,10 +83,10 @@ void AppendHeartbeatRecord(SharedBlackbox& blackbox, std::uint32_t sequence,
 // Sends heartbeats on its own thread for as long as it is alive, so a blocking
 // Start/Step (WPS COM activation, ResumeShow, ExitShow) cannot leave the
 // supervisor's heartbeat window empty. The caller publishes the last state it
-// observed and the loop's real safe point; the sender may therefore carry a
-// state one step stale, which the supervisor only logs, while hot reload keys on
-// the safe-point flag rather than the state byte. Every send takes `send_mutex`,
-// which the caller also holds for the final Cleanup frame.
+// observed and the driver owns the loop's real safe point, so the sender may
+// carry a state one step stale, which the supervisor only logs, while hot reload
+// keys on the safe-point flag rather than the state byte. Every send takes
+// `send_mutex`, which the caller also holds for the final Cleanup frame.
 class HeartbeatSender {
  public:
   HeartbeatSender(FrameChannel& channel, SharedBlackbox& blackbox,
@@ -170,7 +170,7 @@ class HeartbeatSender {
   // The session's loop step counter. The helper thread copies it into every
   // heartbeat so the supervisor can tell a live helper thread from a live loop.
   const std::atomic<std::uint64_t>& published_progress_;
-  // True only between Steps while the last Step returned in Monitoring. Hot
+  // Set by the driver only while it is parked in Monitoring between Steps. Hot
   // reload reads this instead of the state byte so a stale heartbeat can never
   // swap the worker mid-transition.
   const std::atomic<bool>& safe_point_;
@@ -276,9 +276,12 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // The loop's step counter; it advances only after Step() returns, so a
   // worker wedged inside a COM call keeps heartbeating a frozen value.
   std::atomic<std::uint64_t> published_progress{0};
-  // False while Step() may be running; true only between Steps when the loop is
-  // parked in Monitoring. Hot reload must key on this, not on the state byte.
+  // Owned by the driver: it stores true only while it is parked in Monitoring
+  // between Steps. The session only copies the flag into heartbeats, so hot
+  // reload keys on the one instant a restart cannot drop a transition instead of
+  // on the stale state byte or the microsecond between two Steps.
   std::atomic<bool> safe_point{false};
+  driver.SetSafePointFlag(&safe_point);
   std::mutex send_mutex;
   if (!pipe_alive) report_loss(kLossDetail);
   // One heartbeat thread for the whole loop: WorkerDriver::Step() blocks in
@@ -314,16 +317,11 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
       driver.RequestStop(kLegacyStopReason);
     }
     if (driver.done()) break;
-    // No safe point may be advertised across a Step: clear it immediately
-    // before entering one, and restore it only when the Step returns in
-    // Monitoring, where a supervisor-driven restart cannot drop a transition.
-    safe_point.store(false, std::memory_order_relaxed);
     const bool keep_going = driver.Step();
     const StateSnapshot& snapshot = driver.snapshot();
-    safe_point.store(snapshot.state == State::Monitoring,
-                     std::memory_order_relaxed);
     // Published after the step returns, never before: a blocking Step must not
-    // look like loop progress.
+    // look like loop progress. The driver already cleared its safe-point flag
+    // when the Step returned, so no session store is needed.
     published_progress.fetch_add(1, std::memory_order_relaxed);
     // Every step, including the one that ends the run, so a final transition
     // into Stopping/SafeMode/Exited is still mirrored.
@@ -336,6 +334,9 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // Stop the sender before the final Cleanup frame: the two share the send
   // mutex, and the Cleanup must carry the last sequence.
   heartbeat.Stop();
+  // The safe-point atomic lives on this stack; detach it before the driver can
+  // outlive the session.
+  driver.SetSafePointFlag(nullptr);
   if (heartbeat.broken()) {
     pipe_alive = false;
     report_loss(kLossDetail);

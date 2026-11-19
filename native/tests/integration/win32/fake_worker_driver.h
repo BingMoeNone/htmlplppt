@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -21,8 +22,19 @@ class FakeWorkerDriver final : public WorkerDriver {
  public:
   void Start() override { ++start_calls; }
 
+  void SetSafePointFlag(std::atomic<bool>* flag) override { safe_point_ = flag; }
+
   bool Step() override {
     ++step_calls;
+    State next = state_snapshot.state;
+    if (step_calls <= static_cast<int>(scripted_states.size())) {
+      next = scripted_states[static_cast<std::size_t>(step_calls - 1)];
+    }
+    // Model WorkerRuntime: the safe point covers only Step's bounded idle wait,
+    // and only while the board is parked in Monitoring.
+    if (safe_point_ != nullptr) {
+      safe_point_->store(next == State::Monitoring, std::memory_order_relaxed);
+    }
     // The first step can block longer than the rest, which is how a real COM
     // action behaves; the heartbeat progress tests use it to hold the loop
     // inside Step while the helper thread keeps sending. Without an override
@@ -33,9 +45,9 @@ class FakeWorkerDriver final : public WorkerDriver {
     if (delay.count() > 0) {
       std::this_thread::sleep_for(delay);
     }
-    if (step_calls <= static_cast<int>(scripted_states.size())) {
-      state_snapshot.state =
-          scripted_states[static_cast<std::size_t>(step_calls - 1)];
+    state_snapshot.state = next;
+    if (safe_point_ != nullptr) {
+      safe_point_->store(false, std::memory_order_relaxed);
     }
     if (steps_to_done > 0 && step_calls >= steps_to_done) done_ = true;
     return !done_;
@@ -79,6 +91,9 @@ class FakeWorkerDriver final : public WorkerDriver {
 
  private:
   bool done_ = false;
+  // Set by the session; the fake driver writes it exactly as WorkerRuntime does
+  // so the heartbeat flags byte can be asserted through a real session.
+  std::atomic<bool>* safe_point_ = nullptr;
 };
 
 } // namespace htmlppt::test

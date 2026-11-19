@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -74,6 +75,13 @@ class WorkerRuntime : public WorkerDriver {
   bool done() const override { return done_; }
   void RequestStop(std::string reason) override;
   void HandleSupervisorLost(std::string detail) override;
+  // The bounded idle wait in Step is the only safe point: the flag is set to
+  // `state() == Monitoring` immediately before the wait and cleared right after
+  // it, so a heartbeat sees "parked in Monitoring" for most of the poll interval
+  // instead of the microsecond between two Steps. Null means no consumer.
+  void SetSafePointFlag(std::atomic<bool>* flag) override {
+    safe_point_ = flag;
+  }
   const StateSnapshot& snapshot() const override { return snapshot_; }
   const std::vector<std::string>& journal() const { return journal_; }
   // --benchmark instrumentation: per-step and per-COM-query latencies.
@@ -157,6 +165,9 @@ class WorkerRuntime : public WorkerDriver {
   ClockPoint last_step_time_{};
   bool injected_sleep_resume_ = false;
   bool injected_multi_monitor_ = false;
+  // The session's heartbeat safe-point flag; set only while the loop is parked in
+  // Monitoring. Owned by the caller (RunWorkerSession's loop stack).
+  std::atomic<bool>* safe_point_ = nullptr;
 };
 
 } // namespace htmlppt

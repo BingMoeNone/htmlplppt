@@ -45,8 +45,8 @@ struct Frame {
 // session publishes after each Step() returns, so an advancing sequence with a
 // static progress means the loop is wedged in a call even though the helper
 // thread still heartbeats. The flags byte carries the loop's real safe point:
-// bit 0 is set only when the loop is between Steps and the last Step returned in
-// Monitoring, so the supervisor never swaps the worker mid-transition.
+// bit 0 is set only while the loop is parked in the bounded Monitoring wait
+// between Steps, so the supervisor never swaps the worker mid-transition.
 inline constexpr std::size_t kHeartbeatPayloadSize = 10;
 inline constexpr std::uint8_t kHeartbeatFlagSafePoint = 1u << 0;
 // Startup heartbeats run before the session's loop exists; they publish this

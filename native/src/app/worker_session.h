@@ -87,11 +87,11 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
 // heartbeat every interval on a helper thread so a blocking Step cannot starve
 // the supervisor. The heartbeat carries the last state the loop published (one
 // step stale at worst), a step counter incremented after each Step() returns,
-// and a safe-point flag set only between Steps while the loop is parked in
-// Monitoring; an advancing sequence with a static progress is how the supervisor
-// detects a loop wedged in a call (a hung worker still heartbeats), and hot
-// reload keys on the flag rather than the state byte. It is the only writer of
-// the blackbox during the loop.
+// and a safe-point flag the driver sets only while it is parked in Monitoring
+// between Steps; an advancing sequence with a static progress is how the
+// supervisor detects a loop wedged in a call (a hung worker still heartbeats),
+// and hot reload keys on the flag rather than the state byte. It is the only
+// writer of the blackbox during the loop.
 // A broken pipe is reported once through WorkerDriver::HandleSupervisorLost and
 // does not stop the loop (SupervisorLossPolicy::Continue). Stops the heartbeat
 // thread, then sends a final Cleanup frame while the pipe is alive, and returns
