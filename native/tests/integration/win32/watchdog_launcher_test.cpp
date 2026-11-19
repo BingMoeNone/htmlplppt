@@ -3,11 +3,13 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
 
 #include "app/watchdog_launcher.h"
+#include "core/compat_flags.h"
 #include "core/single_instance.h"
 #include "test_utils.h"
 
@@ -141,33 +143,104 @@ HTMLPPT_TEST_CASE(win32_ui_run_id_and_status_text_name_the_run) {
 
 // Start's click-time decision is a pure function of the facts read at the
 // click. The window's Start flag is cached view state and may be stale, so the
-// supervisor probe is the authority: AlreadyRunning wins over every other
-// outcome, so a second supervisor is never launched into a refusal.
+// two liveness probes are the authority: AlreadyRunning wins over every other
+// outcome, so a second supervisor is never launched into a refusal. Either probe
+// is enough: the state-dir mutex covers this editor's run, and the per-config
+// watcher.lock covers a run whose state dir is elsewhere.
 HTMLPPT_TEST_CASE(win32_decide_start_matrix) {
   using htmlppt::StartDecision;
-  // The probe wins even when the model is dirty and the Save gate is open or
-  // closed, and even when there is nothing to save.
-  HTMLPPT_CHECK(htmlppt::DecideStart(true, true, true) ==
+  // The state-dir probe wins even when the model is dirty and the Save gate is
+  // open or closed, and even when there is nothing to save.
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, true, true) ==
                 StartDecision::AlreadyRunning);
-  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, true) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, false, true) ==
                 StartDecision::AlreadyRunning);
-  HTMLPPT_CHECK(htmlppt::DecideStart(true, true, false) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, true, false) ==
                 StartDecision::AlreadyRunning);
-  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, false) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(true, false, false, false) ==
                 StartDecision::AlreadyRunning);
-  // A clean model launches without saving.
-  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, false) ==
+  // The per-config lock probe wins just as hard, even without the mutex (a run
+  // launched with a different --state-dir still owns this config).
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, true, true) ==
+                StartDecision::AlreadyRunning);
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, false, true) ==
+                StartDecision::AlreadyRunning);
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, false, false) ==
+                StartDecision::AlreadyRunning);
+  // Both probes clear: a clean model launches without saving.
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, false, false) ==
                 StartDecision::Start);
   // A stale-open gate on a clean model is still a plain start.
-  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, false) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, true, false) ==
                 StartDecision::Start);
   // Dirty and savable: the run must read the saved file.
-  HTMLPPT_CHECK(htmlppt::DecideStart(false, true, true) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, true, true) ==
                 StartDecision::NeedsSave);
   // Dirty but the Save gate is closed: the config cannot be persisted, so it
   // must not be launched.
-  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, true) ==
+  HTMLPPT_CHECK(htmlppt::DecideStart(false, false, false, true) ==
                 StartDecision::BlockedConfig);
+}
+
+// The per-config gate reads the real compat lock, not the state dir: a worker
+// writes watcher.lock next to the config it was launched with, so a run started
+// from another editor (or with another --state-dir) is still detected.
+HTMLPPT_TEST_CASE(win32_watchdog_live_for_config_reads_the_compat_lock) {
+  htmlppt::test::TempDir directory;
+  const std::filesystem::path config = directory.path() / L"watcher.json";
+  const std::filesystem::path lock = directory.path() / L"watcher.lock";
+  // No lock means no run.
+  HTMLPPT_CHECK(!htmlppt::IsWatchdogLiveForConfig(config));
+
+  // The real writer's format: a JSON lock whose pid is the owning process.
+  htmlppt::CompatFlags live(directory.path(),
+                            htmlppt::CompatIdentity{
+                                "run-live", GetCurrentProcessId(), ""});
+  HTMLPPT_CHECK(live.WriteLock("2026-11-19T00:00:00Z"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(lock));
+  HTMLPPT_CHECK(htmlppt::IsWatchdogLiveForConfig(config));
+
+  // Same format, but the pid belongs to a process that has already exited: a
+  // leftover lock must not keep the Start gate closed.
+  PROCESS_INFORMATION dead{};
+  std::wstring launch_error;
+  HTMLPPT_CHECK(htmlppt::LaunchDetached(L"cmd.exe /c exit 0", &dead,
+                                        &launch_error));
+  HTMLPPT_CHECK_EQ(WaitForSingleObject(dead.hProcess, 10000),
+                   static_cast<DWORD>(WAIT_OBJECT_0));
+  const DWORD dead_pid = dead.dwProcessId;
+  CloseHandle(dead.hThread);
+  CloseHandle(dead.hProcess);
+  htmlppt::CompatFlags stale(
+      directory.path(),
+      htmlppt::CompatIdentity{"run-dead", dead_pid, ""});
+  HTMLPPT_CHECK(stale.WriteLock("2026-11-19T00:00:00Z"));
+  HTMLPPT_CHECK(!htmlppt::IsWatchdogLiveForConfig(config));
+
+  // A lock with no readable owner is a VBS-era lock: trusted only while fresh.
+  {
+    std::ofstream out(lock, std::ios::binary | std::ios::trunc);
+    out << "legacy-lock";
+  }
+  HTMLPPT_CHECK(htmlppt::IsWatchdogLiveForConfig(config));
+
+  // Empty is not a live lock, and an old ownerless lock is stale even though it
+  // is non-empty.
+  {
+    std::ofstream out(lock, std::ios::binary | std::ios::trunc);
+  }
+  HTMLPPT_CHECK(!htmlppt::IsWatchdogLiveForConfig(config));
+  {
+    std::ofstream out(lock, std::ios::binary | std::ios::trunc);
+    out << "legacy-lock";
+  }
+  std::error_code time_error;
+  std::filesystem::last_write_time(
+      lock, std::filesystem::file_time_type::clock::now() -
+                std::chrono::seconds(120),
+      time_error);
+  HTMLPPT_CHECK(!time_error);
+  HTMLPPT_CHECK(!htmlppt::IsWatchdogLiveForConfig(config));
 }
 
 HTMLPPT_TEST_CASE(win32_watchdog_exit_text_reports_the_code) {

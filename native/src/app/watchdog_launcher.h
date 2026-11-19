@@ -59,19 +59,20 @@ std::wstring WatchdogStatusText(const std::wstring& run_id,
 // refused cannot be mistaken for a clean stop.
 std::wstring WatchdogExitText(std::uint32_t exit_code);
 
-// What a Start click must do, from the facts read at click time. The
-// `supervisor_running` flag is the real single-instance state (a supervisor owns
-// the state dir's mutex), not the window's cached Start flag, which can be stale
-// by the time the click arrives. AlreadyRunning wins over every other outcome,
-// so a second supervisor is never launched into a refusal.
+// What a Start click must do, from the facts read at click time. Both liveness
+// flags are real probes, not the window's cached Start flag, which can be stale
+// by the time the click arrives: `supervisor_running` is the state dir's
+// single-instance mutex, and `watchdog_live` is the per-config watcher.lock a
+// worker writes next to its config. AlreadyRunning wins over every other
+// outcome, so a second supervisor is never launched into a refusal.
 enum class StartDecision {
   Start,          // clean and runnable: launch now
   NeedsSave,      // dirty and savable: save, then launch
   BlockedConfig,  // dirty but the Save gate is closed (blocked, or profiles)
-  AlreadyRunning, // a supervisor already owns the state directory
+  AlreadyRunning, // a supervisor or a live worker already owns this config
 };
-StartDecision DecideStart(bool supervisor_running, bool save_enabled,
-                          bool dirty);
+StartDecision DecideStart(bool supervisor_running, bool watchdog_live,
+                          bool save_enabled, bool dirty);
 
 #ifdef _WIN32
 // True when a supervisor owns the single-instance mutex for `state_dir`. The
@@ -79,6 +80,16 @@ StartDecision DecideStart(bool supervisor_running, bool save_enabled,
 // so a live supervisor -- of any run id -- is what closes the editor's Start
 // gate. Read-only: the probe opens and closes the mutex without owning it.
 bool IsSupervisorRunning(const std::filesystem::path& state_dir);
+
+// True when the config has a live watchdog behind its legacy watcher.lock. The
+// worker writes that lock next to the config regardless of its state directory,
+// so this finds a run the state-dir probe cannot see (launched by another editor
+// or with another --state-dir). The lock is the JSON CompatFlags::WriteLock
+// writes: a readable `pid` is checked with OpenProcess +
+// GetExitCodeProcess == STILL_ACTIVE; a lock with no readable owner (VBS-era or
+// truncated) counts as live only while non-empty and younger than 60 s, which is
+// long enough for the worker's 5 s refresh to cover a slow start.
+bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path);
 
 // Launches `cmdline` with CREATE_NO_WINDOW and no inherited handles, so a
 // detached supervisor cannot keep the editor's console or handles alive. On

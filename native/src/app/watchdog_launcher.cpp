@@ -1,9 +1,16 @@
 #include "app/watchdog_launcher.h"
 
+#include <chrono>
+#include <cstdint>
+#include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <system_error>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
+#include "core/compat_flags.h"
 #include "core/single_instance.h"
 
 namespace htmlppt {
@@ -95,9 +102,9 @@ std::wstring WatchdogExitText(std::uint32_t exit_code) {
   return L"watchdog exited (code " + std::to_wstring(exit_code) + L")";
 }
 
-StartDecision DecideStart(bool supervisor_running, bool save_enabled,
-                          bool dirty) {
-  if (supervisor_running) return StartDecision::AlreadyRunning;
+StartDecision DecideStart(bool supervisor_running, bool watchdog_live,
+                          bool save_enabled, bool dirty) {
+  if (supervisor_running || watchdog_live) return StartDecision::AlreadyRunning;
   if (!dirty) return StartDecision::Start;
   // Dirty: the Save gate is the only thing that can persist the edit the run
   // would read. A closed gate is a blocked or multi-profile model.
@@ -142,6 +149,48 @@ bool IsSupervisorRunning(const std::filesystem::path& state_dir) {
   if (mutex == nullptr) return false;
   CloseHandle(mutex);
   return true;
+}
+
+bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path) {
+  const std::filesystem::path dir = config_path.parent_path();
+  if (dir.empty()) return false;
+  const std::filesystem::path lock = dir / std::string(kLockFile);
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(lock, error)) return false;
+
+  std::ifstream input(lock, std::ios::binary);
+  if (!input) return false;
+  const std::string text{std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>()};
+  if (text.empty()) return false;
+
+  // The lock payload is the JSON CompatFlags::WriteLock writes. Its pid is the
+  // worker that actually owns the run, so a live pid is a live watchdog.
+  const auto parsed = nlohmann::json::parse(text, nullptr, false);
+  if (!parsed.is_discarded() && parsed.is_object()) {
+    const auto pid = parsed.find("pid");
+    if (pid != parsed.end() && pid->is_number_integer()) {
+      const std::int64_t raw = pid->get<std::int64_t>();
+      if (raw > 0 && raw <= static_cast<std::int64_t>(UINT32_MAX)) {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                     static_cast<DWORD>(raw));
+        if (process == nullptr) return false;
+        DWORD exit_code = 0;
+        const bool alive = GetExitCodeProcess(process, &exit_code) != FALSE &&
+                           exit_code == STILL_ACTIVE;
+        CloseHandle(process);
+        return alive;
+      }
+    }
+  }
+
+  // No readable owner: a VBS-era watcher.lock. Trust it only while fresh. The
+  // native worker refreshes the lock every 5 s, and 60 s leaves room for a slow
+  // start without trusting a lock a crashed run left behind.
+  const auto written = std::filesystem::last_write_time(lock, error);
+  if (error) return false;
+  const auto age = std::filesystem::file_time_type::clock::now() - written;
+  return age < std::chrono::seconds(60);
 }
 
 bool LaunchDetached(const std::wstring& cmdline, PROCESS_INFORMATION* out,

@@ -40,11 +40,11 @@ namespace {
 constexpr wchar_t kMultiProfileSaveDisabled[] =
     L"multi-profile config: save is disabled (edit profiles in the JSON)";
 
-// The click-time probe found a supervisor holding the run's state directory --
-// this editor's own run is handled separately, so this is another editor's (or
-// a manually launched) run.
+// The click-time probes found a live run for this config -- this editor's own
+// run is handled separately, so this is another editor's (or a manually
+// launched) run, possibly with a different state dir.
 constexpr wchar_t kSupervisorAlreadyRunning[] =
-    L"another watchdog is already running for this state dir";
+    L"another watchdog is already running for this config";
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return {};
@@ -203,8 +203,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // when there is one, otherwise the config-wide resolver error that has no row
   // of its own (a missing or invalid deck). Empty means the config is clean.
   const auto refresh = [&window, &model, deck_info, resolve_options,
-                        &watchdog_running,
-                        &state_dir]() -> std::wstring {
+                        &watchdog_running, &state_dir,
+                        config_path]() -> std::wstring {
     const std::vector<DisplayRow> rows =
         model.DisplayRows(deck_info, resolve_options);
     window.SetRows(rows);
@@ -213,11 +213,15 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     // effective profile, so a save would silently drop the other profiles.
     const bool profiles_blocked = model.HasProfiles();
     window.SetSaveEnabled(model.dirty() && !blocked && !profiles_blocked);
-    // Start needs a runnable config and a free state dir. A supervisor already
-    // holding the state-dir mutex owns the run -- even when this editor did not
-    // launch it -- so a second one must not be started (spec 9.6).
+    // Start needs a runnable config and a free run. Two probes cover every way a
+    // run can already exist: the state-dir mutex for an editor-launched run, and
+    // the per-config watcher.lock for a worker whose state dir is elsewhere (a
+    // run launched by another editor or with another --state-dir). A second
+    // supervisor must never be started into a refusal (spec 9.6).
+    const bool supervisor_running = IsSupervisorRunning(state_dir);
+    const bool watchdog_live = IsWatchdogLiveForConfig(config_path);
     window.SetStartEnabled(!blocked && !profiles_blocked && !watchdog_running &&
-                           !IsSupervisorRunning(state_dir));
+                           !supervisor_running && !watchdog_live);
     window.SetDirty(model.dirty());
     if (profiles_blocked) return kMultiProfileSaveDisabled;
     if (!blocked) return {};
@@ -513,8 +517,10 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       if (error != nullptr) *error = L"cannot locate the watchdog executable";
       return false;
     }
-    const StartDecision decision = DecideStart(
-        IsSupervisorRunning(state_dir), window.save_enabled(), model.dirty());
+    const StartDecision decision =
+        DecideStart(IsSupervisorRunning(state_dir),
+                    IsWatchdogLiveForConfig(config_path), window.save_enabled(),
+                    model.dirty());
     if (decision == StartDecision::AlreadyRunning) {
       if (error != nullptr) *error = kSupervisorAlreadyRunning;
       return false;
@@ -549,9 +555,10 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
       refresh();
     }
     // The save takes time, so another supervisor can appear between the probe
-    // and the launch: probe the mutex once more immediately before starting,
-    // and never launch a run that would only be refused.
-    if (IsSupervisorRunning(state_dir)) {
+    // and the launch: probe both liveness sources once more immediately before
+    // starting, and never launch a run that would only be refused.
+    if (IsSupervisorRunning(state_dir) ||
+        IsWatchdogLiveForConfig(config_path)) {
       if (error != nullptr) *error = kSupervisorAlreadyRunning;
       return false;
     }
