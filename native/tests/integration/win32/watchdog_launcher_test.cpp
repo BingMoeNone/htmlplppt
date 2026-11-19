@@ -3,15 +3,59 @@
 #ifdef _WIN32
 #include <windows.h>
 
+#include <shellapi.h>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "app/watchdog_launcher.h"
+#include "core/command_line.h"
 #include "core/compat_flags.h"
 #include "core/single_instance.h"
 #include "test_utils.h"
+
+namespace {
+
+// The parser a child CRT uses for its argv; a quoted argument must survive this
+// unchanged, whatever backslashes or quotes it contains.
+std::vector<std::wstring> ParseCommandLine(const std::wstring& line) {
+  int count = 0;
+  LPWSTR* parsed = CommandLineToArgvW(line.c_str(), &count);
+  if (parsed == nullptr) return {};
+  std::vector<std::wstring> arguments;
+  arguments.reserve(static_cast<std::size_t>(count));
+  for (int index = 0; index < count; ++index) {
+    arguments.emplace_back(parsed[index]);
+  }
+  LocalFree(parsed);
+  return arguments;
+}
+
+} // namespace
+
+HTMLPPT_TEST_CASE(win32_quote_argument_round_trips_awkward_values) {
+  // A trailing backslash is the classic bug: "\"" would escape the closing
+  // quote and swallow the rest of the command line. The value is parsed as a
+  // non-first argument: CommandLineToArgvW applies different quoting rules to
+  // argv[0], which is never user data here.
+  const std::vector<std::wstring> values = {
+      L"plain",
+      L"D:\\run dir\\",
+      L"C:\\Program Files\\htmlppt\\htmlppt-watchdog.exe",
+      L"a\"b",
+      L"two\\\\\"x",
+      std::wstring(),
+  };
+  for (const auto& value : values) {
+    const std::wstring line = L"exe " + htmlppt::QuoteWindowsArgument(value);
+    const auto parsed = ParseCommandLine(line);
+    HTMLPPT_CHECK_EQ(parsed.size(), std::size_t{2});
+    HTMLPPT_CHECK_EQ(parsed[1], value);
+  }
+}
 
 // The launcher's command-line builders are pure strings, so their exact output
 // is the contract: the exe, the command, and every option in CLI order, with
@@ -89,10 +133,10 @@ HTMLPPT_TEST_CASE(win32_build_reload_command_line_quotes_every_argument) {
           L"--run-id \"ui-1234\""));
 }
 
-HTMLPPT_TEST_CASE(win32_build_command_lines_double_embedded_quotes) {
+HTMLPPT_TEST_CASE(win32_build_command_lines_escape_embedded_quotes) {
   // A Windows file name cannot contain a quote, but a run id can, and the
-  // builders must still produce one argument: doubling is the documented
-  // escape, so a quote reaches the child as a literal quote.
+  // builders must still produce one argument: a backslash before the quote is
+  // the CRT escape, so the child receives a literal quote.
   const std::filesystem::path exe(L"C:\\bin\\watchdog.exe");
   const std::filesystem::path config(L"C:\\Decks\\we\"ird\\watcher.json");
   const std::filesystem::path state_dir(L"C:\\Decks\\we\"ird\\state");
@@ -102,17 +146,17 @@ HTMLPPT_TEST_CASE(win32_build_command_lines_double_embedded_quotes) {
       supervisor_line,
       std::wstring(
           L"\"C:\\bin\\watchdog.exe\" --supervisor "
-          L"--config \"C:\\Decks\\we\"\"ird\\watcher.json\" "
-          L"--state-dir \"C:\\Decks\\we\"\"ird\\state\" "
-          L"--run-id \"ui 12\"\"34\""));
+          L"--config \"C:\\Decks\\we\\\"ird\\watcher.json\" "
+          L"--state-dir \"C:\\Decks\\we\\\"ird\\state\" "
+          L"--run-id \"ui 12\\\"34\""));
 
   const std::wstring stop_line =
       htmlppt::BuildStopCommandLine(exe, state_dir, L"ui 12\"34");
   HTMLPPT_CHECK_EQ(
       stop_line,
       std::wstring(L"\"C:\\bin\\watchdog.exe\" --stop "
-                   L"--state-dir \"C:\\Decks\\we\"\"ird\\state\" "
-                   L"--run-id \"ui 12\"\"34\""));
+                   L"--state-dir \"C:\\Decks\\we\\\"ird\\state\" "
+                   L"--run-id \"ui 12\\\"34\""));
 }
 
 HTMLPPT_TEST_CASE(win32_watchdog_state_dir_sits_next_to_the_config) {

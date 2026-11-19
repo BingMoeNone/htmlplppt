@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/command_line.h"
 #include "core/compat_flags.h"
 #include "core/single_instance.h"
 #include "core/utf8_path.h"
@@ -22,20 +23,8 @@ void RemoveDirectoryRecursively(const std::filesystem::path& dir) {
 }
 namespace {
 
-// One argument, always quoted. A double quote is doubled: the CRT's argument
-// parser reads a doubled quote inside a quoted string as one literal quote, so
-// a value that contains a quote still arrives as a single argument.
-std::wstring QuoteArgument(const std::wstring& value) {
-  std::wstring quoted;
-  quoted.reserve(value.size() + 2);
-  quoted.push_back(L'"');
-  for (const wchar_t character : value) {
-    quoted.push_back(character);
-    if (character == L'"') quoted.push_back(L'"');
-  }
-  quoted.push_back(L'"');
-  return quoted;
-}
+// One argument, always quoted, with the CRT's backslash/quote rules applied by
+// QuoteWindowsArgument: a trailing backslash must not escape the closing quote.
 
 std::wstring JoinArguments(std::initializer_list<std::wstring> arguments) {
   std::wstring line;
@@ -54,10 +43,10 @@ std::wstring BuildSupervisorCommandLine(const std::filesystem::path& exe,
                                         const std::wstring& run_id,
                                         bool allow_outside_folder) {
   std::wstring line =
-      JoinArguments({QuoteArgument(exe.wstring()), L"--supervisor", L"--config",
-                     QuoteArgument(config.wstring()), L"--state-dir",
-                     QuoteArgument(state_dir.wstring()), L"--run-id",
-                     QuoteArgument(run_id)});
+      JoinArguments({QuoteWindowsArgument(exe.wstring()), L"--supervisor", L"--config",
+                     QuoteWindowsArgument(config.wstring()), L"--state-dir",
+                     QuoteWindowsArgument(state_dir.wstring()), L"--run-id",
+                     QuoteWindowsArgument(run_id)});
   // The same permission the editor used for its own validation, in the CLI's
   // option order (a bare switch, so it is appended unquoted).
   if (allow_outside_folder) line += L" --allow-outside-folder";
@@ -67,17 +56,17 @@ std::wstring BuildSupervisorCommandLine(const std::filesystem::path& exe,
 std::wstring BuildStopCommandLine(const std::filesystem::path& exe,
                                   const std::filesystem::path& state_dir,
                                   const std::wstring& run_id) {
-  return JoinArguments({QuoteArgument(exe.wstring()), L"--stop", L"--state-dir",
-                        QuoteArgument(state_dir.wstring()), L"--run-id",
-                        QuoteArgument(run_id)});
+  return JoinArguments({QuoteWindowsArgument(exe.wstring()), L"--stop", L"--state-dir",
+                        QuoteWindowsArgument(state_dir.wstring()), L"--run-id",
+                        QuoteWindowsArgument(run_id)});
 }
 
 std::wstring BuildReloadCommandLine(const std::filesystem::path& exe,
                                     const std::filesystem::path& state_dir,
                                     const std::wstring& run_id) {
-  return JoinArguments({QuoteArgument(exe.wstring()), L"--reload",
-                        L"--state-dir", QuoteArgument(state_dir.wstring()),
-                        L"--run-id", QuoteArgument(run_id)});
+  return JoinArguments({QuoteWindowsArgument(exe.wstring()), L"--reload",
+                        L"--state-dir", QuoteWindowsArgument(state_dir.wstring()),
+                        L"--run-id", QuoteWindowsArgument(run_id)});
 }
 
 std::filesystem::path WatchdogStateDir(
