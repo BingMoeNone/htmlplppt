@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -92,14 +93,17 @@ std::wstring ReadRunState(const std::wstring& run_id) {
 
 // The editor writes the config from the same directory the watcher watches, so
 // a notification is only an external edit when the file itself no longer looks
-// like the copy this editor last loaded, saved, or reloaded. Size plus write
-// time is enough to tell a self-save (whose stamp is refreshed immediately)
-// from a sibling write such as the .bak or the run's state directory.
+// like the copy this editor last loaded, saved, or reloaded. Size, write time
+// and a content hash are all part of the stamp: FAT/network shares keep 2 s
+// timestamps and a same-length edit within that window would otherwise look
+// like this editor's own write and be silently overwritten on the next save.
 struct ConfigStamp {
   std::uintmax_t size = 0;
   std::filesystem::file_time_type mtime{};
+  std::uint64_t hash = 0;
   friend bool operator==(const ConfigStamp& left, const ConfigStamp& right) {
-    return left.size == right.size && left.mtime == right.mtime;
+    return left.size == right.size && left.mtime == right.mtime &&
+           left.hash == right.hash;
   }
 };
 
@@ -109,7 +113,17 @@ std::optional<ConfigStamp> ReadConfigStamp(const std::filesystem::path& path) {
   if (error) return std::nullopt;
   const auto mtime = std::filesystem::last_write_time(path, error);
   if (error) return std::nullopt;
-  return ConfigStamp{size, mtime};
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return std::nullopt;
+  // FNV-1a over the bytes; the config is small and this only runs on a watcher
+  // notification or a save, never per frame.
+  std::uint64_t hash = 1469598103934665603ull;
+  char byte = 0;
+  while (input.get(byte)) {
+    hash ^= static_cast<unsigned char>(byte);
+    hash *= 1099511628211ull;
+  }
+  return ConfigStamp{size, mtime, hash};
 }
 
 // Where a deck scan writes its thumbnails: one directory per editor process
