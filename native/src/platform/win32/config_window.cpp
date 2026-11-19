@@ -7,6 +7,7 @@
 #include <shellapi.h>
 
 #include <charconv>
+#include <algorithm>
 #include <optional>
 #include <system_error>
 #include <utility>
@@ -575,6 +576,9 @@ void ConfigWindow::Layout(int width, int height) {
     MoveWindow(detail_apply_button_, field_left, apply_top, Scale(90),
                apply_height, TRUE);
   }
+  // The list just moved (and possibly rescaled), so its columns follow: a DPI
+  // change would otherwise keep the 96-DPI pixel widths forever.
+  ResizeColumns();
 }
 
 void ConfigWindow::SetRows(const std::vector<DisplayRow>& rows) {
@@ -1121,6 +1125,27 @@ void ConfigWindow::StopWatchdog() {
   std::wstring error;
   if (!stop_handler_(&error)) {
     SetStatus(error.empty() ? L"cannot stop the watchdog" : error);
+  }
+}
+
+void ConfigWindow::ResizeColumns() {
+  if (list_view_ == nullptr) return;
+  RECT client{};
+  if (GetClientRect(list_view_, &client) == FALSE) return;
+  const int available = client.right - client.left;
+  if (available <= 0) return;
+  // SLIDE / LABEL / ASSETS / STATE keep their design widths at the current
+  // DPI; HTML absorbs the remainder (and the vertical scrollbar).
+  const int fixed_widths[] = {kSlideColumnWidth, 180, 90, 110};
+  int fixed_total = 0;
+  for (const int width : fixed_widths) fixed_total += Scale(width);
+  const int html_width = std::max(
+      Scale(120), available - fixed_total - GetSystemMetrics(SM_CXVSCROLL));
+  const int widths[] = {Scale(fixed_widths[0]), Scale(fixed_widths[1]),
+                        html_width, Scale(fixed_widths[2]),
+                        Scale(fixed_widths[3])};
+  for (int index = 0; index < 5; ++index) {
+    ListView_SetColumnWidth(list_view_, index, widths[index]);
   }
 }
 

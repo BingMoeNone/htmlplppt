@@ -302,6 +302,11 @@ class ConfigWindow {
   // One 96-DPI logical unit in the window's current layout DPI.
   int Scale(int value) const;
   void Layout(int width, int height);
+  // Recomputes the list's column widths from the current DPI and the list's own
+  // client width. Layout calls it, so a WM_SIZE and a WM_DPICHANGED (which
+  // re-runs Layout) both keep the text readable instead of freezing 96-DPI
+  // pixel widths forever.
+  void ResizeColumns();
   void FillDetail(const DisplayRow& row);
   void ClearDetail();
   void UpdateDetailEnabled();
