@@ -631,6 +631,64 @@ HTMLPPT_TEST_CASE(worker_runtime_stages_html_for_a_file_mode_target) {
   HTMLPPT_CHECK(h.launcher.last_spec.url.find("page1.html") != std::string::npos);
   std::filesystem::remove_all(root, error);
 }
+// stage.maxBytes caps the whole run's stage directory, not one target: a page
+// larger than the remaining run budget must fail the launch (and must not leave
+// a partial file behind) instead of being copied.
+HTMLPPT_TEST_CASE(worker_runtime_enforces_the_run_stage_budget) {
+  WorkerHarness h;
+  const auto root = std::filesystem::temp_directory_path() /
+                    "htmlppt-runtime-stage-budget";
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root, error);
+  const auto source = root / "source.html";
+  {
+    std::ofstream out(source, std::ios::binary);
+    out << "<html>budget</html>";
+  }
+
+  h.plan.machine.targets = {MakeTarget(1, "t1", "p1")};
+  auto resolved = MakeResolvedTarget(1, 1, "t1", "p1");
+  resolved.html_path = source.string();
+  resolved.stage_name = "page1.html";
+  resolved.assets_mode = "file";
+  h.plan.targets = {resolved};
+  h.host.temp_dir = root / "work";
+  h.host.stage_max_bytes = 4;  // smaller than the page
+  h.config.startup_ignore = Duration{0};
+  h.rebuild();
+  h.presentation.show = MakeShowState(HostStatus::Ok, true, 1);
+  h.Start();
+  h.runtime.Step();
+  h.presentation.show.slide = 2;
+  h.runtime.Step();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();  // CoverHold -> LaunchEdge, staging refused
+
+  HTMLPPT_CHECK_EQ(h.launcher.launch_count, 0);
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "maxBytes"));
+  HTMLPPT_CHECK(!std::filesystem::exists(root / "work" / "stage" /
+                                         "page1.html"));
+  std::filesystem::remove_all(root, error);
+}
+
+// The per-target budget is the smaller of assets.maxBytes and what is left of
+// the run-wide stage.maxBytes; -1 means the run cap is already spent.
+HTMLPPT_TEST_CASE(worker_runtime_stage_budget_charges_the_run_cap) {
+  using htmlppt::EffectiveStageBudget;
+  // No run cap: the target's own limit, unlimited when it has none.
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(0, 0, 4096), std::int64_t{4096});
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(0, 0, 0), std::int64_t{0});
+  // The run cap alone bounds the target.
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 0, 0), std::int64_t{100});
+  // The smaller limit wins, and previously staged bytes are deducted.
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 0, 40), std::int64_t{40});
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 80, 0), std::int64_t{20});
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 80, 90), std::int64_t{20});
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 100, 0), std::int64_t{-1});
+  HTMLPPT_CHECK_EQ(EffectiveStageBudget(100, 120, 0), std::int64_t{-1});
+}
+
 // While a show is being watched the loop polls faster, so a slide change is
 // noticed within a frame budget rather than up to a full idle interval later.
 HTMLPPT_TEST_CASE(worker_runtime_polls_actively_while_monitoring) {

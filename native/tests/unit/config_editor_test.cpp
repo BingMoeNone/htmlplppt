@@ -446,6 +446,26 @@ HTMLPPT_TEST_CASE(config_editor_save_with_backup_round_trips_a_cjk_path) {
   HTMLPPT_CHECK_EQ(reloaded.config->active.targets.size(), std::size_t{1});
 }
 
+HTMLPPT_TEST_CASE(config_editor_save_keeps_the_run_stage_budget) {
+  // The editor serializes the parsed config, so a field it does not model must
+  // still survive a save; otherwise editing a label would silently drop
+  // stage.maxBytes.
+  const auto dir = MakeDir();
+  Config config = MakeConfig(dir);
+  config.active.stage.max_bytes = 4096;
+  ConfigEditorModel model(config);
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.SetLabel(0, "Two", &error));
+  HTMLPPT_CHECK(model.Save(path, &error));
+  const auto reloaded = htmlppt::LoadConfigFile(path);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK_EQ(reloaded.config->active.stage.max_bytes,
+                   std::int64_t{4096});
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_editor_ignores_an_edit_that_changes_nothing) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));

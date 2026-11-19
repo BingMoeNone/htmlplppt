@@ -1,5 +1,6 @@
 #include "core/worker_runtime.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -34,7 +35,40 @@ std::string ComFailureDetail(const ShowState& show) {
   return "COM query failed";
 }
 
+// Bytes currently in a directory tree, for the run-wide stage cap. A missing
+// directory (nothing staged yet) counts as zero; an unreadable entry is skipped
+// rather than failing the launch, because the cap is a safety budget, not a
+// correctness check.
+std::uint64_t DirectoryBytes(const std::filesystem::path& directory) {
+  std::error_code error;
+  std::uint64_t total = 0;
+  std::filesystem::recursive_directory_iterator it(directory, error);
+  if (error) return 0;
+  const std::filesystem::recursive_directory_iterator end;
+  while (it != end) {
+    std::error_code entry_error;
+    if (it->is_regular_file(entry_error)) {
+      const auto size = std::filesystem::file_size(it->path(), entry_error);
+      if (!entry_error) total += size;
+    }
+    it.increment(error);
+    if (error) break;
+  }
+  return total;
+}
+
 } // namespace
+
+std::int64_t EffectiveStageBudget(std::int64_t run_max_bytes,
+                                  std::uint64_t staged_bytes,
+                                  std::int64_t target_max_bytes) {
+  if (run_max_bytes <= 0) return target_max_bytes;
+  const std::int64_t remaining =
+      run_max_bytes - static_cast<std::int64_t>(staged_bytes);
+  if (remaining <= 0) return -1;
+  if (target_max_bytes <= 0) return remaining;
+  return std::min(target_max_bytes, remaining);
+}
 
 WorkerRuntime::WorkerRuntime(WorkerPlan plan, StateMachineConfig config,
                              WorkerPorts ports, WorkerHostConfig host)
@@ -527,11 +561,29 @@ void WorkerRuntime::LaunchEdge(int slide) {
   // Staging copies the page (and, in tree mode, its assets) into the run's
   // temp directory so Edge opens a predictable ASCII name instead of the
   // source path. Failure here is reported like a launch failure: the machine's
-  // retry policy owns the next attempt.
+  // retry policy owns the next attempt. Every target shares one stage directory,
+  // so the run-wide stage.maxBytes is charged across targets and the effective
+  // per-target limit is the smaller of it and assets.maxBytes.
   if (launch_target.assets_mode != "direct") {
+    const std::filesystem::path stage_dir = host_.temp_dir / "stage";
+    std::int64_t budget = launch_target.assets_max_bytes;
+    if (host_.stage_max_bytes > 0) {
+      // Measure what earlier targets actually left on disk instead of summing
+      // per-target copies: targets can share an asset root, in which case the
+      // shared files are written once and must be counted once. The walk only
+      // runs for a run that opted into the cap.
+      const std::uint64_t used = DirectoryBytes(stage_dir);
+      budget = EffectiveStageBudget(host_.stage_max_bytes, used, budget);
+      if (budget < 0) {
+        ReportEdgeLaunchFailure(
+            "staging failed: stage.maxBytes (" +
+            std::to_string(host_.stage_max_bytes) +
+            " bytes) is already spent for this run");
+        return;
+      }
+    }
     const StageOutcome staged =
-        StageTargetHtml(launch_target, host_.temp_dir / "stage",
-                        launch_target.assets_max_bytes);
+        StageTargetHtml(launch_target, stage_dir, budget);
     if (!staged.staged) {
       ReportEdgeLaunchFailure("staging failed: " + staged.error);
       return;

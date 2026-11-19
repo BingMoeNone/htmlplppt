@@ -112,7 +112,8 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
 
   const auto html_bytes = FileSize(source);
   if (max_bytes > 0 && html_bytes > static_cast<std::uint64_t>(max_bytes)) {
-    outcome.error = "staged HTML exceeds assets.maxBytes: " +
+    outcome.error = "staged HTML exceeds the byte budget (assets.maxBytes/"
+                    "stage.maxBytes): " +
                     std::to_string(html_bytes) + " > " +
                     std::to_string(max_bytes);
     return outcome;
@@ -187,7 +188,8 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
               if (max_bytes > 0 &&
                   copied + bytes > static_cast<std::uint64_t>(max_bytes)) {
                 return abort_staging(
-                    "staged assets exceed assets.maxBytes at " +
+                    "staged assets exceed the byte budget (assets.maxBytes/"
+                    "stage.maxBytes) at " +
                     Utf8Path(relative));
               }
               created.push_back(destination);

@@ -486,9 +486,15 @@ StageConfig ParseStage(const json& value, const std::string& path,
     AddError(issues, path, "must be an object");
     return result;
   }
-  CheckKnownKeys(value, {"mode", "root"}, path, issues);
+  CheckKnownKeys(value, {"mode", "root", "maxBytes"}, path, issues);
   if (auto mode = ReadString(value, "mode", path, issues)) result.mode = *mode;
   if (auto root = ReadString(value, "root", path, issues)) result.root = *root;
+  if (auto bytes = ReadInt64(value, "maxBytes", path, issues)) {
+    result.max_bytes = *bytes;
+  }
+  if (result.max_bytes < 0) {
+    AddError(issues, FieldPath(path, "maxBytes"), "must be >= 0");
+  }
   if (!IsOneOf(result.mode, {"file", "tree", "direct"})) {
     AddError(issues, FieldPath(path, "mode"), "must be file, tree, or direct");
   }
@@ -658,7 +664,9 @@ nlohmann::ordered_json DefaultsToJson(const DefaultsConfig& defaults) {
 }
 
 nlohmann::ordered_json StageToJson(const StageConfig& stage) {
-  return {{"mode", stage.mode}, {"root", stage.root}};
+  nlohmann::ordered_json result = {{"mode", stage.mode}, {"root", stage.root}};
+  if (stage.max_bytes > 0) result["maxBytes"] = stage.max_bytes;
+  return result;
 }
 
 void ApplyOverrides(Config& config, const CliConfigOverrides& overrides,

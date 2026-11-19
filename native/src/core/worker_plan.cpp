@@ -586,6 +586,7 @@ WorkerHostConfig BuildWorkerHostConfig(const Config& config,
   host.focus.timeout = machine.focus_timeout;
   host.focus.strategy = ParseFocusStrategy(config.defaults.focus.strategy);
   host.focus_require = config.defaults.focus.require;
+  host.stage_max_bytes = config.active.stage.max_bytes;
   host.screen = facts.screen;
   host.wps_pids = facts.wps_pids;
   host.faults = facts.faults;

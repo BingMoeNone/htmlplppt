@@ -137,7 +137,8 @@ std::string_view ConfigSchema() {
       "type": "object",
       "properties": {
         "mode": { "enum": ["file", "tree", "direct"] },
-        "root": { "type": "string" }
+        "root": { "type": "string" },
+        "maxBytes": { "type": "integer", "minimum": 0, "description": "run-wide cap on the bytes copied into the shared stage directory; 0 or absent means unlimited" }
       },
       "additionalProperties": false
     },

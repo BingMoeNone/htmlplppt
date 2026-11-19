@@ -41,6 +41,10 @@ struct WorkerHostConfig {
   EdgeConfig edge;
   CoverTiming cover;
   FocusTiming focus;
+  // Run-wide cap on the bytes copied into the shared stage directory (config
+  // stage.maxBytes). 0 means unlimited; a target's assets.maxBytes still applies
+  // and the smaller limit wins.
+  std::int64_t stage_max_bytes = 0;
   // Global focus.require default. The plan carries an effective per-target value,
   // but a show-start focus has no target, so the runtime needs the config-level
   // opt-out here too.
@@ -68,6 +72,13 @@ struct WorkerHostConfig {
 // actions, and keeps the machine ticking. The state machine remains the only
 // state owner; ports only report facts. Implements WorkerDriver so the app's
 // session (pipe, heartbeats, stop, supervisor loss) is testable without it.
+//
+// The stage budget for one target: the smaller of the target's assets.maxBytes
+// and what is left of the run-wide stage.maxBytes, after charging `staged_bytes`
+// already copied this run. 0 means unlimited; -1 means the run cap is spent.
+std::int64_t EffectiveStageBudget(std::int64_t run_max_bytes,
+                                  std::uint64_t staged_bytes,
+                                  std::int64_t target_max_bytes);
 class WorkerRuntime : public WorkerDriver {
  public:
   WorkerRuntime(WorkerPlan plan, StateMachineConfig config, WorkerPorts ports,

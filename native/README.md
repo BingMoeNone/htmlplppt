@@ -499,6 +499,12 @@ is removed with the run's temp directory.
 `assets` block, and `--stage-mode` overrides that default for the run; a target's
 own `assets` block always wins.
 
+`stage.maxBytes` caps the bytes this run copies into its shared stage directory
+(0 or absent = no cap). Every target in a run writes into the same directory, so
+the cap is charged across targets: a target's effective limit is the smaller of
+its own `assets.maxBytes` and what is left of `stage.maxBytes`, and a target that
+would exceed the remainder fails its trigger instead of filling the disk.
+
 ### Display, focus, and prewarm
 
 - `display.monitor` (`"primary"`, `"secondary"`, or a 1-based index) selects the

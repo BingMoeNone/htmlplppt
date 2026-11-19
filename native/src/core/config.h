@@ -89,6 +89,11 @@ struct DefaultsConfig {
 struct StageConfig {
   std::string mode = "file";
   std::string root;
+  // Run-wide cap on the bytes copied into the run's stage directory. 0 means
+  // unlimited. A target also has its own assets.maxBytes; the effective limit is
+  // the smaller of the two and the run total is charged across targets, because
+  // every target writes into the same stage directory.
+  std::int64_t max_bytes = 0;
 };
 
 struct ProfileConfig {

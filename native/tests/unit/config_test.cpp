@@ -378,6 +378,34 @@ HTMLPPT_TEST_CASE(config_legacy_inherits_defaults) {
   HTMLPPT_CHECK_EQ(target.on_failure, std::string{"strict"});
 }
 
+HTMLPPT_TEST_CASE(config_stage_max_bytes_round_trips) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "tree", "root": "assets", "maxBytes": 4096 },
+    "targets": [ { "slide": 1, "html": "page1.html" } ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK_EQ(result.config->active.stage.max_bytes,
+                   std::int64_t{4096});
+  const std::string serialized = htmlppt::ConfigToJson(*result.config);
+  HTMLPPT_CHECK(serialized.find("\"maxBytes\": 4096") != std::string::npos);
+  const auto reloaded = Parse(serialized);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK_EQ(reloaded.config->active.stage.max_bytes,
+                   std::int64_t{4096});
+}
+
+HTMLPPT_TEST_CASE(config_rejects_a_negative_stage_max_bytes) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "maxBytes": -1 },
+    "targets": [ { "slide": 1, "html": "page1.html" } ]
+  })");
+  HTMLPPT_CHECK(HasIssueAt(result, "stage.maxBytes"));
+}
+
 HTMLPPT_TEST_CASE(config_profile_stage_inherits_top_level_root) {
   const auto result = Parse(R"({
     "version": 1,

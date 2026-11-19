@@ -314,6 +314,18 @@ HTMLPPT_TEST_CASE(worker_plan_uses_the_default_focus_require_without_a_block) {
   HTMLPPT_CHECK_EQ(host.focus.timeout, Duration{3000});
 }
 
+HTMLPPT_TEST_CASE(worker_plan_carries_the_run_stage_budget_to_the_host) {
+  const Config config = ParseConfig(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "maxBytes": 4096 },
+    "targets": [{ "slide": 3, "html": "page3.html", "label": "Three" }]
+  })");
+  WorkerHostFacts facts;
+  const WorkerHostConfig host = BuildWorkerHostConfig(config, facts);
+  HTMLPPT_CHECK_EQ(host.stage_max_bytes, std::int64_t{4096});
+}
+
 HTMLPPT_TEST_CASE(worker_plan_sorts_both_vectors_by_slide) {
   const Config config = ParseConfig(R"({
     "version": 1,
