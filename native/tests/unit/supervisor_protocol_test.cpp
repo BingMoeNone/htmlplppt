@@ -17,6 +17,7 @@ using htmlppt::FakeClock;
 using htmlppt::Frame;
 using htmlppt::FrameType;
 using htmlppt::HeartbeatPayload;
+using htmlppt::kHeartbeatFlagSafePoint;
 using htmlppt::kProgressNotStarted;
 using htmlppt::ProgressTracker;
 using htmlppt::SequenceTracker;
@@ -109,12 +110,32 @@ HTMLPPT_TEST_CASE(heartbeat_payload_round_trip) {
   HeartbeatPayload payload;
   payload.state = 7;
   payload.progress = 0x0102030405060708ull;
+  payload.flags = kHeartbeatFlagSafePoint;
   const auto encoded = EncodeHeartbeatPayload(payload);
   HTMLPPT_CHECK_EQ(encoded.size(), htmlppt::kHeartbeatPayloadSize);
+  // State, little-endian progress, then the flags byte: 1 + 8 + 1.
+  HTMLPPT_CHECK_EQ(htmlppt::kHeartbeatPayloadSize, std::size_t{10});
+  HTMLPPT_CHECK_EQ(encoded[0], std::uint8_t{7});
+  const std::vector<std::uint8_t> progress_bytes{8, 7, 6, 5, 4, 3, 2, 1};
+  for (std::size_t i = 0; i < progress_bytes.size(); ++i) {
+    HTMLPPT_CHECK_EQ(encoded[i + 1], progress_bytes[i]);
+  }
+  HTMLPPT_CHECK_EQ(encoded[9], kHeartbeatFlagSafePoint);
   const auto decoded = DecodeHeartbeatPayload(encoded);
   HTMLPPT_CHECK(decoded.has_value());
   HTMLPPT_CHECK_EQ(decoded->state, std::uint8_t{7});
   HTMLPPT_CHECK_EQ(decoded->progress, std::uint64_t{0x0102030405060708ull});
+  HTMLPPT_CHECK_EQ(decoded->flags, kHeartbeatFlagSafePoint);
+}
+
+// The safe point is bit 0 of the flags byte; no other bit may be read as one.
+HTMLPPT_TEST_CASE(heartbeat_safe_point_is_the_low_flags_bit) {
+  HTMLPPT_CHECK_EQ(kHeartbeatFlagSafePoint, std::uint8_t{0x01});
+  HeartbeatPayload payload;
+  payload.flags = 0xFE;
+  const auto decoded = DecodeHeartbeatPayload(EncodeHeartbeatPayload(payload));
+  HTMLPPT_CHECK(decoded.has_value());
+  HTMLPPT_CHECK((decoded->flags & kHeartbeatFlagSafePoint) == 0);
 }
 
 HTMLPPT_TEST_CASE(heartbeat_payload_rejects_wrong_size) {
@@ -122,6 +143,10 @@ HTMLPPT_TEST_CASE(heartbeat_payload_rejects_wrong_size) {
                      std::span<const std::uint8_t>()).has_value());
   const std::vector<std::uint8_t> one_byte{1};
   HTMLPPT_CHECK(!DecodeHeartbeatPayload(one_byte).has_value());
+  // The pre-safe-point 9-byte payload is no longer a valid heartbeat: a worker
+  // and supervisor from different builds must not silently disagree on flags.
+  const std::vector<std::uint8_t> legacy_nine(9, 0);
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(legacy_nine).has_value());
 }
 
 HTMLPPT_TEST_CASE(progress_tracker_detects_unchanged_progress) {

@@ -50,6 +50,7 @@ std::vector<std::uint8_t> EncodeHeartbeatPayload(
   std::vector<std::uint8_t> out(kHeartbeatPayloadSize, 0);
   out[0] = payload.state;
   WriteU64(out.data() + 1, payload.progress);
+  out[9] = payload.flags;
   return out;
 }
 
@@ -59,6 +60,7 @@ std::optional<HeartbeatPayload> DecodeHeartbeatPayload(
   HeartbeatPayload decoded;
   decoded.state = payload[0];
   decoded.progress = ReadU64(payload.data() + 1);
+  decoded.flags = payload[9];
   return decoded;
 }
 

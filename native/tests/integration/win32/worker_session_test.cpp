@@ -503,6 +503,111 @@ HTMLPPT_TEST_CASE(worker_session_slow_step_is_not_reported_hung) {
   server.Close();
 }
 
+// Hot reload may only run at a real safe point. The heartbeat's state byte can
+// read Monitoring while the loop is inside Step (the helper thread copies the
+// last published state), so the session publishes a separate safe-point flag:
+// false before every Step, true only after a Step returns in Monitoring. The
+// `external_stop` hook parks the loop twice, once before the first Step (no
+// safe point) and once after it returned in Monitoring (safe point), so both
+// states are observed deterministically rather than in a microsecond window.
+HTMLPPT_TEST_CASE(worker_session_marks_a_safe_point_only_between_steps) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+
+  struct Sample {
+    std::uint64_t progress = 0;
+    std::uint8_t state = 0;
+    std::uint8_t flags = 0;
+  };
+  std::atomic<bool> client_ok{false};
+  std::atomic<bool> saw_cleanup{false};
+  std::atomic<bool> payload_ok{true};
+  std::vector<Sample> samples;
+  std::thread peer([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{20});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Heartbeat) {
+        const auto decoded = htmlppt::DecodeHeartbeatPayload(frame->payload);
+        if (!decoded.has_value()) {
+          payload_ok = false;
+          return;
+        }
+        samples.push_back(
+            Sample{decoded->progress, decoded->state, decoded->flags});
+      } else if (frame->header.type == FrameType::Cleanup) {
+        saw_cleanup = true;
+        return;
+      }
+    }
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  if (channel == nullptr) {
+    peer.join();
+    HTMLPPT_CHECK(channel != nullptr);
+    return;
+  }
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.state_snapshot.state = State::Monitoring;
+  driver.step_sleep = Duration{1};
+  driver.steps_to_done = 2;
+  std::atomic<int> stop_checks{0};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  config.external_stop = [&stop_checks] {
+    if (stop_checks.fetch_add(1) < 2) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    return false;
+  };
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(saw_cleanup.load());
+  HTMLPPT_CHECK(payload_ok.load());
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(driver.step_calls, 2);
+
+  bool before_step = false;
+  bool between_steps = false;
+  for (const Sample& sample : samples) {
+    // Every sample is a Monitoring heartbeat, so only the flag distinguishes
+    // the two cases.
+    HTMLPPT_CHECK_EQ(sample.state, static_cast<std::uint8_t>(State::Monitoring));
+    if (sample.progress == 0 &&
+        (sample.flags & htmlppt::kHeartbeatFlagSafePoint) == 0) {
+      before_step = true;
+    }
+    if (sample.progress >= 1 &&
+        (sample.flags & htmlppt::kHeartbeatFlagSafePoint) != 0) {
+      between_steps = true;
+    }
+  }
+  // Parked before the first Step: Monitoring state, no safe point.
+  HTMLPPT_CHECK(before_step);
+  // Parked after the first Monitoring Step returned: a real safe point.
+  HTMLPPT_CHECK(between_steps);
+
+  channel->Close();
+  server.Close();
+}
+
 #endif // _WIN32
 
 // Spec 11.3: the legacy stop-live.vbs deletes watcher.lock. The session must

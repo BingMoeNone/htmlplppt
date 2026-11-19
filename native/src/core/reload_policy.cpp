@@ -2,11 +2,9 @@
 
 namespace htmlppt {
 
-ReloadDecision DecideReload(bool request_pending,
-                            bool worker_state_is_monitoring) {
+ReloadDecision DecideReload(bool request_pending, bool at_safe_point) {
   if (!request_pending) return ReloadDecision::Idle;
-  return worker_state_is_monitoring ? ReloadDecision::Apply
-                                    : ReloadDecision::Defer;
+  return at_safe_point ? ReloadDecision::Apply : ReloadDecision::Defer;
 }
 
 bool ShouldJournalDefer(ReloadDecision decision, bool already_journalled) {

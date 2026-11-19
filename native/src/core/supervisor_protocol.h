@@ -40,11 +40,15 @@ struct Frame {
   std::vector<std::uint8_t> payload;
 };
 
-// Heartbeat payload: one state byte followed by the worker's loop progress as a
-// little-endian uint64. Progress is a step counter the session publishes after
-// each Step() returns, so an advancing sequence with a static progress means
-// the loop is wedged in a call even though the helper thread still heartbeats.
-inline constexpr std::size_t kHeartbeatPayloadSize = 9;
+// Heartbeat payload: one state byte, the worker's loop progress as a
+// little-endian uint64, and one flags byte. Progress is a step counter the
+// session publishes after each Step() returns, so an advancing sequence with a
+// static progress means the loop is wedged in a call even though the helper
+// thread still heartbeats. The flags byte carries the loop's real safe point:
+// bit 0 is set only when the loop is between Steps and the last Step returned in
+// Monitoring, so the supervisor never swaps the worker mid-transition.
+inline constexpr std::size_t kHeartbeatPayloadSize = 10;
+inline constexpr std::uint8_t kHeartbeatFlagSafePoint = 1u << 0;
 // Startup heartbeats run before the session's loop exists; they publish this
 // sentinel so the supervisor does not mistake startup for a stalled loop.
 inline constexpr std::uint64_t kProgressNotStarted = ~std::uint64_t{0};
@@ -52,6 +56,7 @@ inline constexpr std::uint64_t kProgressNotStarted = ~std::uint64_t{0};
 struct HeartbeatPayload {
   std::uint8_t state = 0;
   std::uint64_t progress = kProgressNotStarted;
+  std::uint8_t flags = 0;
 };
 
 std::vector<std::uint8_t> EncodeHeartbeatPayload(

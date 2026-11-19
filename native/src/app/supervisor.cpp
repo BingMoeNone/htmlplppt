@@ -888,8 +888,8 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         switch (frame->header.type) {
           case FrameType::Heartbeat: {
             // The payload is decoded once: progress feeds the liveness tracker
-            // and the state byte is the supervisor's only view of whether a
-            // reload request may be applied at this instant.
+            // and the flags byte says whether the loop is really parked between
+            // Steps, which is the only instant hot reload may apply.
             const auto payload = DecodeHeartbeatPayload(frame->payload);
             WorkerEvent event = MakeEvent(WorkerEventKind::Heartbeat,
                                           frame->header.sequence);
@@ -903,17 +903,20 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             }
 
             // Hot reload (spec 9.6). --reload writes an empty request file;
-            // the plan may only be swapped while the worker is parked in
-            // Monitoring. Every other state is mid startup, switch/return or
-            // stop, so a request waits there and is journalled once.
+            // the plan may only be swapped at a real safe point. The state byte
+            // can still read Monitoring while a blocking Step is running (the
+            // helper thread carries the last published state), so the decision
+            // keys on the safe-point flag, not on `state == Monitoring`. Every
+            // other instant is mid startup, switch/return or stop, so a request
+            // waits there and is journalled once.
             std::error_code request_error;
             const bool request_pending = std::filesystem::exists(
                 state_dir / "reload.request", request_error);
-            const bool monitoring =
+            const bool at_safe_point =
                 payload.has_value() &&
-                payload->state == static_cast<std::uint8_t>(State::Monitoring);
+                (payload->flags & kHeartbeatFlagSafePoint) != 0;
             const ReloadDecision decision =
-                DecideReload(request_pending, monitoring);
+                DecideReload(request_pending, at_safe_point);
             if (!request_pending) {
               reload_defer_journaled = false;
               reload_request_stuck = false;

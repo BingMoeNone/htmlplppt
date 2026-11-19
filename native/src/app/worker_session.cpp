@@ -47,7 +47,7 @@ bool RecordDue(int heartbeat_count, int every) {
 }
 
 Frame MakeHeartbeat(std::uint32_t sequence, State state,
-                    std::uint64_t progress) {
+                    std::uint64_t progress, bool at_safe_point) {
   Frame frame;
   frame.header.type = FrameType::Heartbeat;
   frame.header.sequence = sequence;
@@ -55,6 +55,7 @@ Frame MakeHeartbeat(std::uint32_t sequence, State state,
   HeartbeatPayload payload;
   payload.state = static_cast<std::uint8_t>(state);
   payload.progress = progress;
+  payload.flags = at_safe_point ? kHeartbeatFlagSafePoint : 0;
   frame.payload = EncodeHeartbeatPayload(payload);
   return frame;
 }
@@ -82,21 +83,24 @@ void AppendHeartbeatRecord(SharedBlackbox& blackbox, std::uint32_t sequence,
 // Sends heartbeats on its own thread for as long as it is alive, so a blocking
 // Start/Step (WPS COM activation, ResumeShow, ExitShow) cannot leave the
 // supervisor's heartbeat window empty. The caller publishes the last state it
-// observed; the sender may therefore carry a state one step stale, which the
-// supervisor only logs. Every send takes `send_mutex`, which the caller also
-// holds for the final Cleanup frame.
+// observed and the loop's real safe point; the sender may therefore carry a
+// state one step stale, which the supervisor only logs, while hot reload keys on
+// the safe-point flag rather than the state byte. Every send takes `send_mutex`,
+// which the caller also holds for the final Cleanup frame.
 class HeartbeatSender {
  public:
   HeartbeatSender(FrameChannel& channel, SharedBlackbox& blackbox,
                   WorkerSessionConfig config,
                   const std::atomic<int>& published_state,
                   const std::atomic<std::uint64_t>& published_progress,
+                  const std::atomic<bool>& safe_point,
                   std::mutex& send_mutex)
       : channel_(channel),
         blackbox_(blackbox),
         config_(config),
         published_state_(published_state),
         published_progress_(published_progress),
+        safe_point_(safe_point),
         send_mutex_(send_mutex),
         interval_(HeartbeatInterval(config)) {
     thread_ = std::thread([this] { Run(); });
@@ -133,12 +137,15 @@ class HeartbeatSender {
           static_cast<State>(published_state_.load(std::memory_order_relaxed));
       const std::uint64_t progress =
           published_progress_.load(std::memory_order_relaxed);
+      const bool at_safe_point =
+          safe_point_.load(std::memory_order_relaxed);
       ++sequence;
       last_sequence_.store(sequence, std::memory_order_relaxed);
       bool sent = false;
       {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        sent = channel_.Send(MakeHeartbeat(sequence, state, progress));
+        sent = channel_.Send(
+            MakeHeartbeat(sequence, state, progress, at_safe_point));
       }
       if (!sent) {
         broken_.store(true, std::memory_order_relaxed);
@@ -163,6 +170,10 @@ class HeartbeatSender {
   // The session's loop step counter. The helper thread copies it into every
   // heartbeat so the supervisor can tell a live helper thread from a live loop.
   const std::atomic<std::uint64_t>& published_progress_;
+  // True only between Steps while the last Step returned in Monitoring. Hot
+  // reload reads this instead of the state byte so a stale heartbeat can never
+  // swap the worker mid-transition.
+  const std::atomic<bool>& safe_point_;
   std::mutex& send_mutex_;
   Duration interval_;
   std::thread thread_;
@@ -225,8 +236,9 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
   // Startup is not the worker loop yet: the sentinel tells the supervisor to
   // judge these heartbeats by sequence only.
   std::atomic<std::uint64_t> published_progress{kProgressNotStarted};
+  std::atomic<bool> safe_point{false};
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            published_progress, send_mutex);
+                            published_progress, safe_point, send_mutex);
   // The caller keeps the COM apartment: WPS automation objects are created on
   // this thread, and the heartbeat thread only touches the pipe and the box.
   // The sender must be stopped on every path, including a throwing startup.
@@ -264,6 +276,9 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // The loop's step counter; it advances only after Step() returns, so a
   // worker wedged inside a COM call keeps heartbeating a frozen value.
   std::atomic<std::uint64_t> published_progress{0};
+  // False while Step() may be running; true only between Steps when the loop is
+  // parked in Monitoring. Hot reload must key on this, not on the state byte.
+  std::atomic<bool> safe_point{false};
   std::mutex send_mutex;
   if (!pipe_alive) report_loss(kLossDetail);
   // One heartbeat thread for the whole loop: WorkerDriver::Step() blocks in
@@ -271,7 +286,7 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // long COM action inside it must not starve the supervisor. This loop adds
   // no sleep of its own.
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            published_progress, send_mutex);
+                            published_progress, safe_point, send_mutex);
   bool external_stop_sent = false;
   while (!driver.done()) {
     if (pipe_alive) {
@@ -299,15 +314,22 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
       driver.RequestStop(kLegacyStopReason);
     }
     if (driver.done()) break;
+    // No safe point may be advertised across a Step: clear it immediately
+    // before entering one, and restore it only when the Step returns in
+    // Monitoring, where a supervisor-driven restart cannot drop a transition.
+    safe_point.store(false, std::memory_order_relaxed);
     const bool keep_going = driver.Step();
+    const StateSnapshot& snapshot = driver.snapshot();
+    safe_point.store(snapshot.state == State::Monitoring,
+                     std::memory_order_relaxed);
     // Published after the step returns, never before: a blocking Step must not
     // look like loop progress.
     published_progress.fetch_add(1, std::memory_order_relaxed);
     // Every step, including the one that ends the run, so a final transition
     // into Stopping/SafeMode/Exited is still mirrored.
-    if (config.on_step) config.on_step(driver.snapshot());
+    if (config.on_step) config.on_step(snapshot);
     if (!keep_going) break;
-    published_state.store(static_cast<int>(driver.snapshot().state),
+    published_state.store(static_cast<int>(snapshot.state),
                           std::memory_order_relaxed);
   }
 
