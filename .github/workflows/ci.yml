@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -46,5 +49,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # The node tests import the vendored python-pptx, whose runtime
+      # dependencies are not vendored (python-pptx was installed with
+      # --no-deps). A clean runner has none of lxml/Pillow/typing_extensions, so
+      # install requirements.txt before the tests that import it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
       - name: Test
         run: npm test
+      # The report generator and the pptx checks were executed by no job, so a
+      # regression in the 1197-line deck script could only be found locally.
+      - name: Generate the report deck
+        run: |
+          mkdir -p out
+          python scripts/make_report_deck.py out/report-deck.pptx
+          python -c "from pptx import Presentation; deck = Presentation('out/report-deck.pptx'); assert len(deck.slides) == 15, len(deck.slides)"
