@@ -54,9 +54,11 @@ bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
                              std::string* error);
 
 // Builds the on_step callback RunWorker installs for the legacy flag mirror. The
-// returned callback captures `flags`, `log`, and `edge_profile` by reference and
-// shares its previous-state cursor with every copy of the callback, so the
-// caller must keep the two objects alive for the session's lifetime. `initial_state`
+// returned callback captures `flags` and `log` by reference, so the caller must
+// keep those two objects alive for the session's lifetime; `edge_profile` is
+// moved into the closure and only its own captures must outlive the callback.
+// The previous-state cursor is shared with every copy of the callback, so copying
+// WorkerSessionConfig around the loop cannot lose a transition. `initial_state`
 // is the driver's state before the first Step. For every state change it asks
 // FlagsForStateTransition for the rows (with the compat base directory, so the
 // agent-arm payload names the files focus-agent.ps1 writes), writes each row

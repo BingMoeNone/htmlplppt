@@ -214,6 +214,12 @@ std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
     if (from == snapshot.state) return;
     const std::string profile =
         edge_profile == nullptr ? std::string{} : edge_profile(snapshot);
+    // The legacy agent (focus-agent.ps1) consumes the ANSI/ACP form of these
+    // paths: path::string() converts the wide compat directory with the ANSI code
+    // page, so a non-ASCII config directory can mangle the two agent-arm payload
+    // paths. A non-ASCII config directory is outside the legacy protocol this
+    // payload serves; the native code would use Utf8Path, which the VBS-era agent
+    // has no interface for.
     for (const FlagWrite& row : FlagsForStateTransition(
              from, snapshot.state, profile, flags.base_dir().string())) {
       // A failed write must not claim a log line: the legacy tools read the log
