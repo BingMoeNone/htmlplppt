@@ -43,7 +43,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 | # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
 | 13 | 状态/run-id/PID/最后事件 | `--status --run-id <id> --state-dir <dir>` | 首行含 `state <Name> pid <n>` 与 `last event ...` |
-| 14 | 诊断包 | `--diagnostics --run-id <id> --state-dir <dir> --out diag` | 生成 `manifest.txt`、journal、watch-log、plan/config；有 dump 时一并收集 |
+| 14 | 诊断包 | `--diagnostics --run-id <id> --state-dir <dir> --out diag`（`--config` 可选） | 生成 `manifest.txt`、journal、watch-log、plan/config；启动时写入的 `run-info.txt` 让诊断进程在不传 `--config` 时也能找到配置目录；有 dump 时一并收集（`--out` 是 state-dir 的祖先目录时同样收集） |
 | 15 | 崩溃 dump | `--dump-helper <pid> <path>` 或真实崩溃 | 生成 `.dmp`，诊断包会收集 |
 
 ## 五、兼容验收（§11.3）
@@ -52,7 +52,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 |---|---|---|---|
 | 16 | 现有 HTML 不改动 | 用 `templates/stepwise-demo.html` 或现场页面 | 页面无需修改即可用 |
 | 17 | legacy CONFIG → JSON | `--print-config` 对比 `watch-live-content.vbs` 的 CONFIG | 目标页、HTML、profile、标签一致 |
-| 18 | 旧 `stop-live.vbs` 停止新实例 | 运行中双击 `scripts/stop-live.vbs` | **当前不通过**：见“未实现”一节 |
+| 18 | 旧 `stop-live.vbs` 停止新实例 | 运行中双击 `scripts/stop-live.vbs` | 通过：删除本运行写入的 `watcher.lock` 即请求停止；退出码 0，锁被删除；锁写失败或 stat 失败不会被误判为停止 |
 | 19 | 旧日志阅读习惯 | 查看 `watch-log.txt` | 仍是人类可读行，JSONL 不替代它 |
 
 ## 六、配置 UI（§9）
@@ -66,13 +66,17 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 | 22 | 有错时禁止保存 | 把一行的 slide 改成与另一行重复后 Apply；再用一个 deck 缺失的配置试全局错误 | 状态栏显示首个错误（包括没有对应行的全局错误），Save 按钮置灰，文件不会被写入 |
 | 23 | 关闭提示 | 修改后直接关闭窗口，在 Yes/No/Cancel 提示里分别操作 | Yes：保存成功后关闭；保存失败则保留窗口并把错误写进状态栏。No：不保存直接关闭。Cancel：保留窗口与编辑内容 |
 
-## 七、未实现（验收时会失败）
+## 七、未实现（验收时不应勾选）
 
-这些条目在规格里存在但代码尚未接线，验收时**不应勾选**：
+这些条目在规格里存在但代码尚未接线：
 
-- 睡眠/唤醒、显示器热插拔、DPI 变化：覆盖窗口会重新铺满并置顶，唤醒后截止时间按休眠间隔平移（`power resume` 日志）；跨屏 DPI 的逐屏重算仍未做。
-- 旧 `stop-live.vbs` 的删除 `watcher.lock` 停止协议已实现；只有本运行成功写入的锁被删除才算停止，锁写失败或 stat 失败不会被误判。
+- 跨屏 DPI 的逐屏重算仍未做（覆盖窗口重铺/置顶、唤醒后截止时间按休眠间隔平移，以及显示器变化后重新解析 `display.monitor` 均已实现）。
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
+
+## 八、已接线（核对用）
+
+以下能力已实现，不要按“未实现”处理：
+
 - 故障开关已全部可用（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny`、`supervisor-loss`、`sleep-resume`、`multi-monitor`、`cleanup-slow`、`start-fail`），见 `native/README.md` 的 Fault injection。
 - `display.monitor`、`focus.strategy`、`edge.prewarmProfile` 已接线（选屏、激活链选择、Edge 预热）；`tree` 的 `include`/`exclude` glob 已实现。
 - 配置 UI（§9）：`--config-ui` 编辑器（列表、详情、工具栏、Save 门禁、原子保存 + `.bak`、关闭提示、DPI 重排）与自动映射向导均已实现。

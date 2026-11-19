@@ -952,3 +952,119 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_stop_flags_for_a_scripted_stop_to_exite
   channel->Close();
   server.Close();
 }
+
+HTMLPPT_TEST_CASE(worker_session_pause_parks_the_loop_until_resume) {
+  NamedPipeServer server;
+  const std::wstring pipe_name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(pipe_name));
+
+  std::atomic<bool> client_ok{false};
+  std::atomic<bool> saw_paused{false};
+  std::atomic<bool> resumed_progress{false};
+  std::atomic<bool> progressed_while_paused{false};
+  std::atomic<bool> stop_sent{false};
+  std::thread peer([&] {
+    using htmlppt::DecodeHeartbeatPayload;
+    using htmlppt::kHeartbeatFlagPaused;
+    NamedPipeClient client;
+    client_ok = client.Connect(pipe_name, Duration{3000});
+    if (!client_ok.load()) return;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool pause_sent = false;
+    bool resume_sent = false;
+    bool hold_checked = false;
+    std::uint64_t paused_progress = 0;
+    Frame pause;
+    pause.header.type = FrameType::Pause;
+    pause.header.sequence = 1;
+    Frame resume;
+    resume.header.type = FrameType::Resume;
+    resume.header.sequence = 2;
+    const Frame stop = MakeStop(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto frame = client.Receive(Duration{10});
+      if (!frame.has_value()) {
+        if (client.broken()) return;
+        continue;
+      }
+      if (frame->header.type == FrameType::Cleanup) return;
+      if (frame->header.type != FrameType::Heartbeat) continue;
+      const auto payload = DecodeHeartbeatPayload(frame->payload);
+      if (!payload.has_value()) continue;
+      const bool paused = (payload->flags & kHeartbeatFlagPaused) != 0;
+      if (!pause_sent) {
+        if (!client.Send(pause)) return;
+        pause_sent = true;
+      } else if (!saw_paused.load() && paused) {
+        saw_paused = true;
+        paused_progress = payload->progress;
+        // Hold the pause for a while: any Step would advance progress.
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        hold_checked = true;
+      } else if (saw_paused.load() && paused && hold_checked &&
+                 !resume_sent) {
+        if (payload->progress != paused_progress) {
+          progressed_while_paused = true;
+        }
+        if (!client.Send(resume)) return;
+        resume_sent = true;
+      } else if (saw_paused.load() && !paused &&
+                 payload->progress > paused_progress) {
+        // Resume applied: the loop stepped again.
+        resumed_progress = true;
+        if (!client.Send(stop)) return;
+        stop_sent = true;
+      }
+      if (resumed_progress.load()) return;
+    }
+    if (!stop_sent.load()) client.Send(stop);
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  HTMLPPT_CHECK(channel != nullptr);
+  auto blackbox = SharedBlackbox::Create(UniqueBlackboxName(), 64);
+  HTMLPPT_CHECK(blackbox != nullptr);
+
+  FakeWorkerDriver driver;
+  driver.state_snapshot.state = State::Monitoring;
+  driver.step_sleep = Duration{1};
+  WorkerSessionConfig config;
+  config.heartbeat_interval = Duration{10};
+  std::string error;
+  const int rc = RunWorkerSession(driver, *channel, *blackbox, config, &error);
+  peer.join();
+
+  HTMLPPT_CHECK_EQ(rc, 0);
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(saw_paused.load());
+  HTMLPPT_CHECK(!progressed_while_paused.load());
+  HTMLPPT_CHECK(resumed_progress.load());
+  HTMLPPT_CHECK(driver.step_calls > 1);
+  channel->Close();
+  server.Close();
+}
+
+// Production writes the legacy flags off the loop thread. OnStep must not touch
+// the filesystem on the caller's thread, and Flush must deliver every queued
+// transition before the compat guard cleans up.
+HTMLPPT_TEST_CASE(worker_session_async_flag_mirror_flushes_every_transition) {
+  TempDir dir;
+  CompatFlags flags(dir.path(),
+                    CompatIdentity{"run-async", GetCurrentProcessId(), ""});
+  LegacyLog log(dir.path());
+  htmlppt::CompatFlagMirror mirror(
+      flags, log,
+      [](const StateSnapshot&) { return std::string{"profile"}; },
+      State::Monitoring);
+  StateSnapshot live;
+  live.state = State::Live;
+  live.current_target_slide = 1;
+  mirror.OnStep(live);
+  mirror.Flush();
+
+  HTMLPPT_CHECK(flags.IsOwned(htmlppt::kCoverReadyFlag));
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverReadyFlag), std::string{});
+  const std::string watch_log = ReadTextFile(dir.path() / std::string(htmlppt::kWatchLog));
+  HTMLPPT_CHECK(watch_log.find("flag cover-ready.flag") != std::string::npos);
+}

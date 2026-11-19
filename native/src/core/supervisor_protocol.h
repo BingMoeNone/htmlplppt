@@ -25,6 +25,13 @@ enum class FrameType : std::uint16_t {
   Stop = 4,
   Restart = 5,
   Cleanup = 6,
+  // Hot reload handshake: the supervisor asks the worker to stop stepping, waits
+  // for a heartbeat carrying kHeartbeatFlagPaused, then rebuilds the plan and
+  // replaces the process. Resume lets the worker continue when the rebuild
+  // failed. An older worker ignores both frames; the supervisor then times out
+  // and leaves the reload request for the next safe point.
+  Pause = 7,
+  Resume = 8,
 };
 
 struct FrameHeader {
@@ -52,6 +59,11 @@ struct Frame {
 // between Steps, so the supervisor never swaps the worker mid-transition.
 inline constexpr std::size_t kHeartbeatPayloadSize = 10;
 inline constexpr std::uint8_t kHeartbeatFlagSafePoint = 1u << 0;
+// Set while the session honours a Pause frame and no longer calls Step. Hot
+// reload waits for this acknowledgement before rebuilding the plan, so the
+// worker cannot advance into a transition between the safe-point heartbeat and
+// the termination.
+inline constexpr std::uint8_t kHeartbeatFlagPaused = 1u << 1;
 // Startup heartbeats run before the session's loop exists; they publish this
 // sentinel so the supervisor does not mistake startup for a stalled loop.
 inline constexpr std::uint64_t kProgressNotStarted = ~std::uint64_t{0};

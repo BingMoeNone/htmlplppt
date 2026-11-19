@@ -138,7 +138,7 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
     const std::filesystem::recursive_directory_iterator end;
     while (it != end) {
       const auto& entry = *it;
-      if (entry.path() != source) {
+      if (!PathEquals(entry.path(), source)) {
         const bool regular = entry.is_regular_file(code);
         if (code) {
           outcome.error = "cannot stat asset " + Utf8Path(entry.path()) + ": " +
@@ -159,7 +159,7 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
             // The target itself is already at staged_html; a tree resource
             // whose relative path names the same file must not replace it.
             const auto destination = stage_dir / relative;
-            if (destination != staged_html) {
+            if (!PathEquals(destination, staged_html)) {
               const auto bytes = FileSize(entry.path());
               if (max_bytes > 0 &&
                   copied + bytes > static_cast<std::uint64_t>(max_bytes)) {

@@ -111,6 +111,10 @@ struct TargetPlan {
   std::optional<std::string> focus_strategy = std::nullopt;
   std::optional<int> screen_width = std::nullopt;
   std::optional<int> screen_height = std::nullopt;
+  // The config's display.monitor selector for this target. The app fills it and
+  // re-resolves screen_width/height after a display change; a target without a
+  // selector inherits the host baseline.
+  std::string display_monitor{};
   bool focus_require = true;
   bool enabled = true;
 };

@@ -12,6 +12,7 @@
 
 #include "core/compat_flags.h"
 #include "core/single_instance.h"
+#include "core/utf8_path.h"
 
 namespace htmlppt {
 
@@ -152,7 +153,12 @@ bool IsSupervisorRunning(const std::filesystem::path& state_dir) {
 }
 
 bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path) {
-  const std::filesystem::path dir = config_path.parent_path();
+  std::error_code cwd_error;
+  // A bare `--config watcher.json` has no parent; resolve it against the
+  // current directory exactly like the worker's compat mirror does, so the
+  // editor's Start gate can see a run started by another process.
+  const std::filesystem::path dir =
+      ConfigDirFor(config_path, std::filesystem::current_path(cwd_error));
   if (dir.empty()) return false;
   const std::filesystem::path lock = dir / std::string(kLockFile);
   std::error_code error;
@@ -184,7 +190,15 @@ bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path) {
       if (raw > 0 && raw <= static_cast<std::int64_t>(UINT32_MAX)) {
         HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                                      static_cast<DWORD>(raw));
-        if (process == nullptr) return false;
+        if (process == nullptr) {
+          // Only access denied is ambiguous: a live supervisor owned by another
+          // user/session rejects OpenProcess, so fall back to the lock age to
+          // keep the gate closed. An invalid pid means the process is gone.
+          if (GetLastError() == ERROR_ACCESS_DENIED) {
+            return age < std::chrono::seconds(120);
+          }
+          return false;
+        }
         DWORD exit_code = 0;
         const bool alive = GetExitCodeProcess(process, &exit_code) != FALSE &&
                            exit_code == STILL_ACTIVE;

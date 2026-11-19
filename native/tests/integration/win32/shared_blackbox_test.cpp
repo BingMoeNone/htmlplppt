@@ -70,4 +70,30 @@ HTMLPPT_TEST_CASE(win32_shared_blackbox_open_missing_returns_null) {
   HTMLPPT_CHECK(SharedBlackbox::Open(name) == nullptr);
 }
 
+HTMLPPT_TEST_CASE(win32_shared_blackbox_latest_reads_only_the_last_record) {
+  const std::wstring name = UniqueMappingName();
+  auto box = SharedBlackbox::Create(name, 3);
+  HTMLPPT_CHECK(box != nullptr);
+  HTMLPPT_CHECK(!box->Latest().has_value());
+  box->Append(MakeRecord(10));
+  box->Append(MakeRecord(20));
+  const auto latest = box->Latest();
+  HTMLPPT_CHECK(latest.has_value());
+  HTMLPPT_CHECK_EQ(latest->timestamp_ms, std::int64_t{20});
+  HTMLPPT_CHECK_EQ(latest->sequence, std::uint64_t{2});
+  // After the ring wraps the newest slot still answers, without copying the ring.
+  box->Append(MakeRecord(30));
+  box->Append(MakeRecord(40));
+  const auto wrapped = box->Latest();
+  HTMLPPT_CHECK(wrapped.has_value());
+  HTMLPPT_CHECK_EQ(wrapped->timestamp_ms, std::int64_t{40});
+  HTMLPPT_CHECK_EQ(wrapped->sequence, std::uint64_t{4});
+  // A read-only view answers too.
+  auto reader = SharedBlackbox::Open(name);
+  HTMLPPT_CHECK(reader != nullptr);
+  const auto from_reader = reader->Latest();
+  HTMLPPT_CHECK(from_reader.has_value());
+  HTMLPPT_CHECK_EQ(from_reader->timestamp_ms, std::int64_t{40});
+}
+
 #endif // _WIN32

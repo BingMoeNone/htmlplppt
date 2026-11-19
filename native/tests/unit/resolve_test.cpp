@@ -704,3 +704,47 @@ HTMLPPT_TEST_CASE(resolve_target_assets_override_the_global_stage_mode) {
   HTMLPPT_CHECK(!HasError(result));
   HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
 }
+
+HTMLPPT_TEST_CASE(resolve_carries_the_target_edge_overrides_into_the_plan) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "edge": { "args": ["--kiosk", "--no-sandbox"], "prewarmProfile": true }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].edge_args.size(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(result.targets[0].edge_args[0], std::string{"--kiosk"});
+  HTMLPPT_CHECK(result.targets[0].edge_args_set);
+  HTMLPPT_CHECK(result.targets[0].edge_prewarm.has_value());
+  HTMLPPT_CHECK(*result.targets[0].edge_prewarm);
+}
+
+HTMLPPT_TEST_CASE(resolve_leaves_unset_target_edge_prewarm_to_inherit) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "edge": { "maxLiveMs": 5000 }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.targets[0].edge_args.empty());
+  // The target owns an edge block, so its (inherited, empty) args are explicit;
+  // only prewarm was omitted and stays unset to inherit.
+  HTMLPPT_CHECK(result.targets[0].edge_args_set);
+  HTMLPPT_CHECK(!result.targets[0].edge_prewarm.has_value());
+}

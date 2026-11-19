@@ -176,6 +176,11 @@ WorkerPlan MakePlanWithEverything() {
   first_spec.assets_mode = "file";
   first_spec.assets_root = "/srv/assets";
   first_spec.assets_max_bytes = 4096;
+  // Per-target Edge overrides travel to the worker through the plan; the old
+  // serializer dropped them and the worker always used the global config.
+  first_spec.edge_args = {"--kiosk", "--no-sandbox"};
+  first_spec.edge_args_set = true;
+  first_spec.edge_prewarm = true;
 
   ResolvedTarget second_spec;
   second_spec.ordinal = 2;
@@ -377,6 +382,9 @@ HTMLPPT_TEST_CASE(worker_plan_json_round_trip_preserves_every_field) {
     HTMLPPT_CHECK_EQ(actual.fragment, expected.fragment);
     HTMLPPT_CHECK_EQ(actual.stage_name, expected.stage_name);
     HTMLPPT_CHECK_EQ(actual.edge_profile, expected.edge_profile);
+    HTMLPPT_CHECK(actual.edge_args == expected.edge_args);
+    HTMLPPT_CHECK(actual.edge_args_set == expected.edge_args_set);
+    HTMLPPT_CHECK(actual.edge_prewarm == expected.edge_prewarm);
     HTMLPPT_CHECK(actual.state == expected.state);
   }
 }
@@ -593,7 +601,7 @@ HTMLPPT_TEST_CASE(worker_plan_maps_defaults_and_host_facts_to_worker_host) {
   HTMLPPT_CHECK_EQ(host.screen.height, 1080);
   HTMLPPT_CHECK_EQ(host.wps_pids, facts.wps_pids);
   HTMLPPT_CHECK_EQ(host.edge.max_live_ms, 120000);
-  HTMLPPT_CHECK(host.edge.prewarm_profile);
+  HTMLPPT_CHECK(host.edge.prewarm_profile.value_or(false));
   HTMLPPT_CHECK_EQ(host.edge.args.size(), std::size_t{1});
   HTMLPPT_CHECK_EQ(host.edge.args.front(), std::string{"--kiosk"});
   HTMLPPT_CHECK_EQ(host.cover.fade, Duration{250});

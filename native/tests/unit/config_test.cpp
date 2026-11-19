@@ -94,7 +94,7 @@ HTMLPPT_TEST_CASE(config_parses_nested_target_and_defaults) {
   HTMLPPT_CHECK_EQ(config.defaults.cover.hold_ms, 500);
   HTMLPPT_CHECK_EQ(config.defaults.cover.max_hold_ms, 8000);
   HTMLPPT_CHECK_EQ(config.defaults.edge.max_live_ms, 120000);
-  HTMLPPT_CHECK(config.defaults.edge.prewarm_profile);
+  HTMLPPT_CHECK(config.defaults.edge.prewarm_profile.value_or(false));
   HTMLPPT_CHECK_EQ(config.defaults.scheduling, std::string{"aggressive"});
   HTMLPPT_CHECK_EQ(config.defaults.max_consecutive_trigger_failures, 4);
   const auto& target = config.active.targets[0];

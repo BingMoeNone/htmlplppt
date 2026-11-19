@@ -1,5 +1,6 @@
 #include "app/config_ui.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -82,9 +83,10 @@ std::wstring ReadRunState(const std::wstring& run_id) {
   const std::string narrow(run_id.begin(), run_id.end());
   auto blackbox = SharedBlackbox::Open(SupervisorBlackboxName(narrow));
   if (blackbox == nullptr) return {};
-  const std::vector<BlackboxRecord> snapshot = blackbox->Snapshot();
-  if (snapshot.empty()) return {};
-  return Widen(StateName(static_cast<State>(snapshot.back().state)));
+  // One ring read, not a full snapshot every 500 ms.
+  const std::optional<BlackboxRecord> latest = blackbox->Latest();
+  if (!latest.has_value()) return {};
+  return Widen(StateName(static_cast<State>(latest->state)));
 }
 
 // The editor writes the config from the same directory the watcher watches, so
@@ -124,6 +126,47 @@ std::filesystem::path ThumbnailDir() {
   return std::filesystem::temp_directory_path() / suffix;
 }
 
+// Runs one helper command (--reload/--stop) off the UI thread. The window's
+// poll timer collects the result, so a stuck supervisor can no longer freeze the
+// window for the whole command budget. done_ is published last with release and
+// read with acquire, which orders exit_code_/ok_/error_ before it.
+class AsyncCommand {
+ public:
+  ~AsyncCommand() { Join(); }
+
+  void Start(std::wstring cmdline, DWORD timeout_ms) {
+    Join();
+    ok_ = false;
+    exit_code_ = 1;
+    error_.clear();
+    done_.store(false, std::memory_order_relaxed);
+    thread_ = std::thread([this, cmdline = std::move(cmdline), timeout_ms] {
+      ok_ = RunAndWait(cmdline, timeout_ms, &exit_code_, &error_);
+      done_.store(true, std::memory_order_release);
+    });
+  }
+
+  bool Running() const {
+    return thread_.joinable() && !done_.load(std::memory_order_acquire);
+  }
+  bool Finished() const {
+    return thread_.joinable() && done_.load(std::memory_order_acquire);
+  }
+  void Join() {
+    if (thread_.joinable()) thread_.join();
+  }
+  bool ok() const { return ok_; }
+  DWORD exit_code() const { return exit_code_; }
+  const std::wstring& error() const { return error_; }
+
+ private:
+  std::thread thread_;
+  std::atomic<bool> done_{false};
+  bool ok_ = false;
+  DWORD exit_code_ = 1;
+  std::wstring error_;
+};
+
 } // namespace
 
 int RunConfigUi(const ConfigUiOptions& ui_options) {
@@ -152,7 +195,6 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
   const std::vector<DisplayRow> rows =
       model.DisplayRows(deck_info, resolve_options);
-
   // Declared before the window so it outlives the handlers stored in it.
   std::optional<std::size_t> selected_index;
 
@@ -197,14 +239,22 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   bool watchdog_running = false;
   std::wstring run_id;
   std::wstring last_state;
+  // Helper commands run on their own threads; the poll handler below completes
+  // them. Declared after the window so their destructors join before the window
+  // (and the handlers that reference them) is destroyed.
+  AsyncCommand reload_command;
+  AsyncCommand stop_command;
 
   // Recomputes the rows, the Save gate, the Start gate, and the dirty flag after
   // every action, and returns the first blocking message: a target row's error
   // when there is one, otherwise the config-wide resolver error that has no row
   // of its own (a missing or invalid deck). Empty means the config is clean.
-  const auto refresh = [&window, &model, deck_info, resolve_options,
+  const auto refresh = [&window, &model, &deck, resolve_options,
                         &watchdog_running, &state_dir,
                         config_path]() -> std::wstring {
+    // Read the current deck each time: an external config reload replaces it,
+    // and a captured pointer would keep validating against the old deck.
+    const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
     const std::vector<DisplayRow> rows =
         model.DisplayRows(deck_info, resolve_options);
     window.SetRows(rows);
@@ -314,7 +364,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
 
   window.SetSaveHandler([&window, &model, config_path, refresh, &last_stamp,
                          &watchdog_running, &run_id, exe,
-                         state_dir](std::wstring* error) {
+                         state_dir, &reload_command](std::wstring* error) {
     // Defence in depth: the button and the close prompt are already gated, but
     // a direct route must never flatten a profile-based config either.
     if (model.HasProfiles()) {
@@ -331,16 +381,17 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     last_stamp = ReadConfigStamp(config_path);
     // A live editor-launched run keeps reading its old file, so the save queues
     // a hot reload; the supervisor applies it at the next safe point and logs a
-    // deferral until then. The status line names the queue instead of "saved".
+    // deferral until then. The request is sent asynchronously: a stuck supervisor
+    // must not freeze the editor while the helper runs.
     if (watchdog_running && !run_id.empty()) {
-      DWORD reload_code = 1;
-      std::wstring reload_error;
-      if (RunAndWait(BuildReloadCommandLine(exe, state_dir, run_id), 5000,
-                     &reload_code, &reload_error) &&
-          reload_code == 0) {
-        window.SetSaveSuccessStatus(L"save reload requested");
+      if (reload_command.Running()) {
+        window.SetSaveSuccessStatus(L"saved");
+        window.SetStatus(L"saved; a reload is already in flight");
       } else {
-        window.SetSaveSuccessStatus(L"saved; reload request failed");
+        reload_command.Start(BuildReloadCommandLine(exe, state_dir, run_id),
+                             10000);
+        window.SetSaveSuccessStatus(L"saved");
+        window.SetStatus(L"saved; reload queued");
       }
     }
     // A successful save clears dirty, so the gate closes until the next edit.
@@ -453,8 +504,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // rest of the editor validates with; without it the wizard could only guess
   // slide numbers, so it refuses and says so. The last folder a successful
   // import used seeds the next wizard (the config's own directory before that).
-  window.SetWizardHandler([&window, &model, deck_info, &last_html_folder,
+  window.SetWizardHandler([&window, &model, &deck, &last_html_folder,
                            refresh](std::wstring* error) {
+    const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
     if (deck_info == nullptr || deck_info->slides.empty()) {
       if (error != nullptr) *error = L"the deck has no slide information";
       return false;
@@ -483,7 +535,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     }
     const std::vector<WizardPair>& pairs = wizard.result().pairs;
     std::string model_error;
-    if (!model.ImportTargets(pairs, &model_error)) {
+    int skipped = 0;
+    if (!model.ImportTargets(pairs, &model_error, &skipped)) {
       if (error != nullptr) *error = Widen(model_error);
       return false;
     }
@@ -493,7 +546,9 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     // line, exactly like the other editing actions.
     const std::wstring reason = refresh();
     const std::wstring imported =
-        L"imported " + std::to_wstring(pairs.size()) + L" targets";
+        L"imported " + std::to_wstring(pairs.size() - skipped) + L" targets" +
+        (skipped > 0 ? L" (" + std::to_wstring(skipped) + L" already mapped)"
+                     : L"");
     window.SetStatus(reason.empty() ? imported : reason);
     return true;
   });
@@ -587,61 +642,75 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     return true;
   });
 
-  // Stop asks the run to shut down and reports its exit code. --stop returns
-  // after the supervisor's last cleanup step, so the process is reaped here
-  // before Start reopens.
+  // Stop asks the run to shut down. --stop itself can take longer than the
+  // supervisor's 20 s cleanup budget on a slow machine, so it runs on a helper
+  // thread and the poll handler below reaps the child and reopens Start. The UI
+  // thread never blocks on the command.
   window.SetStopHandler([&window, &watchdog_child, &watchdog_running, &run_id,
-                         &last_state, exe, state_dir,
-                         refresh](std::wstring* error) {
+                         &last_state, exe, state_dir, &stop_command](
+                            std::wstring* error) {
     if (!watchdog_running || watchdog_child == nullptr) {
       if (error != nullptr) *error = L"no watchdog is running";
       return false;
     }
-    const std::wstring command = BuildStopCommandLine(exe, state_dir, run_id);
-    DWORD exit_code = 1;
-    std::wstring stop_error;
-    if (!RunAndWait(command, 15000, &exit_code, &stop_error)) {
-      if (error != nullptr) {
-        *error = stop_error.empty() ? L"cannot stop the watchdog" : stop_error;
-      }
+    if (stop_command.Running()) {
+      if (error != nullptr) *error = L"a stop is already in progress";
       return false;
     }
-    if (exit_code != 0) {
-      if (error != nullptr) {
-        *error = L"watchdog stop failed (exit " +
-                 std::to_wstring(exit_code) + L")";
-      }
-      return false;
-    }
-    if (WaitForSingleObject(watchdog_child, 5000) != WAIT_OBJECT_0) {
-      if (error != nullptr) *error = L"the watchdog did not exit after stopping";
-      return false;
-    }
-    // Report the supervisor's own exit code, not just that --stop returned 0:
-    // a run that failed while stopping must not look like a clean stop.
-    DWORD child_code = 0;
-    if (GetExitCodeProcess(watchdog_child, &child_code) == FALSE) {
-      child_code = 1;
-    }
-    CloseHandle(watchdog_child);
-    watchdog_child = nullptr;
-    watchdog_running = false;
-    run_id.clear();
-    last_state.clear();
-    window.StopWatchdogPoll();
-    // The state-dir mutex is gone with the supervisor, so this reopens Start.
-    refresh();
-    // No run is live any more, so a later save must not claim a reload request.
-    window.SetSaveSuccessStatus(L"saved");
-    window.SetStatus(WatchdogExitText(child_code));
+    stop_command.Start(BuildStopCommandLine(exe, state_dir, run_id), 30000);
+    window.SetStatus(L"stopping watchdog...");
     return true;
   });
 
   // The liveness poll mirrors the run's last journalled state (the same name
   // --status prints) and reaps the child, so a supervisor that exits on its own
-  // reopens Start instead of leaving the editor stuck on "started".
+  // reopens Start instead of leaving the editor stuck on "started". It also
+  // completes the asynchronous --reload/--stop helpers started above.
   window.SetWatchdogPollHandler([&window, &watchdog_child, &watchdog_running,
-                                 &run_id, &last_state, refresh]() {
+                                 &run_id, &last_state, refresh, &reload_command,
+                                 &stop_command]() {
+    if (reload_command.Finished()) {
+      reload_command.Join();
+      window.SetStatus(reload_command.ok() && reload_command.exit_code() == 0
+                           ? L"save reload requested"
+                           : L"saved; reload request failed");
+    }
+    if (stop_command.Finished()) {
+      stop_command.Join();
+      const bool stop_ok = stop_command.ok();
+      const DWORD stop_code = stop_command.exit_code();
+      if (!stop_ok) {
+        window.SetStatus(stop_command.error().empty()
+                             ? L"cannot stop the watchdog"
+                             : L"cannot stop the watchdog: " +
+                                   stop_command.error());
+      } else if (stop_code != 0) {
+        window.SetStatus(L"watchdog stop failed (exit " +
+                         std::to_wstring(stop_code) + L")");
+      } else if (watchdog_child != nullptr) {
+        // Report the supervisor's own exit code, not just that --stop returned
+        // 0: a run that failed while stopping must not look like a clean stop.
+        if (WaitForSingleObject(watchdog_child, 5000) != WAIT_OBJECT_0) {
+          window.SetStatus(L"the watchdog did not exit after stopping");
+        } else {
+          DWORD child_code = 0;
+          if (GetExitCodeProcess(watchdog_child, &child_code) == FALSE) {
+            child_code = 1;
+          }
+          CloseHandle(watchdog_child);
+          watchdog_child = nullptr;
+          watchdog_running = false;
+          run_id.clear();
+          last_state.clear();
+          window.StopWatchdogPoll();
+          refresh();
+          // No run is live any more, so a later save must not claim a reload.
+          window.SetSaveSuccessStatus(L"saved");
+          window.SetStatus(WatchdogExitText(child_code));
+        }
+      }
+      return;
+    }
     if (watchdog_child == nullptr) return;
     if (WaitForSingleObject(watchdog_child, 0) == WAIT_OBJECT_0) {
       // A non-zero code means the supervisor refused or failed the run, so it
@@ -676,8 +745,8 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // sibling write (the .bak, the run's state directory) from being called an
   // external edit.
   window.SetConfigChangedHandler([&window, &model, config_path, refresh,
-                                  &selected_index,
-                                  &last_stamp]() {
+                                  &selected_index, &last_stamp, &deck,
+                                  deck_info_path = ui_options.deck_info_path]() {
     const std::optional<ConfigStamp> stamp = ReadConfigStamp(config_path);
     if (stamp == last_stamp) return;
     if (model.dirty()) {
@@ -691,10 +760,15 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                            : Widen(reload_error));
       return;
     }
+    // The new config may name a different deck. Re-resolve it, or validation,
+    // the wizard and thumbnails would keep using the previous deck's slide list.
+    deck = LoadDeckInfo(deck_info_path, model.config());
     last_stamp = stamp;
     selected_index.reset();
     refresh();
-    window.SetStatus(L"reloaded from disk");
+    window.SetStatus(deck.info.has_value()
+                         ? L"reloaded from disk"
+                         : L"reloaded from disk; deck info unavailable");
   });
 
   // Started last: it only posts the message handled above, and its destructor

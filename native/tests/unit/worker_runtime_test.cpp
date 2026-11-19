@@ -864,6 +864,54 @@ HTMLPPT_TEST_CASE(worker_runtime_applies_per_target_screen_on_trigger) {
   HTMLPPT_CHECK(activated);
 }
 
+// A display change must re-resolve every target's display.monitor; the plan's
+// screen was captured at build time and would otherwise keep scoring windows
+// against the old monitor.
+HTMLPPT_TEST_CASE(worker_runtime_refreshes_target_screens_on_display_change) {
+  WorkerHarness h;
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  target.screen_width = 640;
+  target.screen_height = 360;
+  target.display_monitor = "primary";
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.screen = ScreenMetrics{1920, 1080};
+  auto resolved = std::make_shared<ScreenMetrics>(ScreenMetrics{1024, 768});
+  h.host.resolve_screen = [resolved](std::string_view) { return *resolved; };
+  h.rebuild();
+
+  h.overlay.display_change = ScreenMetrics{3840, 2160};
+  h.Step();  // display change: baseline 3840x2160, target re-resolved to 1024x768
+  HTMLPPT_CHECK_EQ(h.runtime.plan().machine.targets[0].screen_width,
+                   std::optional<int>{1024});
+  HTMLPPT_CHECK_EQ(h.runtime.plan().machine.targets[0].screen_height,
+                   std::optional<int>{768});
+
+  // A selector that no longer resolves falls back to the new baseline rather
+  // than keeping a stale override.
+  *resolved = ScreenMetrics{};
+  h.overlay.display_change = ScreenMetrics{2560, 1440};
+  h.Step();
+  HTMLPPT_CHECK(!h.runtime.plan().machine.targets[0].screen_width.has_value());
+  HTMLPPT_CHECK(!h.runtime.plan().machine.targets[0].screen_height.has_value());
+}
+
+// A target without a display.monitor selector keeps inheriting the baseline;
+// the refresh must not invent an override for it.
+HTMLPPT_TEST_CASE(worker_runtime_display_change_keeps_override_less_targets) {
+  WorkerHarness h;
+  htmlppt::TargetPlan target = MakeTarget(1, "t1", "p1");
+  h.plan.machine.targets = {target};
+  h.plan.targets = {MakeResolvedTarget(1, 1, "t1", "p1")};
+  h.host.resolve_screen = [](std::string_view) {
+    return ScreenMetrics{1024, 768};
+  };
+  h.rebuild();
+  h.overlay.display_change = ScreenMetrics{3840, 2160};
+  h.Step();
+  HTMLPPT_CHECK(!h.runtime.plan().machine.targets[0].screen_width.has_value());
+}
+
 // Without a display override the same window is rejected by the host screen, so
 // the previous test's activation really comes from the per-target value.
 HTMLPPT_TEST_CASE(worker_runtime_keeps_the_host_screen_without_an_override) {

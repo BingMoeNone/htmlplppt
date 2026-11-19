@@ -1,5 +1,6 @@
 #include "core/config_editor.h"
 
+#include <algorithm>
 #include <fstream>
 #include <utility>
 
@@ -220,15 +221,22 @@ bool ConfigEditorModel::AddTarget(int slide, std::string html,
 }
 
 bool ConfigEditorModel::ImportTargets(const std::vector<WizardPair>& pairs,
-                                      std::string* error) {
+                                      std::string* error, int* skipped) {
+  if (skipped != nullptr) *skipped = 0;
   if (pairs.empty()) {
     if (error != nullptr) *error = "no pairs to import";
     return false;
   }
-  // Validate the whole batch before touching the model: a rejected import must
-  // leave the config, the history, and dirty() exactly as they were.
-  std::vector<int> imported_slides;
-  imported_slides.reserve(pairs.size());
+  // A partially configured deck is the normal case: a slide that is already
+  // mapped (or repeated within the batch) is skipped instead of rejecting the
+  // whole import, which made the wizard unusable for any deck with targets.
+  // Invalid pairs are still errors: a rejected import must leave the config,
+  // the history, and dirty() exactly as they were.
+  std::vector<WizardPair> accepted;
+  accepted.reserve(pairs.size());
+  std::vector<int> accepted_slides;
+  accepted_slides.reserve(pairs.size());
+  int skipped_count = 0;
   for (const WizardPair& pair : pairs) {
     if (pair.slide < 1) {
       if (error != nullptr) *error = "slide must be >= 1";
@@ -238,30 +246,36 @@ bool ConfigEditorModel::ImportTargets(const std::vector<WizardPair>& pairs,
       if (error != nullptr) *error = "html must not be empty";
       return false;
     }
-    for (const int slide : imported_slides) {
-      if (slide == pair.slide) {
-        if (error != nullptr) {
-          *error = "slide " + std::to_string(pair.slide) +
-                   " appears twice in the import";
+    bool duplicate = std::find(accepted_slides.begin(), accepted_slides.end(),
+                               pair.slide) != accepted_slides.end();
+    if (!duplicate) {
+      for (const TargetConfig& target : config_.active.targets) {
+        if (target.slide.has_value() && *target.slide == pair.slide) {
+          duplicate = true;
+          break;
         }
-        return false;
       }
     }
-    for (const TargetConfig& target : config_.active.targets) {
-      if (target.slide.has_value() && *target.slide == pair.slide) {
-        if (error != nullptr) {
-          *error = "slide " + std::to_string(pair.slide) +
-                   " is already mapped by an existing target";
-        }
-        return false;
-      }
+    if (duplicate) {
+      ++skipped_count;
+      continue;
     }
-    imported_slides.push_back(pair.slide);
+    accepted_slides.push_back(pair.slide);
+    accepted.push_back(pair);
+  }
+  if (skipped != nullptr) *skipped = skipped_count;
+  if (accepted.empty()) {
+    if (error != nullptr) {
+      *error = skipped_count == static_cast<int>(pairs.size())
+                   ? "all slides are already mapped"
+                   : "no pairs to import";
+    }
+    return false;
   }
   // The whole batch is one undoable command: one pre-edit snapshot covers every
   // target appended below.
   RecordHistory();
-  for (const WizardPair& pair : pairs) {
+  for (const WizardPair& pair : accepted) {
     TargetConfig target;
     target.slide = pair.slide;
     target.html = pair.html;

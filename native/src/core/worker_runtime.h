@@ -3,8 +3,10 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/clock.h"
@@ -56,6 +58,10 @@ struct WorkerHostConfig {
   // is the trigger latency).
   Duration active_poll_interval{20};
   Duration poll_interval{100};
+  // Resolves a display.monitor selector to fresh metrics. The app installs the
+  // platform query; unset means a display change cannot re-resolve a target's
+  // override (tests and headless builds keep their pre-resolved values).
+  std::function<ScreenMetrics(std::string_view selector)> resolve_screen;
 };
 
 // Samples the ports into state-machine events, executes the resulting
@@ -84,6 +90,9 @@ class WorkerRuntime : public WorkerDriver {
   }
   const StateSnapshot& snapshot() const override { return snapshot_; }
   const std::vector<std::string>& journal() const { return journal_; }
+  // Introspection for tests: the effective plan (target screen overrides are
+  // refreshed in place on a display change).
+  const WorkerPlan& plan() const { return plan_; }
   // --benchmark instrumentation: per-step and per-COM-query latencies.
   const LatencyStats& step_stats() const { return step_stats_; }
   const LatencyStats& com_stats() const { return com_stats_; }
@@ -94,6 +103,8 @@ class WorkerRuntime : public WorkerDriver {
   void ObserveEdge();
   void LaunchEdge(int slide);
   void ReportEdgeLaunchFailure(std::string detail);
+  // The global Edge config with the target's own args/prewarm overrides applied.
+  EdgeConfig EffectiveEdgeConfig(const ResolvedTarget& target) const;
   void SyncSnapshot();
   void AllowReturnRetry();
   void AppendJournal(std::string entry);
@@ -108,6 +119,10 @@ class WorkerRuntime : public WorkerDriver {
   // the target-less show-start focus so a finished target's settings never leak.
   void ApplyBaselineSettings();
   const TargetPlan* FindTarget(int slide) const;
+  // Re-resolves every target's display.monitor after the overlay reports a
+  // display change, so the 90 % show-window score uses the new geometry instead
+  // of the size captured at plan-build time.
+  void RefreshTargetScreens();
   // focus.require=false makes routine FocusWps inert; a slide without a target
   // (the show-start focus) uses the host's global focus.require instead.
   bool FocusRequired(int slide) const;

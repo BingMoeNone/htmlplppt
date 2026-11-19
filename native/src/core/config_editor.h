@@ -88,7 +88,8 @@ class ConfigEditorModel {
   // is empty, names an invalid slide or an empty html, repeats a slide within
   // itself, or reuses an existing target's slide. Returns false with `error`
   // set on rejection.
-  bool ImportTargets(const std::vector<WizardPair>& pairs, std::string* error);
+  bool ImportTargets(const std::vector<WizardPair>& pairs, std::string* error,
+                     int* skipped = nullptr);
   bool RemoveTarget(std::size_t index, std::string* error);
 
   // Full validation through the same resolver a run uses. Errors name the

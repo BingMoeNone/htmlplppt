@@ -580,7 +580,7 @@ nlohmann::ordered_json CoverToJson(const CoverConfig& cover) {
 nlohmann::ordered_json EdgeToJson(const EdgeConfig& edge) {
   nlohmann::ordered_json result{
       {"maxLiveMs", edge.max_live_ms},
-      {"prewarmProfile", edge.prewarm_profile},
+      {"prewarmProfile", edge.prewarm_profile.value_or(false)},
   };
   if (!edge.args.empty()) result["args"] = edge.args;
   return result;

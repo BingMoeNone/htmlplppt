@@ -194,3 +194,25 @@ HTMLPPT_TEST_CASE(staging_tree_mode_applies_include_and_exclude_globs) {
   std::error_code error;
   std::filesystem::remove_all(dir, error);
 }
+
+// A tree resource whose relative path differs only in case must not replace the
+// staged page on a case-insensitive filesystem: stage/audit.html and
+// stage/Audit.html name the same file there.
+HTMLPPT_TEST_CASE(staging_tree_mode_does_not_overwrite_the_staged_page_by_case) {
+#ifdef _WIN32
+  const auto dir = MakeTempDir("htmlppt-staging-case");
+  const auto root = dir / "assets";
+  WriteFile(root / "audit" / "index.html", "<html>target</html>");
+  WriteFile(root / "Audit.html", "<html>resource</html>");
+  auto target = MakeTarget(root / "audit" / "index.html", "tree", root);
+  target.stage_name = "audit.html";
+  const auto outcome = StageTargetHtml(target, dir / "stage", 0);
+
+  HTMLPPT_CHECK(outcome.staged);
+  const std::string staged = ReadFile(dir / "stage" / "audit.html");
+  HTMLPPT_CHECK(staged.find("target") != std::string::npos);
+  HTMLPPT_CHECK(staged.find("resource") == std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+#endif
+}

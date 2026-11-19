@@ -147,6 +147,22 @@ std::string ReadTextFile(const std::filesystem::path& path) {
                      std::istreambuf_iterator<char>());
 }
 
+// Waits until the journal contains `needle`. Stopping before the worker reached
+// Monitoring races the startup budget; the CLI stop test uses this so the stop
+// it measures is the cleanup path it means to test.
+bool WaitForJournal(const std::filesystem::path& state_dir,
+                    std::string_view needle, int timeout_ms) {
+  const auto deadline = GetTickCount64() + timeout_ms;
+  for (;;) {
+    if (ReadTextFile(state_dir / L"journal.jsonl").find(needle) !=
+        std::string::npos) {
+      return true;
+    }
+    if (GetTickCount64() >= deadline) return false;
+    Sleep(100);
+  }
+}
+
 // True when the WPS Presentation COM class is registered. This is a registry
 // lookup only, so probing never starts WPS (preflight-live.ps1 does the same).
 bool WpsInstalled() {
@@ -830,6 +846,10 @@ HTMLPPT_TEST_CASE(win32_supervisor_single_instance) {
 }
 
 HTMLPPT_TEST_CASE(win32_cli_stop) {
+  if (!WpsInstalled()) {
+    std::cout << "SKIP: WPS not installed\n";
+    return;
+  }
   WpsTestProcesses wps_processes;
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);
@@ -845,6 +865,11 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
   HTMLPPT_CHECK(stop != nullptr);
   CloseHandle(stop);
 
+  // The worker must be in its loop: a stop during WPS startup is a different
+  // path (it may be forced after the worker budget) and used to make this test
+  // flaky on a cold machine.
+  HTMLPPT_CHECK(WaitForJournal(state_dir, "worker state Monitoring", 20000));
+
   const auto stop_result = RunCli(
       {L"--stop", L"--run-id", std::wstring(run_id.begin(), run_id.end())},
       20000);
@@ -854,6 +879,14 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
   DWORD exit_code = 0;
   GetExitCodeProcess(supervisor.process(), &exit_code);
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+
+  // The outcome file is kept, so a concurrent or late --stop reports the same
+  // clean result instead of failing because the stop event is already gone.
+  const auto again = RunCli(
+      {L"--stop", L"--run-id", std::wstring(run_id.begin(), run_id.end())},
+      5000);
+  HTMLPPT_CHECK(again.completed);
+  HTMLPPT_CHECK_EQ(again.exit_code, DWORD{0});
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }
@@ -1065,4 +1098,44 @@ HTMLPPT_TEST_CASE(win32_diagnostics_package_collects_the_run_files) {
 
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
+}
+
+// --diagnostics without --config must use the launch context the supervisor
+// recorded, and an --out directory that is an ancestor of the state dir must not
+// suppress crash dumps (the old "inside out" test compared the wrong relation).
+HTMLPPT_TEST_CASE(win32_diagnostics_uses_run_info_and_keeps_ancestor_dumps) {
+  const auto root = TempStateDir();
+  const auto state_dir = root / L"state";
+  const auto config_dir = state_dir / L"config";
+  std::filesystem::create_directories(config_dir);
+  std::filesystem::create_directories(state_dir / L"crash");
+  {
+    std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
+    journal << "{\"detail\":\"supervisor start\",\"event\":\"start\"}\n";
+    std::ofstream log(config_dir / L"watch-log.txt", std::ios::binary);
+    log << "2026-01-01T00:00:00Z native watchdog start run=diag2\n";
+    std::ofstream config(config_dir / L"watcher.json", std::ios::binary);
+    config << "{\"version\":1}\n";
+    std::ofstream info(state_dir / L"run-info.txt", std::ios::binary);
+    info << "config " << config_dir.string() << "\\watcher.json\n";
+    info << "cwd " << std::filesystem::current_path().string() << "\n";
+    std::ofstream dump(state_dir / L"crash" / L"456.dmp", std::ios::binary);
+    dump << "dump";
+  }
+  HTMLPPT_CHECK_EQ(htmlppt::RunDiagnostics("diag2-run", state_dir, {}, root),
+                   0);
+
+  const std::string manifest = ReadTextFile(root / L"manifest.txt");
+  HTMLPPT_CHECK(manifest.find("config_dir " + config_dir.string()) !=
+                std::string::npos);
+  // The config-dir files were found through run-info, not --config.
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(root / L"watch-log.txt"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(root / L"watcher.json"));
+  // The dump is under the ancestor --out and must still be collected.
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(root / L"crash" / L"456.dmp"));
+  HTMLPPT_CHECK(manifest.find("dump crash/456.dmp copied") !=
+                std::string::npos);
+
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
 }

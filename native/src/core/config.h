@@ -18,7 +18,9 @@ struct CoverConfig {
 
 struct EdgeConfig {
   int max_live_ms = 600000;
-  bool prewarm_profile = false;
+  // Unset on a target's own edge block means "inherit the global defaults";
+  // explicit true/false overrides it. The global default is false when unset.
+  std::optional<bool> prewarm_profile;
   std::vector<std::string> args;
 };
 

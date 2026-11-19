@@ -765,32 +765,50 @@ HTMLPPT_TEST_CASE(config_editor_import_targets_appends_one_undoable_batch) {
   std::filesystem::remove_all(dir, fs_error);
 }
 
-HTMLPPT_TEST_CASE(config_editor_import_targets_rejects_duplicate_slides) {
+HTMLPPT_TEST_CASE(config_editor_import_targets_skips_already_mapped_slides) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));
-  const std::string before = model.ToJson();
   std::string error;
 
-  // A pair repeats an existing target's slide.
-  HTMLPPT_CHECK(!model.ImportTargets(
+  // A pair repeats an existing target's slide; the new slide is still imported.
+  int skipped = 0;
+  HTMLPPT_CHECK(model.ImportTargets(
       {ImportPair(2, "Two", "page2.html"),
        ImportPair(1, "Again", "page1.html")},
-      &error));
-  HTMLPPT_CHECK(!error.empty());
-  HTMLPPT_CHECK_EQ(model.ToJson(), before);
+      &error, &skipped));
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(skipped, 1);
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(model.rows()[1].slide, 2);
+  // Existing target 1 is untouched.
+  HTMLPPT_CHECK_EQ(model.rows()[0].label, std::string{"One"});
+  // Undo restores the pre-import config.
+  HTMLPPT_CHECK(model.Undo());
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{1});
+  HTMLPPT_CHECK_EQ(model.rows()[0].label, std::string{"One"});
   HTMLPPT_CHECK(!model.dirty());
-  HTMLPPT_CHECK(!model.CanUndo());
 
-  // Two pairs of the batch repeat the same slide.
+  // Two pairs of the batch repeat the same slide: the first wins, the second is
+  // skipped, and the batch is one undo step.
   error.clear();
-  HTMLPPT_CHECK(!model.ImportTargets(
+  skipped = 0;
+  HTMLPPT_CHECK(model.ImportTargets(
       {ImportPair(2, "Two", "page2.html"),
        ImportPair(2, "Two again", "page1.html")},
-      &error));
-  HTMLPPT_CHECK(!error.empty());
-  HTMLPPT_CHECK_EQ(model.ToJson(), before);
-  HTMLPPT_CHECK(!model.dirty());
-  HTMLPPT_CHECK(!model.CanUndo());
+      &error, &skipped));
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK_EQ(skipped, 1);
+  HTMLPPT_CHECK_EQ(model.target_count(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(model.rows()[1].label, std::string{"Two"});
+
+  // A batch whose slides are all mapped changes nothing and reports why.
+  error.clear();
+  skipped = 0;
+  HTMLPPT_CHECK(!model.ImportTargets({ImportPair(1, "One again", "page1.html"),
+                                      ImportPair(2, "Two again", "page2.html")},
+                                     &error, &skipped));
+  HTMLPPT_CHECK(error.find("already mapped") != std::string::npos);
+  HTMLPPT_CHECK_EQ(skipped, 2);
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }

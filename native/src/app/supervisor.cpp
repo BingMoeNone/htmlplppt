@@ -331,7 +331,19 @@ class CompatRunGuard {
       }
       log_->Append(kWatchLog, "native watchdog stop");
     }
-    if (flags_ != nullptr) flags_->DeleteAllOwned();
+    if (flags_ != nullptr) {
+      // The final state transition writes cover-stop/agent-stop, which the
+      // legacy watchers poll at 30/50 ms. Deleting them in the same instant as
+      // the write made the observable window milliseconds wide, so a clean exit
+      // effectively skipped the legacy stop signal. Give the pollers a short
+      // grace period before removing the owned files.
+      const bool has_stop_flags =
+          flags_->IsOwned(kCoverStopFlag) || flags_->IsOwned(kAgentStopFlag);
+      if (has_stop_flags) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      }
+      flags_->DeleteAllOwned();
+    }
   }
   CompatRunGuard(const CompatRunGuard&) = delete;
   CompatRunGuard& operator=(const CompatRunGuard&) = delete;
@@ -373,22 +385,12 @@ DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
   return loaded;
 }
 
-// Writes BOM-free UTF-8 text, reporting failures without throwing.
+// Writes BOM-free UTF-8 text atomically, reporting failures without throwing.
 bool WriteTextFile(const std::filesystem::path& path,
                    const std::string& text, std::string* error) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output.is_open()) {
-    *error = "failed to open " + Utf8Path(path) + " for writing";
-    return false;
-  }
-  output << text;
-  if (text.empty() || text.back() != '\n') output.put('\n');
-  output.close();
-  if (!output) {
-    *error = "failed to write " + Utf8Path(path);
-    return false;
-  }
-  return true;
+  std::string content = text;
+  if (content.empty() || content.back() != '\n') content.push_back('\n');
+  return WriteFileAtomically(path, content, error);
 }
 
 // Resolves the config once and writes the plan the worker will read, so target
@@ -400,6 +402,7 @@ bool WriteTextFile(const std::filesystem::path& path,
 bool WriteSupervisorPlan(const SupervisorRunOptions& options,
                          const std::string& run_id,
                          const std::filesystem::path& state_dir,
+                         const DeckInfo* cached_deck, DeckInfo* loaded_deck,
                          std::string* error,
                          std::vector<std::string>* warnings) {
   const auto loaded = LoadConfigFile(options.config_path, options.overrides);
@@ -410,10 +413,28 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
   }
   const Config& config = *loaded.config;
 
-  DeckInfoResult deck = LoadSupervisorDeckInfo(options, config);
-  if (!deck.info.has_value()) {
-    *error = "cannot load deck info: " + FirstError(deck.issues);
-    return false;
+  DeckInfoResult deck;
+  if (cached_deck != nullptr) {
+    // Hot reload must not open the deck: the running worker's WPS instance has
+    // that deck open (and may be presenting it), and Presentations.Open would
+    // return the same object, so our Close would end the show. Reuse the facts
+    // captured at startup and refuse a deck switch until the run restarts.
+    const auto deck_path = ResolveDeckPath(config);
+    if (!PathEquals(cached_deck->path, deck_path)) {
+      *error =
+          "the deck changed from " + Utf8Path(cached_deck->path) + " to " +
+          Utf8Path(deck_path) +
+          "; a deck switch needs a supervisor restart, not a hot reload";
+      return false;
+    }
+    deck.info = *cached_deck;
+  } else {
+    deck = LoadSupervisorDeckInfo(options, config);
+    if (!deck.info.has_value()) {
+      *error = "cannot load deck info: " + FirstError(deck.issues);
+      return false;
+    }
+    if (loaded_deck != nullptr) *loaded_deck = *deck.info;
   }
   if (deck.info->slides.empty()) {
     *error = "deck info has no slides: " + Utf8Path(deck.info->path);
@@ -439,17 +460,63 @@ bool WriteSupervisorPlan(const SupervisorRunOptions& options,
     ResolveTargetScreens(plan.machine, config, plan.targets, warnings);
   }
   std::string write_error;
-  if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
-                           &write_error)) {
-    *error = std::move(write_error);
-    return false;
-  }
+  // The worker derives its timings from worker-config.json and its targets from
+  // worker-plan.json. Write the config first so a failure after a successful
+  // plan cannot leave a new plan beside an old config; the old plan remains the
+  // worker's source of truth if the config write fails.
   if (!WriteTextFile(state_dir / "worker-config.json", ConfigToJson(config),
                      &write_error)) {
     *error = std::move(write_error);
     return false;
   }
+  if (!WriteWorkerPlanFile(plan, state_dir / "worker-plan.json",
+                           &write_error)) {
+    *error = std::move(write_error);
+    return false;
+  }
   return true;
+}
+
+// Records the run's launch context next to the journal, so --diagnostics can
+// find the config directory even when it is invoked without --config (the
+// documented form) and after the supervisor's working directory is gone. A
+// relative config path is resolved here, at launch time, not by the later
+// diagnostics process.
+void WriteRunInfo(const std::filesystem::path& state_dir,
+                  const SupervisorRunOptions& options) {
+  const std::filesystem::path cwd = CurrentDir();
+  const std::filesystem::path config =
+      ResolveConfigPath(options.config_path, cwd);
+  std::string text = "config " + Utf8Path(config) + "\n";
+  text += "cwd " + Utf8Path(cwd) + "\n";
+  // Atomic, so a diagnostics invocation cannot read half a config path.
+  (void)WriteFileAtomically(state_dir / "run-info.txt", text, nullptr);
+}
+
+// Resolves the config path a run actually used: an explicit --config wins,
+// otherwise the path recorded by WriteRunInfo. A relative recorded path is
+// resolved against the recorded working directory so a package stays readable
+// when the diagnostics process runs elsewhere.
+std::filesystem::path DiagnosticsConfigPath(
+    const std::filesystem::path& state_dir,
+    const std::filesystem::path& explicit_config) {
+  if (!explicit_config.empty()) {
+    return ResolveConfigPath(explicit_config, CurrentDir());
+  }
+  std::ifstream input(state_dir / "run-info.txt", std::ios::binary);
+  if (!input.is_open()) return {};
+  std::filesystem::path cwd;
+  std::filesystem::path config;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.rfind("cwd ", 0) == 0) {
+      cwd = PathFromUtf8(line.substr(4));
+    } else if (line.rfind("config ", 0) == 0) {
+      config = PathFromUtf8(line.substr(7));
+    }
+  }
+  if (config.empty()) return {};
+  return ResolveConfigPath(config, cwd);
 }
 
 } // namespace
@@ -467,6 +534,7 @@ void ResolveTargetScreens(RunPlan& plan, const Config& config,
     if (index >= config.active.targets.size()) continue;
     const TargetConfig& source = config.active.targets[index];
     if (!source.display.has_value()) continue;
+    plan.targets[i].display_monitor = source.display->monitor;
     const ScreenSelection selection =
         SelectScreenMetrics(source.display->monitor);
     if (!selection.error.empty() && warnings != nullptr) {
@@ -502,9 +570,21 @@ int RunDumpHelper(std::uint32_t pid, const std::filesystem::path& path) {
 
 int RunStop(std::string_view run_id) {
   if (run_id.empty()) return 2;
+  // The supervisor keeps the outcome file after a stop so a concurrent or late
+  // --stop reports the same result. Read it whenever the stop event is missing.
+  const auto read_outcome = [&]() -> std::optional<std::string> {
+    std::ifstream status(StopStatusPath(run_id), std::ios::binary);
+    if (!status.is_open()) return std::nullopt;
+    std::string outcome;
+    status >> outcome;
+    if (outcome.empty()) return std::nullopt;
+    return outcome;
+  };
   const std::wstring name = SupervisorStopEventName(run_id);
   HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
   if (event == nullptr) {
+    const auto outcome = read_outcome();
+    if (outcome.has_value() && *outcome == "clean") return 0;
     std::cerr << "error: no running supervisor for run " << run_id << "\n";
     return 1;
   }
@@ -520,14 +600,12 @@ int RunStop(std::string_view run_id) {
     HANDLE probe = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
     if (probe == nullptr) {
       // Event gone: read the outcome the supervisor wrote before closing it.
-      const auto status_path = StopStatusPath(run_id);
-      std::ifstream status(status_path, std::ios::binary);
-      std::string outcome;
-      status >> outcome;
-      status.close();
-      std::error_code remove_error;
-      std::filesystem::remove(status_path, remove_error);
-      if (outcome == "clean") return 0;
+      // The file is deliberately not removed: a concurrent --stop (the editor
+      // and a terminal retry, say) must see the same result instead of reading
+      // an empty file and reporting a clean stop as a failure. The next
+      // supervisor with this run id deletes it before starting.
+      const auto outcome = read_outcome();
+      if (outcome.has_value() && *outcome == "clean") return 0;
       std::cerr << "error: supervisor did not finish cleanup for run " << run_id
                 << "\n";
       return 1;
@@ -558,12 +636,16 @@ int RunDiagnostics(std::string_view run_id,
     return 1;
   }
 
-  const auto config_dir = ConfigDirFor(config_path, CurrentDir());
+  const auto effective_config = DiagnosticsConfigPath(state_dir, config_path);
+  const auto config_dir = effective_config.parent_path();
   std::ostringstream manifest;
   manifest << "htmlppt-watchdog diagnostics\n";
   manifest << "version " << version() << "\n";
   manifest << "run " << run_id << "\n";
   manifest << "state_dir " << Utf8Path(state_dir) << "\n";
+  if (!effective_config.empty()) {
+    manifest << "config " << Utf8Path(effective_config) << "\n";
+  }
   if (!config_dir.empty()) {
     manifest << "config_dir " << Utf8Path(config_dir) << "\n";
   }
@@ -588,7 +670,7 @@ int RunDiagnostics(std::string_view run_id,
   // Everything that explains a run is copied beside the manifest, so the
   // package can be handed over without the state directory.
   for (const char* name : {"journal.jsonl", "worker-plan.json",
-                           "worker-config.json"}) {
+                           "worker-config.json", "run-info.txt"}) {
     copy_file(state_dir / name, out_dir / name, name);
   }
 
@@ -604,13 +686,10 @@ int RunDiagnostics(std::string_view run_id,
     }
   }
   // The config file may not be named watcher.json; copy the actual file too.
-  if (!config_path.empty()) {
-    const auto actual = config_path.is_absolute()
-                            ? config_path
-                            : config_dir / config_path.filename();
-    const std::string name = Utf8Path(actual.filename());
+  if (!effective_config.empty()) {
+    const std::string name = Utf8Path(effective_config.filename());
     if (name != "watcher.json") {
-      copy_file(actual, out_dir / actual.filename(), name);
+      copy_file(effective_config, out_dir / effective_config.filename(), name);
     }
   }
 
@@ -633,7 +712,13 @@ int RunDiagnostics(std::string_view run_id,
   }
 
   // Crash dumps live under state_dir/crash; scan recursively and preserve the
-  // relative path in the package (a root-only scan never found them).
+  // relative path in the package (a root-only scan never found them). The output
+  // directory is only skipped when it is *inside* the state directory (a package
+  // written into the run tree); when --out is an ancestor of --state-dir every
+  // dump is legitimately outside --out and must still be copied. Comparing the
+  // entry against --out once inverted that relation and skipped every dump.
+  const bool out_inside_state =
+      !out_dir.empty() && PathIsInside(out_dir, state_dir);
   std::filesystem::recursive_directory_iterator it(state_dir, error);
   if (error) {
     manifest << "dump scan failed " << error.message() << "\n";
@@ -643,12 +728,8 @@ int RunDiagnostics(std::string_view run_id,
       const auto& entry = *it;
       std::error_code entry_error;
       const bool regular = entry.is_regular_file(entry_error);
-      const auto relative_out =
-          std::filesystem::relative(entry.path(), out_dir, entry_error);
-      const bool inside_out =
-          !entry_error && !relative_out.empty() &&
-          relative_out.generic_string().rfind("..", 0) != 0;
-      if (!inside_out && !entry_error && regular &&
+      const bool skip = out_inside_state && PathIsInside(entry.path(), out_dir);
+      if (!skip && !entry_error && regular &&
           entry.path().extension() == ".dmp") {
         std::error_code relative_error;
         const auto relative =
@@ -725,6 +806,9 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                                                    : options.state_dir;
   std::error_code error;
   std::filesystem::create_directories(state_dir, error);
+  // Written before anything can fail, so a run that dies during planning still
+  // leaves --diagnostics enough context to find its config directory.
+  WriteRunInfo(state_dir, options);
   const std::string run_id =
       options.run_id.empty() ? NewRunId() : options.run_id;
 
@@ -773,8 +857,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // worker.
   std::string plan_error;
   std::vector<std::string> plan_warnings;
-  if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error,
-                           &plan_warnings)) {
+  // The deck facts are captured once at startup and reused by every hot reload,
+  // so a reload never reopens (and closes) the deck the running show uses.
+  DeckInfo startup_deck;
+  if (!WriteSupervisorPlan(options, run_id, state_dir, nullptr, &startup_deck,
+                           &plan_error, &plan_warnings)) {
     // A failed plan is the run's terminal state, not a transient "Plan" step:
     // reconciliation treats Faulted as leftover state, while only a clean stop
     // may journal Exited.
@@ -793,6 +880,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     std::cerr << "warning: " << warning << "\n";
   }
   AppendJournal(journal, run_id, "Plan", "plan", "worker plan written");
+  std::optional<DeckInfo> run_deck_info = std::move(startup_deck);
 
   NamedPipeServer server;
   if (!server.Create(SupervisorPipeName(run_id))) {
@@ -830,12 +918,23 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // "the previous run released everything". A SafeMode/legacy end and a
   // launch/restart failure each journal their own state, so the next start
   // cleans up instead of trusting a run that did not stop cleanly.
-  const auto cleanup = [&](std::string_view state = "Exited") {
+  const auto cleanup = [&](std::string_view state = "Exited",
+                           std::string_view outcome = "clean") {
     if (channel != nullptr) channel->Close();
     server.Close();
     job.Terminate();
     AppendJournal(journal, run_id, std::string(state), "stop",
                   "supervisor stop");
+    // Write the outcome before closing the stop event: --stop can only observe
+    // the event disappearing, so the file is its only evidence. It is kept (not
+    // deleted by the reader) so a concurrent or late --stop sees the same
+    // result instead of reporting a clean stop as a failure; the next run with
+    // this id removes the stale file at startup.
+    {
+      std::ofstream status(StopStatusPath(run_id),
+                           std::ios::binary | std::ios::trunc);
+      if (status) status << outcome;
+    }
     blackbox.reset();
     ReleaseMutex(mutex);
     CloseHandle(mutex);
@@ -843,7 +942,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   };
 
   if (!launch_worker()) {
-    cleanup("Faulted");
+    cleanup("Faulted", "forced");
     return 1;
   }
   AppendJournal(journal, run_id, "Worker", "start", "worker started");
@@ -869,6 +968,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     return created != FALSE;
   };
 
+  // Set when a worker exited or was terminated without running its own cleanup,
+  // and cleared when a replacement is launched. A --stop during the restart
+  // backoff must not claim a clean stop: the crashed worker's guards never ran.
+  bool worker_lost = false;
+
   const auto apply = [&](const std::vector<SupervisorAction>& actions)
       -> std::optional<int> {
     for (const auto& action : actions) {
@@ -888,6 +992,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           break;
         case SupervisorActionKind::TerminateWorker:
           job.Terminate();
+          worker_lost = true;
           if (channel != nullptr) {
             channel->Close();
             channel.reset();
@@ -902,9 +1007,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           if (!server.Create(SupervisorPipeName(run_id)) || !launch_worker()) {
             AppendJournal(journal, run_id, "Worker", "restart",
                           "worker restart failed");
-            cleanup("Faulted");
+            cleanup("Faulted", "forced");
             return 1;
           }
+          worker_lost = false;
           AppendJournal(journal, run_id, "Worker", "restart",
                         "worker restarted");
           // A replacement process starts its heartbeat sequence over, so the
@@ -948,28 +1054,42 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // cursor keeps a steady Monitoring loop from writing one record per heartbeat.
   std::optional<std::uint8_t> last_worker_state;
 
-  // Hot reload: rebuild the plan exactly as startup does, then replace the
-  // worker through the existing restart batch. A failed rebuild stops here and
-  // keeps the old worker; the request is consumed so a broken config cannot
-  // retry (and log) on every heartbeat, and a fresh --reload asks again. A plan
-  // write that fails midway can leave worker-plan.json partially rewritten, so
-  // the restart path must not reuse it without a successful rebuild.
-  const auto apply_reload = [&]() -> std::optional<int> {
+  // Hot reload: the supervisor first Pauses the worker and waits for the
+  // heartbeat acknowledgement (kHeartbeatFlagPaused). Only then does it rebuild
+  // the plan and replace the process, so a Step can no longer start between the
+  // safe-point heartbeat and the termination.
+  bool reload_pause_pending = false;
+  bool worker_paused = false;
+  ClockPoint reload_pause_deadline{};
+  bool reload_stuck_journaled = false;
+  bool reload_pause_timeout_journaled = false;
+  std::uint32_t command_sequence = 1;
+  const auto send_command = [&](FrameType type) -> bool {
+    if (channel == nullptr) return false;
+    Frame frame;
+    frame.header.type = type;
+    frame.header.sequence = ++command_sequence;
+    frame.header.timestamp_ms = static_cast<std::uint64_t>(NowMs());
+    return channel->Send(frame);
+  };
+
+  // Rebuilds the plan from the saved config and replaces the worker. `applied`
+  // tells the caller whether the restart batch ran: on a failed rebuild the
+  // worker is still paused and must be resumed.
+  const auto apply_reload = [&](bool* applied) -> std::optional<int> {
+    *applied = false;
     const auto request_path = state_dir / "reload.request";
     std::string plan_error;
     std::vector<std::string> plan_warnings;
-    if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error,
-                             &plan_warnings)) {
+    if (!WriteSupervisorPlan(options, run_id, state_dir,
+                             run_deck_info.has_value() ? &*run_deck_info
+                                                       : nullptr,
+                             nullptr, &plan_error, &plan_warnings)) {
       AppendJournal(journal, run_id, "Monitoring", "reload",
                     "reload: failed " + plan_error);
       std::cerr << "warning: reload failed: " << plan_error << "\n";
       std::error_code remove_error;
-      if (!std::filesystem::remove(request_path, remove_error) ||
-          remove_error) {
-        reload_request_stuck = true;
-        AppendJournal(journal, run_id, "Monitoring", "reload",
-                      "reload: request not cleared");
-      }
+      std::filesystem::remove(request_path, remove_error);
       return std::nullopt;
     }
     for (const auto& warning : plan_warnings) {
@@ -977,19 +1097,22 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                     "reload warning: " + warning);
       std::cerr << "warning: reload: " << warning << "\n";
     }
+    // The plan and config are already written. A failed delete must not stop the
+    // restart: the running worker is still on the old plan. Keep the marker, but
+    // remember that this request was applied so later heartbeats only retry the
+    // delete instead of restarting forever.
     std::error_code remove_error;
     if (!std::filesystem::remove(request_path, remove_error) || remove_error) {
-      // Without clearing the marker the next Monitoring heartbeat would apply
-      // the same reload again, restarting the deck in a loop.
       reload_request_stuck = true;
       AppendJournal(journal, run_id, "Monitoring", "reload",
-                    "reload: request not cleared");
-      return std::nullopt;
+                    "reload: applied (request not cleared)");
+    } else {
+      AppendJournal(journal, run_id, "Monitoring", "reload", "reload: applied");
     }
-    AppendJournal(journal, run_id, "Monitoring", "reload", "reload: applied");
     // A worker that was about to exit cleanly must not make its replacement
     // look like a clean terminal end.
     cleanup_received = false;
+    *applied = true;
     return apply({{SupervisorActionKind::TerminateWorker, "reload"},
                   {SupervisorActionKind::RestartWorker, "reload"}});
   };
@@ -1021,15 +1144,15 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           worker.WaitForExit(2000);
         }
       }
+      if (channel == nullptr && worker_lost) {
+        // The worker already exited (or was terminated) and the core is waiting
+        // to restart it; its cleanup guards never ran, so this stop is forced.
+        clean = false;
+      }
       AppendJournal(journal, run_id, "Worker", "stop",
                     clean ? "worker exited after cleanup"
                           : "stop forced before cleanup");
-      {
-        std::ofstream status(StopStatusPath(run_id),
-                             std::ios::binary | std::ios::trunc);
-        if (status) status << (clean ? "clean" : "forced");
-      }
-      cleanup(clean ? "Exited" : "Faulted");
+      cleanup(clean ? "Exited" : "Faulted", clean ? "clean" : "forced");
       return clean ? 0 : 1;
     }
 
@@ -1087,40 +1210,99 @@ int RunSupervisor(const SupervisorRunOptions& options) {
                             "worker state " + state_name);
             }
 
-            // Hot reload (spec 9.6). --reload writes an empty request file;
-            // the plan may only be swapped at a real safe point. The state byte
-            // can still read Monitoring while a blocking Step is running (the
-            // helper thread carries the last published state), so the decision
-            // keys on the safe-point flag, not on `state == Monitoring`. Every
-            // other instant is mid startup, switch/return or stop, so a request
-            // waits there and is journalled once.
+            // Hot reload (spec 9.6). --reload writes an empty request file.
+            // Merely seeing a safe-point heartbeat is not enough: writing the
+            // plan can take a while and the worker keeps stepping, so it could
+            // enter a transition and be killed mid-switch. The supervisor first
+            // pauses the worker and waits for the Paused heartbeat, then
+            // rebuilds and replaces it; a failed rebuild resumes the worker.
+            const std::string state_name =
+                payload.has_value()
+                    ? StateName(static_cast<State>(payload->state))
+                    : std::string{"Unknown"};
+            worker_paused =
+                payload.has_value() &&
+                (payload->flags & kHeartbeatFlagPaused) != 0;
             std::error_code request_error;
             const bool request_pending = std::filesystem::exists(
                 state_dir / "reload.request", request_error);
             const bool at_safe_point =
                 payload.has_value() &&
                 (payload->flags & kHeartbeatFlagSafePoint) != 0;
-            const ReloadDecision decision =
-                DecideReload(request_pending, at_safe_point);
             if (!request_pending) {
               reload_defer_journaled = false;
               reload_request_stuck = false;
-            }
-            if (decision == ReloadDecision::Defer) {
-              if (ShouldJournalDefer(decision, reload_defer_journaled)) {
-                reload_defer_journaled = true;
-                const std::string state_name =
-                    payload.has_value()
-                        ? StateName(static_cast<State>(payload->state))
-                        : std::string{"Unknown"};
-                AppendJournal(journal, run_id, state_name, "reload",
-                              "reload: deferred " + state_name);
+              reload_stuck_journaled = false;
+              reload_pause_pending = false;
+              reload_pause_timeout_journaled = false;
+              if (worker_paused) {
+                // The request vanished (a peer cleared it); let the worker go.
+                send_command(FrameType::Resume);
+                worker_paused = false;
               }
-            } else if (decision == ReloadDecision::Apply &&
-                       !reload_request_stuck) {
-              reload_defer_journaled = false;
-              if (auto code = apply_reload(); code.has_value()) {
-                return *code;
+            } else if (reload_request_stuck) {
+              // The plan already applied but the marker could not be deleted.
+              // Only retry the delete; never restart a second time for the same
+              // request. A successful delete re-enables future reloads.
+              std::error_code clear_error;
+              std::filesystem::remove(state_dir / "reload.request",
+                                      clear_error);
+              if (!clear_error) {
+                reload_request_stuck = false;
+                reload_stuck_journaled = false;
+                AppendJournal(journal, run_id, state_name, "reload",
+                              "reload: request cleared after a late retry");
+              } else if (!reload_stuck_journaled) {
+                reload_stuck_journaled = true;
+                AppendJournal(journal, run_id, state_name, "reload",
+                              "reload: request still not clear");
+              }
+            } else if (reload_pause_pending) {
+              if (worker_paused) {
+                reload_pause_pending = false;
+                bool applied = false;
+                if (auto code = apply_reload(&applied); code.has_value()) {
+                  return *code;
+                }
+                worker_paused = false;
+                if (applied) {
+                  reload_defer_journaled = false;
+                  reload_pause_timeout_journaled = false;
+                } else {
+                  // The rebuild failed (for example the deck path changed);
+                  // the worker is still paused and must continue.
+                  send_command(FrameType::Resume);
+                  AppendJournal(journal, run_id, state_name, "reload",
+                                "reload: aborted, worker resumed");
+                }
+              } else if (clock.now() >= reload_pause_deadline) {
+                // The worker may have entered a transition before it saw the
+                // Pause. Resume and retry at the next safe point; journal once
+                // so a worker that never supports pause does not spam the log.
+                reload_pause_pending = false;
+                send_command(FrameType::Resume);
+                if (!reload_pause_timeout_journaled) {
+                  reload_pause_timeout_journaled = true;
+                  AppendJournal(journal, run_id, state_name, "reload",
+                                "reload: pause not acknowledged; will retry at "
+                                "the next safe point");
+                }
+              }
+            } else {
+              const ReloadDecision decision =
+                  DecideReload(request_pending, at_safe_point);
+              if (decision == ReloadDecision::Defer) {
+                if (ShouldJournalDefer(decision, reload_defer_journaled)) {
+                  reload_defer_journaled = true;
+                  AppendJournal(journal, run_id, state_name, "reload",
+                                "reload: deferred " + state_name);
+                }
+              } else if (send_command(FrameType::Pause)) {
+                reload_defer_journaled = false;
+                reload_pause_pending = true;
+                reload_pause_deadline = clock.now() + Duration{2000};
+                AppendJournal(journal, run_id, state_name, "reload",
+                              "reload: pausing worker");
               }
             }
             break;
@@ -1187,8 +1369,12 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       }
       AppendJournal(journal, run_id, "Worker", "exit", "worker exited");
       // This worker did not end cleanly, so the next process must not inherit
-      // its Cleanup flag.
+      // its Cleanup flag. A pending reload pause died with it; the request file
+      // stays and is retried against the replacement.
       cleanup_received = false;
+      worker_lost = true;
+      worker_paused = false;
+      reload_pause_pending = false;
       if (auto code = apply(core.Handle(MakeEvent(WorkerEventKind::Exited)));
           code.has_value()) {
         return *code;
@@ -1339,14 +1525,21 @@ int RunWorker(const SupervisorRunOptions& options) {
     }
     // Spec 8.5 prewarmProfile: initialize every target's Edge profile before
     // the show needs it. Runs inside the startup heartbeats, so the supervisor
-    // keeps seeing liveness while the browser builds its profile.
-    if (config.defaults.edge.prewarm_profile && !facts.edge_exe.empty()) {
+    // keeps seeing liveness while the browser builds its profile. A target's
+    // own edge block overrides both the profile flag and the args.
+    if (!facts.edge_exe.empty()) {
       std::vector<std::unique_ptr<EdgeProcess>> prewarm;
       for (const auto& target : plan->targets) {
+        const bool prewarm_target =
+            target.edge_prewarm.value_or(
+                config.defaults.edge.prewarm_profile.value_or(false));
+        if (!prewarm_target) continue;
+        EdgeConfig edge = config.defaults.edge;
+        if (target.edge_args_set) edge.args = target.edge_args;
         const auto profile =
             facts.temp_dir / PathFromUtf8(target.edge_profile);
-        auto process = launcher.Launch(
-            MakeEdgePrewarmSpec(facts.edge_exe, profile, config.defaults.edge));
+        auto process =
+            launcher.Launch(MakeEdgePrewarmSpec(facts.edge_exe, profile, edge));
         if (process != nullptr) prewarm.push_back(std::move(process));
       }
       if (!prewarm.empty()) {
@@ -1466,9 +1659,16 @@ int RunWorker(const SupervisorRunOptions& options) {
                  "return will not target WPS\n";
   }
 
+  WorkerHostConfig worker_host = BuildWorkerHostConfig(config, facts);
+  // Display metrics are a platform fact: let the runtime re-resolve a target's
+  // display.monitor after a resolution change instead of scoring windows against
+  // the geometry captured at plan-build time.
+  worker_host.resolve_screen = [](std::string_view selector) {
+    return SelectScreenMetrics(selector).metrics;
+  };
   WorkerRuntime runtime(
       *plan, machine_config, WorkerPorts{wps, overlay, launcher, windows, clock},
-      BuildWorkerHostConfig(config, facts));
+      std::move(worker_host));
   // Declared after the runtime so the journal is still alive when the guard
   // flushes it to watch-log.txt, and so the refresh thread is stopped before the
   // flags are deleted. The startup guard is silent from here on.
@@ -1481,12 +1681,12 @@ int RunWorker(const SupervisorRunOptions& options) {
     compat_guard.StartLockRefresh(*compat);
   }
 
-  // Legacy flag protocol (spec 11.3): mirror every loop state transition onto the
-  // VBS-era flag files. RunWorker is the only writer; the session just hands each
-  // post-step snapshot to this callback. The live target's Edge profile is still
-  // in the snapshot when the machine enters Live, so it is resolved lazily.
+  // Off-loop writer for the legacy flag protocol. Declared after the compat
+  // objects and before the guard, so it drains before the guard deletes the
+  // files: a slow config directory must never block the worker loop.
+  std::optional<CompatFlagMirror> compat_mirror;
   if (compat.has_value() && legacy.has_value()) {
-    session_config.on_step = MakeCompatFlagMirror(
+    compat_mirror.emplace(
         *compat, *legacy,
         [&plan](const StateSnapshot& snapshot) -> std::string {
           if (!snapshot.current_target_slide.has_value()) return {};
@@ -1498,11 +1698,17 @@ int RunWorker(const SupervisorRunOptions& options) {
           return {};
         },
         runtime.snapshot().state);
+    session_config.on_step = [&compat_mirror](const StateSnapshot& snapshot) {
+      if (compat_mirror) compat_mirror->OnStep(snapshot);
+    };
   }
 
   std::string session_error;
   const int code = RunWorkerSession(runtime, client, *blackbox, session_config,
                                     &session_error);
+  // The loop is done: drain the queued transitions before the guard deletes the
+  // files (and before the process exits).
+  if (compat_mirror) compat_mirror->Flush();
   if (runtime.snapshot().state == State::SafeMode) {
     // The machine's Diagnostic action is journal-only (the runtime has no
     // blackbox port); record it here so --status and the diagnostics package

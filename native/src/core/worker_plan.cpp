@@ -304,6 +304,14 @@ bool ReadTargetPlan(const json& value, const std::string& path,
                         "set");
     return false;
   }
+  std::optional<std::string> display_monitor;
+  if (!ReadOptionalString(value, "displayMonitor", path + ".displayMonitor",
+                          &display_monitor, error)) {
+    return false;
+  }
+  if (display_monitor.has_value()) {
+    target->display_monitor = std::move(*display_monitor);
+  }
 
   if (!ReadBool(value, "focusRequire", path + ".focusRequire",
                 &target->focus_require, error)) {
@@ -345,6 +353,26 @@ bool ReadResolvedTarget(const json& value, const std::string& path,
   if (!ReadString(value, "edgeProfile", path + ".edgeProfile",
                   &target->edge_profile, error)) {
     return false;
+  }
+  if (value.contains("edgeArgs")) {
+    if (!ReadStringArray(value, "edgeArgs", path + ".edgeArgs",
+                         &target->edge_args, error)) {
+      return false;
+    }
+  }
+  if (value.contains("edgeArgsSet")) {
+    if (!ReadBool(value, "edgeArgsSet", path + ".edgeArgsSet",
+                  &target->edge_args_set, error)) {
+      return false;
+    }
+  }
+  if (value.contains("edgePrewarm") && !value["edgePrewarm"].is_null()) {
+    bool prewarm = false;
+    if (!ReadBool(value, "edgePrewarm", path + ".edgePrewarm", &prewarm,
+                  error)) {
+      return false;
+    }
+    target->edge_prewarm = prewarm;
   }
   if (value.contains("assetsMode")) {
     if (!ReadString(value, "assetsMode", path + ".assetsMode",
@@ -420,6 +448,7 @@ nlohmann::ordered_json TargetPlanToJson(const TargetPlan& target) {
   } else {
     result["screenHeight"] = nullptr;
   }
+  result["displayMonitor"] = target.display_monitor;
   result["focusRequire"] = target.focus_require;
   result["enabled"] = target.enabled;
   return result;
@@ -435,6 +464,13 @@ nlohmann::ordered_json ResolvedTargetToJson(const ResolvedTarget& target) {
   result["fragment"] = target.fragment;
   result["stageName"] = target.stage_name;
   result["edgeProfile"] = target.edge_profile;
+  result["edgeArgs"] = target.edge_args;
+  result["edgeArgsSet"] = target.edge_args_set;
+  if (target.edge_prewarm.has_value()) {
+    result["edgePrewarm"] = *target.edge_prewarm;
+  } else {
+    result["edgePrewarm"] = nullptr;
+  }
   // Staging policy: without these the worker falls back to direct mode and the
   // configured file/tree copy never happens.
   result["assetsMode"] = target.assets_mode;
@@ -662,21 +698,10 @@ std::optional<WorkerPlan> WorkerPlanFromJson(std::string_view text,
 bool WriteWorkerPlanFile(const WorkerPlan& plan,
                          const std::filesystem::path& path,
                          std::string* error) {
-  const std::string text = WorkerPlanToJson(plan);
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output.is_open()) {
-    SetError(error, "failed to open worker plan file for writing: " +
-                        Utf8Path(path));
-    return false;
-  }
-  output.write(text.data(), static_cast<std::streamsize>(text.size()));
-  output.put('\n');
-  output.close();
-  if (!output) {
-    SetError(error, "failed to write worker plan file: " + Utf8Path(path));
-    return false;
-  }
-  return true;
+  const std::string text = WorkerPlanToJson(plan) + "\n";
+  // Atomic replace: a disk-full or locked-file failure must leave the previous
+  // plan intact. A truncated worker-plan.json would make every restart fail.
+  return WriteFileAtomically(path, text, error);
 }
 
 std::optional<WorkerPlan> ReadWorkerPlanFile(const std::filesystem::path& path,

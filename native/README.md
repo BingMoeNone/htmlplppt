@@ -212,10 +212,10 @@ The same EXE runs as supervisor and worker.
 
 - `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job. It resolves the config with the CLI overrides applied, writes `worker-plan.json` and the effective `worker-config.json` into the state dir, then launches the worker with that config; it expects heartbeats with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
 - `--worker --run-id <id>` reads the plan and the effective config, opens the deck in WPS, starts the slideshow, and runs the state machine loop, heartbeating the current state while the loop works. It exits on a Stop frame or after a clean state-machine exit; a supervisor loss is reported to the machine and the loop continues.
-- `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
+- `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup. The supervisor gives the worker a 10 s cleanup budget and `--stop` waits up to 20 s for the outcome; the result file is kept so a concurrent or late `--stop` reports the same result.
 - `--status --run-id <id> --state-dir <dir>` prints the run id, state, worker PID, last event and the last black-box records (each line ends with the state name, e.g. `[Monitoring]`) plus the journal path.
 - `--reload --run-id <id> --state-dir <dir>` writes the empty `reload.request` marker the running supervisor polls at each heartbeat. The supervisor rebuilds the plan and restarts the worker only at a worker safe point (between Steps, parked in `Monitoring`); the command returns immediately and the request is consumed even when the rebuild fails.
-- `--diagnostics --run-id <id> --state-dir <dir> --out <path>` writes a self-contained package: `manifest.txt`, `journal.jsonl`, `watch-log.txt`, the plan/effective config, a black-box snapshot (`blackbox.txt`, when the run still owns it) and any crash dumps.
+- `--diagnostics --run-id <id> --state-dir <dir> --out <path>` writes a self-contained package: `manifest.txt`, `journal.jsonl`, `watch-log.txt`, the plan/effective config, a black-box snapshot (`blackbox.txt`, when the run still owns it) and any crash dumps. `--config` is optional: the supervisor records the launch-time config path and working directory in `<state-dir>/run-info.txt`, so the diagnostics process finds the config directory even when it runs from elsewhere. Passing `--config` still overrides it.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
@@ -383,8 +383,10 @@ the profile blocks in the JSON itself.
 A missing or broken config is not fatal: the window opens with the loader's
 first issue in the status line instead of exiting. The deck is config-wide and
 is not editable in the window, so Save stays blocked until the file is repaired
-outside the window. The auto-mapping wizard from spec 9.5 is still not built; the
-editor sits on `ConfigEditorModel` so it can be added later.
+outside the window. The auto-mapping wizard from spec 9.3 is available from the
+toolbar: it scans the deck, proposes slide-to-HTML pairs from a folder, previews
+them with per-row include, and imports the checked rows as one undoable edit.
+Slides that are already mapped are skipped (the status line reports how many).
 
 ### Threading model
 
@@ -409,11 +411,14 @@ native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir .\state
 ```
 
 `--status` prints the last black-box records (state number and name) and the
-journal path. `--reload` asks the live run to rebuild its plan and restart the
-worker at the next safe point. `--stop` sets the stop event and returns after the
-supervisor has terminated the worker, flushed the journal, and closed its
-handles; it exits 0 after a clean stop. A config or deck that cannot be resolved
-fails before a worker is launched, journals the reason, and exits 1.
+journal path. `--reload` asks the live run to rebuild its plan: the supervisor
+pauses the worker at a safe point, waits for the paused heartbeat, rebuilds and
+replaces the process, and resumes the old worker if the rebuild fails. A reload
+cannot switch to a different deck (that needs a restart), because reopening the
+deck would close the one the running show uses. `--stop` sets the stop event and
+returns after the supervisor has terminated the worker, flushed the journal, and
+closed its handles; it exits 0 after a clean stop. A config or deck that cannot
+be resolved fails before a worker is launched, journals the reason, and exits 1.
 
 WPS Presentation must be installed and the deck must be closed before a run:
 the supervisor reads the deck facts through COM and the worker opens that deck

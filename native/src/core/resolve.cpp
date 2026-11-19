@@ -457,6 +457,13 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     resolved.assets_max_bytes = target.assets.max_bytes;
     resolved.assets_include = target.assets.include;
     resolved.assets_exclude = target.assets.exclude;
+    if (target.edge.has_value()) {
+      // Carry the target's own Edge block into the plan; the worker previously
+      // dropped both fields and always launched with the global config.
+      resolved.edge_args = target.edge->args;
+      resolved.edge_args_set = true;
+      resolved.edge_prewarm = target.edge->prewarm_profile;
+    }
 
     const std::string stage = target.stage_name.empty()
                                   ? AutoStageName(ordinal, resolved.html_path)

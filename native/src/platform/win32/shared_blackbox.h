@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,10 @@ class SharedBlackbox {
 
   void Append(const BlackboxRecord& record);
   std::vector<BlackboxRecord> Snapshot() const;
+  // The newest record only. The editor's 500 ms liveness poll uses this instead
+  // of Snapshot, which allocates and copies the whole ring (786 KB at the
+  // default capacity) on the UI thread for a single state byte.
+  std::optional<BlackboxRecord> Latest() const;
   std::uint64_t appended() const;
   std::uint64_t dropped() const;
   std::size_t capacity() const { return capacity_; }

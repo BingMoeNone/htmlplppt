@@ -144,6 +144,17 @@ std::vector<BlackboxRecord> SharedBlackbox::Snapshot() const {
   return snapshot;
 }
 
+std::optional<BlackboxRecord> SharedBlackbox::Latest() const {
+  if (header_ == nullptr || records_ == nullptr || capacity_ == 0) {
+    return std::nullopt;
+  }
+  const std::uint64_t appended =
+      header_->appended.load(std::memory_order_acquire);
+  if (appended == 0) return std::nullopt;
+  // appended-1 is the newest slot; the modulo wraps exactly like Append.
+  return records_[(appended - 1) % capacity_];
+}
+
 std::uint64_t SharedBlackbox::appended() const {
   return header_ == nullptr
              ? 0

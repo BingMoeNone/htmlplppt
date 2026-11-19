@@ -75,6 +75,7 @@ bool WorkerRuntime::Step() {
     // a per-target display override must keep it rather than restoring the
     // construction-time monitor.
     base_screen_ = changed_screen;
+    RefreshTargetScreens();
     AppendJournal("display change: " + std::to_string(changed_screen.width) +
                   "x" + std::to_string(changed_screen.height));
   }
@@ -89,6 +90,7 @@ bool WorkerRuntime::Step() {
     host_.screen.height =
         host_.screen.height > 0 ? host_.screen.height / 2 : 720;
     base_screen_ = host_.screen;
+    RefreshTargetScreens();
     AppendJournal("fault injected: multi-monitor (" +
                   std::to_string(host_.screen.width) + "x" +
                   std::to_string(host_.screen.height) + ")");
@@ -440,6 +442,31 @@ bool WorkerRuntime::FocusRequired(int slide) const {
   return target != nullptr ? target->focus_require : host_.focus_require;
 }
 
+void WorkerRuntime::RefreshTargetScreens() {
+  if (!host_.resolve_screen) return;
+  for (auto& target : plan_.machine.targets) {
+    if (target.display_monitor.empty()) continue;
+    const ScreenMetrics metrics = host_.resolve_screen(target.display_monitor);
+    if (metrics.width > 0 && metrics.height > 0) {
+      target.screen_width = metrics.width;
+      target.screen_height = metrics.height;
+    } else {
+      // The selected display disappeared. Fall back to the new host baseline
+      // instead of scoring against a monitor that no longer exists.
+      target.screen_width.reset();
+      target.screen_height.reset();
+      AppendJournal("display change: target " +
+                    std::to_string(target.slide) + " monitor \"" +
+                    target.display_monitor + "\" unavailable; using baseline");
+    }
+  }
+  // Re-apply the live target's settings so a display change during a show
+  // updates focus/scoring immediately.
+  if (snapshot_.current_target_slide.has_value()) {
+    ApplyTargetSettings(*snapshot_.current_target_slide);
+  }
+}
+
 void WorkerRuntime::ApplyBaselineSettings() {
   host_.focus = base_focus_;
   host_.screen = base_screen_;
@@ -468,6 +495,14 @@ void WorkerRuntime::ApplyTargetSettings(int slide) {
   host_.focus = timing;
   host_.screen = screen;
   focus_.SetTiming(timing);
+}
+
+EdgeConfig WorkerRuntime::EffectiveEdgeConfig(
+    const ResolvedTarget& target) const {
+  EdgeConfig edge = host_.edge;
+  if (target.edge_args_set) edge.args = target.edge_args;
+  if (target.edge_prewarm.has_value()) edge.prewarm_profile = *target.edge_prewarm;
+  return edge;
 }
 
 void WorkerRuntime::LaunchEdge(int slide) {
@@ -502,7 +537,7 @@ void WorkerRuntime::LaunchEdge(int slide) {
   }
   const EdgeLaunchSpec spec =
       MakeEdgeLaunchSpec(host_.edge_exe, host_.temp_dir, launch_target,
-                         host_.edge);
+                         EffectiveEdgeConfig(launch_target));
   if (!edge_.Launch(spec)) {
     // No pid to observe: the machine's retry policy owns the next attempt.
     edge_pid_ = 0;

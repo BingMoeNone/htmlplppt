@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -66,12 +67,39 @@ bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
 // another run's flags), and appends one watch-log.txt line per successful write.
 // `edge_profile` is read only when the state enters Live, where it becomes the
 // agent-arm profile, so the caller can resolve the current target lazily.
-// RunWorker is the only production owner; the win32 suite installs the same
-// callback on a fake driver.
+// This synchronous form is the test seam (the win32 suite installs it on a fake
+// driver); production uses CompatFlagMirror below so the loop never blocks on
+// the config directory.
 std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
     CompatFlags& flags, LegacyLog& log,
     std::function<std::string(const StateSnapshot&)> edge_profile,
     State initial_state = State::Boot);
+
+// Off-loop legacy flag writer. The worker's on_step callback must stay cheap: a
+// slow/SMB/AV-scanned config directory would otherwise block the loop past the
+// supervisor's progress-stall timeout and get the worker restarted. OnStep
+// computes the transition rows on the loop thread (cheap) and queues them; a
+// dedicated thread performs the file writes in order. Flush() drains the queue
+// and joins before the compat guard deletes the files (or before the process
+// exits), so no write is lost.
+class CompatFlagMirror {
+ public:
+  CompatFlagMirror(CompatFlags& flags, LegacyLog& log,
+                   std::function<std::string(const StateSnapshot&)> edge_profile,
+                   State initial_state = State::Boot);
+  ~CompatFlagMirror();
+  CompatFlagMirror(const CompatFlagMirror&) = delete;
+  CompatFlagMirror& operator=(const CompatFlagMirror&) = delete;
+
+  // Called on the worker loop thread after every Step.
+  void OnStep(const StateSnapshot& snapshot);
+  // Drains pending writes and stops the writer thread. Safe to call twice.
+  void Flush();
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // Sends heartbeats while `startup` runs on the calling thread. The caller keeps
 // its COM apartment; a helper thread only writes frames and blackbox records.

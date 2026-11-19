@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -47,7 +48,7 @@ bool RecordDue(int heartbeat_count, int every) {
 }
 
 Frame MakeHeartbeat(std::uint32_t sequence, State state,
-                    std::uint64_t progress, bool at_safe_point) {
+                    std::uint64_t progress, bool at_safe_point, bool paused) {
   Frame frame;
   frame.header.type = FrameType::Heartbeat;
   frame.header.sequence = sequence;
@@ -55,7 +56,8 @@ Frame MakeHeartbeat(std::uint32_t sequence, State state,
   HeartbeatPayload payload;
   payload.state = static_cast<std::uint8_t>(state);
   payload.progress = progress;
-  payload.flags = at_safe_point ? kHeartbeatFlagSafePoint : 0;
+  if (at_safe_point) payload.flags |= kHeartbeatFlagSafePoint;
+  if (paused) payload.flags |= kHeartbeatFlagPaused;
   frame.payload = EncodeHeartbeatPayload(payload);
   return frame;
 }
@@ -94,6 +96,7 @@ class HeartbeatSender {
                   const std::atomic<int>& published_state,
                   const std::atomic<std::uint64_t>& published_progress,
                   const std::atomic<bool>& safe_point,
+                  const std::atomic<bool>& paused,
                   std::mutex& send_mutex)
       : channel_(channel),
         blackbox_(blackbox),
@@ -101,6 +104,7 @@ class HeartbeatSender {
         published_state_(published_state),
         published_progress_(published_progress),
         safe_point_(safe_point),
+        paused_(paused),
         send_mutex_(send_mutex),
         interval_(HeartbeatInterval(config)) {
     thread_ = std::thread([this] { Run(); });
@@ -139,13 +143,14 @@ class HeartbeatSender {
           published_progress_.load(std::memory_order_relaxed);
       const bool at_safe_point =
           safe_point_.load(std::memory_order_relaxed);
+      const bool paused = paused_.load(std::memory_order_relaxed);
       ++sequence;
       last_sequence_.store(sequence, std::memory_order_relaxed);
       bool sent = false;
       {
         std::lock_guard<std::mutex> lock(send_mutex_);
         sent = channel_.Send(
-            MakeHeartbeat(sequence, state, progress, at_safe_point));
+            MakeHeartbeat(sequence, state, progress, at_safe_point, paused));
       }
       if (!sent) {
         broken_.store(true, std::memory_order_relaxed);
@@ -174,6 +179,9 @@ class HeartbeatSender {
   // reload reads this instead of the state byte so a stale heartbeat can never
   // swap the worker mid-transition.
   const std::atomic<bool>& safe_point_;
+  // Set by the loop when it honours a Pause frame; carried in the flags byte so
+  // the supervisor can wait for the acknowledgement before rebuilding.
+  const std::atomic<bool>& paused_;
   std::mutex& send_mutex_;
   Duration interval_;
   std::thread thread_;
@@ -232,6 +240,88 @@ std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
   };
 }
 
+struct CompatFlagMirror::Impl {
+  Impl(CompatFlags& compat_flags, LegacyLog& legacy_log,
+       std::function<std::string(const StateSnapshot&)> profile,
+       State initial_state)
+      : flags(compat_flags),
+        log(legacy_log),
+        edge_profile(std::move(profile)),
+        previous(initial_state) {
+    thread = std::thread([this] { Run(); });
+  }
+
+  ~Impl() { Stop(); }
+
+  void Run() {
+    for (;;) {
+      FlagWrite row;
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        ready.wait(lock, [this] { return stopping || !queue.empty(); });
+        if (queue.empty()) return;  // stopping and drained
+        row = std::move(queue.front());
+        queue.pop_front();
+      }
+      // A failed write must not claim a log line: the legacy tools read the log
+      // as the history of what actually reached the filesystem.
+      if (!flags.WriteFlag(row.name, row.payload)) continue;
+      log.Append(kWatchLog, "flag " + row.name +
+                                (row.payload.empty() ? std::string{}
+                                                     : " " + row.payload));
+    }
+  }
+
+  void Stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    ready.notify_all();
+    if (thread.joinable()) thread.join();
+  }
+
+  CompatFlags& flags;
+  LegacyLog& log;
+  std::function<std::string(const StateSnapshot&)> edge_profile;
+  State previous;
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::deque<FlagWrite> queue;
+  bool stopping = false;
+  std::thread thread;
+};
+
+CompatFlagMirror::CompatFlagMirror(
+    CompatFlags& flags, LegacyLog& log,
+    std::function<std::string(const StateSnapshot&)> edge_profile,
+    State initial_state)
+    : impl_(std::make_unique<Impl>(flags, log, std::move(edge_profile),
+                                   initial_state)) {}
+
+CompatFlagMirror::~CompatFlagMirror() = default;
+
+void CompatFlagMirror::OnStep(const StateSnapshot& snapshot) {
+  const State from = impl_->previous;
+  impl_->previous = snapshot.state;
+  if (from == snapshot.state) return;
+  const std::string profile = impl_->edge_profile == nullptr
+                                  ? std::string{}
+                                  : impl_->edge_profile(snapshot);
+  std::vector<FlagWrite> rows = FlagsForStateTransition(
+      from, snapshot.state, profile, impl_->flags.base_dir().string());
+  if (rows.empty()) return;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto& row : rows) impl_->queue.push_back(std::move(row));
+  }
+  impl_->ready.notify_one();
+}
+
+void CompatFlagMirror::Flush() {
+  if (impl_ != nullptr) impl_->Stop();
+}
+
 std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
                                        SharedBlackbox& blackbox,
                                        WorkerSessionConfig config,
@@ -243,8 +333,10 @@ std::uint32_t RunWithStartupHeartbeats(FrameChannel& channel,
   // judge these heartbeats by sequence only.
   std::atomic<std::uint64_t> published_progress{kProgressNotStarted};
   std::atomic<bool> safe_point{false};
+  std::atomic<bool> paused{false};
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            published_progress, safe_point, send_mutex);
+                            published_progress, safe_point, paused,
+                            send_mutex);
   // The caller keeps the COM apartment: WPS automation objects are created on
   // this thread, and the heartbeat thread only touches the pipe and the box.
   // The sender must be stopped on every path, including a throwing startup.
@@ -287,6 +379,12 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // reload keys on the one instant a restart cannot drop a transition instead of
   // on the stale state byte or the microsecond between two Steps.
   std::atomic<bool> safe_point{false};
+  // Hot reload handshake. A Pause frame only requests a pause: the loop parks
+  // only when a Step returns with the machine still in Monitoring, because the
+  // safe-point heartbeat can be up to one interval stale and the worker may
+  // already be mid-transition. Resume cancels both the request and the park.
+  std::atomic<bool> pause_requested{false};
+  std::atomic<bool> paused{false};
   driver.SetSafePointFlag(&safe_point);
   std::mutex send_mutex;
   if (!pipe_alive) report_loss(kLossDetail);
@@ -295,34 +393,60 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
   // long COM action inside it must not starve the supervisor. This loop adds
   // no sleep of its own.
   HeartbeatSender heartbeat(channel, blackbox, config, published_state,
-                            published_progress, safe_point, send_mutex);
+                            published_progress, safe_point, paused,
+                            send_mutex);
   bool external_stop_sent = false;
   while (!driver.done()) {
     if (pipe_alive) {
       const auto command = channel.Receive(Duration{0});
       if (command.has_value()) {
         // Restart frames are the supervisor's job: it terminates this worker
-        // and launches a new one, so the session only acts on Stop.
+        // and launches a new one, so the session only acts on Stop. Pause parks
+        // the loop for hot reload; Stop always wins so cleanup can start.
         if (command->header.type == FrameType::Stop) {
+          pause_requested.store(false, std::memory_order_relaxed);
+          paused.store(false, std::memory_order_relaxed);
           driver.RequestStop(kStopReason);
+        } else if (command->header.type == FrameType::Pause) {
+          pause_requested.store(true, std::memory_order_relaxed);
+        } else if (command->header.type == FrameType::Resume) {
+          pause_requested.store(false, std::memory_order_relaxed);
+          paused.store(false, std::memory_order_relaxed);
         }
       } else if (channel.broken()) {
         pipe_alive = false;
         report_loss(kLossDetail);
+        // The supervisor that requested the pause is gone; a parked loop would
+        // otherwise stay parked forever (the loss policy is "continue").
+        pause_requested.store(false, std::memory_order_relaxed);
+        paused.store(false, std::memory_order_relaxed);
       }
     }
     if (heartbeat.broken() && !loss_reported) {
       pipe_alive = false;
       report_loss(kLossDetail);
+      pause_requested.store(false, std::memory_order_relaxed);
+      paused.store(false, std::memory_order_relaxed);
     }
     // Spec 11.3: the legacy stop script deletes watcher.lock instead of sending
     // a frame. Latch it so the stop reason is journalled once.
     if (!external_stop_sent && config.external_stop &&
         config.external_stop()) {
       external_stop_sent = true;
+      // A paused loop must resume so Step() can run the machine's stop/cleanup
+      // actions; parking forever would defer the legacy stop indefinitely.
+      pause_requested.store(false, std::memory_order_relaxed);
+      paused.store(false, std::memory_order_relaxed);
       driver.RequestStop(kLegacyStopReason);
     }
     if (driver.done()) break;
+    if (paused.load(std::memory_order_relaxed)) {
+      // Parked for hot reload: keep the session responsive to Stop/Resume but do
+      // not advance the machine. The heartbeat thread keeps reporting the
+      // paused flag, which is the supervisor's acknowledgement.
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
     const bool keep_going = driver.Step();
     const StateSnapshot& snapshot = driver.snapshot();
     // Published after the step returns, never before: a blocking Step must not
@@ -332,6 +456,13 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
     // Every step, including the one that ends the run, so a final transition
     // into Stopping/SafeMode/Exited is still mirrored.
     if (config.on_step) config.on_step(snapshot);
+    // A stale safe-point heartbeat may have requested the pause while the
+    // machine was already switching. Only park when this Step ended in
+    // Monitoring; otherwise the next Step finishes the transition first.
+    if (pause_requested.load(std::memory_order_relaxed) &&
+        snapshot.state == State::Monitoring) {
+      paused.store(true, std::memory_order_relaxed);
+    }
     if (!keep_going) break;
     published_state.store(static_cast<int>(snapshot.state),
                           std::memory_order_relaxed);
