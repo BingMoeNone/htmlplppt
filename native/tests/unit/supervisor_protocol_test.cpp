@@ -60,12 +60,26 @@ HTMLPPT_TEST_CASE(decode_rejects_bad_magic) {
   HTMLPPT_CHECK_EQ(decoded.consumed, std::size_t{1});
 }
 
+// The 10-byte heartbeat payload grew the wire format, so the frame version was
+// bumped: a version-1 frame from a mixed build must be refused at the handshake
+// instead of reaching DecodeHeartbeatPayload as a nullopt.
 HTMLPPT_TEST_CASE(decode_rejects_bad_version) {
   auto encoded = EncodeFrame(Frame{});
-  encoded[4] = 2;
+  encoded[4] = 1;
   const auto decoded = DecodeFrame(encoded);
   HTMLPPT_CHECK(decoded.status == DecodeStatus::BadVersion);
   HTMLPPT_CHECK_EQ(decoded.consumed, htmlppt::kFrameHeaderSize);
+}
+
+// The current build handshakes at version 2 and accepts its own frames.
+HTMLPPT_TEST_CASE(frame_version_two_is_accepted) {
+  HTMLPPT_CHECK_EQ(htmlppt::kFrameVersion, std::uint16_t{2});
+  const auto encoded = EncodeFrame(Frame{});
+  HTMLPPT_CHECK_EQ(encoded[4], std::uint8_t{2});
+  HTMLPPT_CHECK_EQ(encoded[5], std::uint8_t{0});
+  const auto decoded = DecodeFrame(encoded);
+  HTMLPPT_CHECK(decoded.status == DecodeStatus::Ok);
+  HTMLPPT_CHECK_EQ(decoded.frame.header.version, htmlppt::kFrameVersion);
 }
 
 HTMLPPT_TEST_CASE(decode_rejects_bad_crc) {
@@ -96,7 +110,9 @@ HTMLPPT_TEST_CASE(decode_rejects_oversized_payload) {
   malicious[1] = 0x54;
   malicious[2] = 0x50;
   malicious[3] = 0x48;
-  malicious[4] = 1;
+  malicious[4] = static_cast<std::uint8_t>(htmlppt::kFrameVersion & 0xFF);
+  malicious[5] =
+      static_cast<std::uint8_t>((htmlppt::kFrameVersion >> 8) & 0xFF);
   malicious[22] = static_cast<std::uint8_t>(length & 0xFF);
   malicious[23] = static_cast<std::uint8_t>((length >> 8) & 0xFF);
   malicious[24] = static_cast<std::uint8_t>((length >> 16) & 0xFF);

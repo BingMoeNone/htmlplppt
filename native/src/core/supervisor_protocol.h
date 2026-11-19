@@ -11,7 +11,10 @@
 namespace htmlppt {
 
 inline constexpr std::uint32_t kFrameMagic = 0x48505446u;  // "HPTF"
-inline constexpr std::uint16_t kFrameVersion = 1;
+// Bumped to 2 with the 10-byte heartbeat payload (state + progress + flags): a
+// mixed-build peer must fail the handshake with BadVersion instead of accepting
+// a frame whose extra byte the old decoder would silently drop.
+inline constexpr std::uint16_t kFrameVersion = 2;
 inline constexpr std::size_t kFrameHeaderSize = 30;
 inline constexpr std::size_t kMaxFramePayload = 64 * 1024;
 
