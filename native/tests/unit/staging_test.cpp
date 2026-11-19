@@ -150,6 +150,34 @@ HTMLPPT_TEST_CASE(staging_tree_does_not_overwrite_the_staged_html) {
 // subdirectory after the range-for constructor succeeded. The old range-for
 // threw filesystem_error out of StageTargetHtml; the error_code increment must
 // turn it into a staged=false outcome instead.
+// A symbolic link inside the asset tree points outside the root, and copying
+// through it would stage a file the resolver never authorized. The target must
+// fail, and the HTML copied before the tree walk must not be left behind for a
+// later target to serve.
+HTMLPPT_TEST_CASE(staging_tree_rejects_a_symlinked_asset) {
+  const auto dir = MakeTempDir("htmlppt-staging-symlink");
+  const auto root = dir / "assets";
+  WriteFile(root / "page.html", "<html>tree</html>");
+  WriteFile(dir / "outside.txt", "secret");
+  std::error_code link_error;
+  std::filesystem::create_symlink(dir / "outside.txt", root / "linked.txt",
+                                  link_error);
+  if (link_error) {
+    // Windows without developer mode cannot create symlinks; the guard is
+    // exercised on machines that can.
+    std::filesystem::remove_all(dir, link_error);
+    return;
+  }
+  const auto outcome =
+      StageTargetHtml(MakeTarget(root / "page.html", "tree", root),
+                      dir / "stage", 0);
+  HTMLPPT_CHECK(!outcome.staged);
+  HTMLPPT_CHECK(outcome.error.find("symbolic link") != std::string::npos);
+  HTMLPPT_CHECK(!std::filesystem::exists(dir / "stage" / "page1.html"));
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
+
 HTMLPPT_TEST_CASE(staging_tree_unreadable_subdirectory_fails_cleanly) {
 #ifndef _WIN32
   const auto dir = MakeTempDir("htmlppt-staging-unreadable");

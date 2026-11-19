@@ -2,6 +2,7 @@
 
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "core/utf8_path.h"
 
@@ -117,41 +118,63 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
     return outcome;
   }
   std::string error;
-  if (!CopyFile(source, staged_html, &error)) {
-    outcome.error = std::move(error);
+  // Every file this target put in the shared stage directory. A failure removes
+  // them again: a later target must not serve (or collide with) a half-staged
+  // tree that belongs to a target the resolver rejected.
+  std::vector<std::filesystem::path> created;
+  created.push_back(staged_html);
+  const auto abort_staging = [&](std::string message) {
+    for (const auto& path : created) {
+      std::error_code cleanup;
+      std::filesystem::remove(path, cleanup);
+    }
+    outcome.error = std::move(message);
     return outcome;
+  };
+  if (!CopyFile(source, staged_html, &error)) {
+    return abort_staging(std::move(error));
   }
   std::uint64_t copied = html_bytes;
 
   if (tree) {
     const auto root = PathFromUtf8(target.assets_root);
     if (root.empty() || !std::filesystem::is_directory(root, code)) {
-      outcome.error = "asset root does not exist: " + target.assets_root;
-      return outcome;
+      return abort_staging("asset root does not exist: " +
+                           target.assets_root);
     }
     std::filesystem::recursive_directory_iterator it(root, code);
     if (code) {
-      outcome.error = "cannot read asset root " + target.assets_root + ": " +
-                      code.message();
-      return outcome;
+      return abort_staging("cannot read asset root " + target.assets_root +
+                           ": " + code.message());
     }
     const std::filesystem::recursive_directory_iterator end;
     while (it != end) {
       const auto& entry = *it;
+      std::error_code link_error;
+      const bool symlink = entry.is_symlink(link_error);
+      if (link_error) {
+        return abort_staging("cannot stat asset " + Utf8Path(entry.path()) +
+                             ": " + link_error.message());
+      }
+      // A symlink can point outside the asset root, i.e. at a file the
+      // resolver never authorized; fail instead of copying through it.
+      if (symlink) {
+        return abort_staging("asset is a symbolic link: " +
+                             Utf8Path(entry.path()));
+      }
       if (!PathEquals(entry.path(), source)) {
         const bool regular = entry.is_regular_file(code);
         if (code) {
-          outcome.error = "cannot stat asset " + Utf8Path(entry.path()) + ": " +
-                          code.message();
-          return outcome;
+          return abort_staging("cannot stat asset " + Utf8Path(entry.path()) +
+                               ": " + code.message());
         }
         if (regular) {
           const auto relative =
               std::filesystem::relative(entry.path(), root, code);
           if (code) {
-            outcome.error = "cannot resolve asset " +
-                            Utf8Path(entry.path()) + ": " + code.message();
-            return outcome;
+            return abort_staging("cannot resolve asset " +
+                                 Utf8Path(entry.path()) + ": " +
+                                 code.message());
           }
           const std::string relative_text = relative.generic_string();
           if (PassesFilters(relative_text, target.assets_include,
@@ -163,14 +186,14 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
               const auto bytes = FileSize(entry.path());
               if (max_bytes > 0 &&
                   copied + bytes > static_cast<std::uint64_t>(max_bytes)) {
-                outcome.error = "staged assets exceed assets.maxBytes at " +
-                                Utf8Path(relative);
-                return outcome;
+                return abort_staging(
+                    "staged assets exceed assets.maxBytes at " +
+                    Utf8Path(relative));
               }
+              created.push_back(destination);
               std::string copy_error;
               if (!CopyFile(entry.path(), destination, &copy_error)) {
-                outcome.error = std::move(copy_error);
-                return outcome;
+                return abort_staging(std::move(copy_error));
               }
               copied += bytes;
             }
@@ -182,9 +205,8 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
         // The error_code overload is the point: the throwing range-for used to
         // escape StageTargetHtml (and terminate the worker) on an unreadable
         // subdirectory. Fail the target with a message instead.
-        outcome.error = "cannot read asset tree " + target.assets_root + ": " +
-                        code.message();
-        return outcome;
+        return abort_staging("cannot read asset tree " + target.assets_root +
+                             ": " + code.message());
       }
     }
   }
