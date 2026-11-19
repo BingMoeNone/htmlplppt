@@ -42,13 +42,20 @@ if command -v fc-match >/dev/null 2>&1; then
     fail "font preflight failed: $FONT -> $MATCH (install the font and run fc-cache -f)"
   fi
 elif [ -d /c/Windows/Fonts ]; then
-  # Windows has no fontconfig; check the installed font files directly.
+  # Windows has no fontconfig; check the installed font files directly. `grep`
+  # exits 1 when nothing matches and `set -e` would abort the script before the
+  # friendly failure below could run, so a missing match is an empty one here.
+  font_file() {
+    ls /c/Windows/Fonts 2>/dev/null | grep -iE "$1" | head -n 1 || true
+  }
   case "$(printf '%s' "$FONT" | tr '[:upper:]' '[:lower:]')" in
-    *yahei*)    MATCH="$(ls /c/Windows/Fonts 2>/dev/null | grep -iE '^msyh' | head -n 1)" ;;
-    *dengxian*) MATCH="$(ls /c/Windows/Fonts 2>/dev/null | grep -iE '^deng' | head -n 1)" ;;
-    *simhei*)   MATCH="$(ls /c/Windows/Fonts 2>/dev/null | grep -iE '^simhei' | head -n 1)" ;;
-    *simsun*)   MATCH="$(ls /c/Windows/Fonts 2>/dev/null | grep -iE '^simsun' | head -n 1)" ;;
-    *)          MATCH="$(ls /c/Windows/Fonts 2>/dev/null | grep -iE '^msyh|^deng|^simhei|^simsun' | head -n 1)" ;;
+    *yahei*)    MATCH="$(font_file '^msyh')" ;;
+    *dengxian*) MATCH="$(font_file '^deng')" ;;
+    *simhei*)   MATCH="$(font_file '^simhei')" ;;
+    *simsun*)   MATCH="$(font_file '^simsun')" ;;
+    # Fail closed on an unknown family: accepting any CJK font here would pass
+    # preflight while scripts/lib/fonts.mjs rejects the same family later.
+    *) fail "font preflight failed: unknown REQUIRED_FONT '$FONT' (expected Microsoft YaHei, DengXian, SimHei or SimSun)" ;;
   esac
   if [ -z "$MATCH" ]; then
     fail "font preflight failed: no CJK font in C:\\Windows\\Fonts (install $FONT or set REQUIRED_FONT)"

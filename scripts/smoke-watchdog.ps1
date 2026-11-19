@@ -97,6 +97,13 @@ function Start-CapturedProcess {
   if (-not $process.Start()) {
     throw "cannot start process: $FilePath"
   }
+  # Drain both pipes asynchronously. The supervisor writes warnings while it
+  # runs, and a redirected pipe nobody reads fills up at ~4 KiB and blocks the
+  # child, which turns a bounded WaitForExit into a false timeout.
+  $null = $process | Add-Member -Force -NotePropertyName CapturedStdOut `
+    -NotePropertyValue $process.StandardOutput.ReadToEndAsync()
+  $null = $process | Add-Member -Force -NotePropertyName CapturedStdErr `
+    -NotePropertyValue $process.StandardError.ReadToEndAsync()
   return $process
 }
 
@@ -115,10 +122,12 @@ function Invoke-CliCapture {
         StdErr = "timed out after $TimeoutSeconds s"
       }
     }
+    # The asynchronous drains are complete once the process has exited.
+    $captured = Get-CapturedOutput -Process $process
     return [pscustomobject]@{
       ExitCode = $process.ExitCode
-      StdOut = $process.StandardOutput.ReadToEnd()
-      StdErr = $process.StandardError.ReadToEnd()
+      StdOut = $captured.StdOut
+      StdErr = $captured.StdErr
     }
   } finally {
     $process.Dispose()
@@ -131,8 +140,8 @@ function Get-CapturedOutput {
   if ($null -eq $Process) { return $result }
   if (-not $Process.HasExited) { return $result }
   try {
-    $result.StdOut = $Process.StandardOutput.ReadToEnd()
-    $result.StdErr = $Process.StandardError.ReadToEnd()
+    $result.StdOut = $Process.CapturedStdOut.GetAwaiter().GetResult()
+    $result.StdErr = $Process.CapturedStdErr.GetAwaiter().GetResult()
   } catch {
     # A failed read must never hide the journal tail below.
   }
