@@ -130,7 +130,7 @@ HTMLPPT_TEST_CASE(reconcile_restore_wps_also_cleans_leftovers) {
   HTMLPPT_CHECK_EQ(decision.target_slide, 5);
 }
 
-HTMLPPT_TEST_CASE(reconcile_safe_mode_cleans_leftovers) {
+HTMLPPT_TEST_CASE(reconcile_faulted_run_enters_safe_mode) {
   ReconcileFacts facts;
   facts.edge_process_alive = true;
   facts.overlay_owned = true;
@@ -142,6 +142,24 @@ HTMLPPT_TEST_CASE(reconcile_safe_mode_cleans_leftovers) {
   HTMLPPT_CHECK(decision.hide_overlay);
   HTMLPPT_CHECK(decision.resume_wps);
   HTMLPPT_CHECK_EQ(decision.target_slide, 5);
+  HTMLPPT_CHECK(decision.reason.find("Faulted") != std::string::npos);
+}
+
+// A run that ended in SafeMode takes the same cleanup branch as Faulted; the
+// reason names the state so the journal distinguishes the two.
+HTMLPPT_TEST_CASE(reconcile_safe_mode_run_enters_safe_mode) {
+  ReconcileFacts facts;
+  facts.edge_process_alive = true;
+  facts.overlay_owned = true;
+  facts.can_restore_wps = true;
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-1", "SafeMode", 3)}, facts, "run-1");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::SafeMode);
+  HTMLPPT_CHECK(decision.kill_edge);
+  HTMLPPT_CHECK(decision.hide_overlay);
+  HTMLPPT_CHECK(decision.resume_wps);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 3);
+  HTMLPPT_CHECK(decision.reason.find("SafeMode") != std::string::npos);
 }
 
 HTMLPPT_TEST_CASE(reconcile_clean_preserves_target_slide) {
