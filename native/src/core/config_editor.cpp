@@ -379,32 +379,10 @@ void ConfigEditorModel::ResetHistory() {
 
 bool ConfigEditorModel::Save(const std::filesystem::path& path,
                              std::string* error) {
-  const auto temp = path.string() + ".tmp";
-  {
-    std::ofstream output(temp, std::ios::binary | std::ios::trunc);
-    if (!output) {
-      if (error != nullptr) *error = "cannot write " + temp;
-      return false;
-    }
-    const std::string json = ToJson();
-    output.write(json.data(), static_cast<std::streamsize>(json.size()));
-    output.close();
-    if (!output.good()) {
-      if (error != nullptr) *error = "cannot finish " + temp;
-      return false;
-    }
-  }
-  std::error_code remove_error;
-  std::filesystem::remove(path, remove_error);
-  std::error_code rename_error;
-  std::filesystem::rename(temp, path, rename_error);
-  if (rename_error) {
-    if (error != nullptr) {
-      *error = "cannot replace " + path.string() + ": " +
-               rename_error.message();
-    }
-    return false;
-  }
+  // One atomic replace owns the whole operation: a sibling temp file is written
+  // and swapped in by MoveFileEx, so the target is never deleted first and a
+  // failure leaves the previous file (and no temp) behind.
+  if (!WriteFileAtomically(path, ToJson(), error)) return false;
   // The saved config is the new clean baseline: nothing before it is undoable.
   ResetHistory();
   return true;
@@ -412,52 +390,27 @@ bool ConfigEditorModel::Save(const std::filesystem::path& path,
 
 bool ConfigEditorModel::SaveWithBackup(const std::filesystem::path& path,
                                        std::string* error) {
-  const auto temp = path.string() + ".tmp";
-  {
-    std::ofstream output(temp, std::ios::binary | std::ios::trunc);
-    if (!output) {
-      if (error != nullptr) *error = "cannot write " + temp;
-      return false;
-    }
-    const std::string json = ToJson();
-    output.write(json.data(), static_cast<std::streamsize>(json.size()));
-    output.close();
-    if (!output.good()) {
-      std::error_code cleanup_error;
-      std::filesystem::remove(temp, cleanup_error);
-      if (error != nullptr) *error = "cannot finish " + temp;
-      return false;
-    }
-  }
+  const std::string json = ToJson();
   std::error_code exists_error;
   if (std::filesystem::is_regular_file(path, exists_error)) {
+    // A copy of the previous content is the one thing the atomic replace cannot
+    // provide, so take it before the swap. A failed backup must not touch the
+    // config: the caller can still fix the problem and save again.
+    std::filesystem::path backup = path;
+    backup += ".bak";
     std::error_code backup_error;
     std::filesystem::copy_file(
-        path, path.string() + ".bak",
-        std::filesystem::copy_options::overwrite_existing, backup_error);
+        path, backup, std::filesystem::copy_options::overwrite_existing,
+        backup_error);
     if (backup_error) {
-      std::error_code cleanup_error;
-      std::filesystem::remove(temp, cleanup_error);
       if (error != nullptr) {
-        *error = "cannot write " + path.string() + ".bak: " +
+        *error = "cannot write " + Utf8Path(backup) + ": " +
                  backup_error.message();
       }
       return false;
     }
   }
-  std::error_code remove_error;
-  std::filesystem::remove(path, remove_error);
-  std::error_code rename_error;
-  std::filesystem::rename(temp, path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup_error;
-    std::filesystem::remove(temp, cleanup_error);
-    if (error != nullptr) {
-      *error = "cannot replace " + path.string() + ": " +
-               rename_error.message();
-    }
-    return false;
-  }
+  if (!WriteFileAtomically(path, json, error)) return false;
   // The saved config is the new clean baseline: nothing before it is undoable.
   ResetHistory();
   return true;

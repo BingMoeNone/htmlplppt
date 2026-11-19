@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "test_utils.h"
+
 #include "core/config_editor.h"
 #include "core/deck_info.h"
 #include "core/mapping_wizard.h"
@@ -384,6 +386,66 @@ HTMLPPT_TEST_CASE(config_editor_save_with_backup_leaves_the_file_on_failure) {
   std::error_code fs_error;
   std::filesystem::remove_all(dir, fs_error);
 }
+HTMLPPT_TEST_CASE(config_editor_save_removes_the_temp_file_when_replace_fails) {
+#ifdef _WIN32
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  const auto path = dir / "watcher.json";
+  std::string error;
+  HTMLPPT_CHECK(model.Save(path, &error));
+  const std::string before = ReadAll(path);
+  // A read-only target cannot be replaced. The failed save must leave the
+  // previous content untouched and must not leave its sibling temp file behind:
+  // the next save would otherwise trip over it.
+  std::error_code permission_error;
+  std::filesystem::permissions(path, std::filesystem::perms::owner_read,
+                               std::filesystem::perm_options::replace,
+                               permission_error);
+  HTMLPPT_CHECK(!permission_error);
+  HTMLPPT_CHECK(model.SetLabel(0, "Two", &error));
+  const bool replaced = model.Save(path, &error);
+  // Restore the attribute before any assertion can throw: a read-only file left
+  // behind would make every later test that shares this fixed directory fail.
+  std::filesystem::permissions(path, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace,
+                               permission_error);
+  HTMLPPT_CHECK(!replaced);
+  HTMLPPT_CHECK(!error.empty());
+  HTMLPPT_CHECK_EQ(ReadAll(path), before);
+  HTMLPPT_CHECK(!std::filesystem::exists(dir / "watcher.json.tmp"));
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+#endif
+}
+
+HTMLPPT_TEST_CASE(config_editor_save_with_backup_round_trips_a_cjk_path) {
+  // A config in a directory whose name is not representable in the ANSI code
+  // page must save exactly like an ASCII one. The narrow-string temp/backup path
+  // used to make the save fail (or write to a mangled sibling name).
+  const htmlppt::test::TempDir root;
+  const auto dir = root.path() / std::filesystem::path(L"\u4E2D\u6587");
+  std::error_code fs_error;
+  std::filesystem::create_directories(dir, fs_error);
+  HTMLPPT_CHECK(!fs_error);
+  std::ofstream(dir / "page1.html") << "<html></html>";
+  std::ofstream(dir / "deck.pptx") << "";
+  const auto path = dir / std::filesystem::path(L"\u914D\u7F6E.json");
+  {
+    std::ofstream seed(path, std::ios::binary | std::ios::trunc);
+    seed << "{}";
+  }
+  ConfigEditorModel model(MakeConfig(dir));
+  model.SetLabel(0, "One", nullptr);
+  std::string error;
+  HTMLPPT_CHECK(model.SaveWithBackup(path, &error));
+  HTMLPPT_CHECK(error.empty());
+  HTMLPPT_CHECK(std::filesystem::exists(path));
+  HTMLPPT_CHECK(std::filesystem::exists(path.wstring() + L".bak"));
+  const auto reloaded = htmlppt::LoadConfigFile(path);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK_EQ(reloaded.config->active.targets.size(), std::size_t{1});
+}
+
 HTMLPPT_TEST_CASE(config_editor_display_rows_mark_the_failing_target) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));
