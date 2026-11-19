@@ -17,4 +17,11 @@ bool ClearStaleReloadRequest(const std::filesystem::path& state_dir) {
   return !error;
 }
 
+FailedReload ClearFailedReloadRequest(const std::filesystem::path& state_dir) {
+  FailedReload result;
+  result.request_cleared = ClearStaleReloadRequest(state_dir);
+  result.latch = !result.request_cleared;
+  return result;
+}
+
 } // namespace htmlppt

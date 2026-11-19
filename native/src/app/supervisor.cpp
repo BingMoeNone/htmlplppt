@@ -1113,8 +1113,16 @@ int RunSupervisor(const SupervisorRunOptions& options) {
       AppendJournal(journal, run_id, "Monitoring", "reload",
                     "reload: failed " + plan_error);
       std::cerr << "warning: reload failed: " << plan_error << "\n";
-      std::error_code remove_error;
-      std::filesystem::remove(request_path, remove_error);
+      // The request belongs to this attempt: retiring it stops the heartbeat
+      // loop from pausing the worker and rebuilding the same broken plan again.
+      // If even the delete fails, latch it so later heartbeats only retry the
+      // delete instead of rebuilding forever.
+      const FailedReload failed = ClearFailedReloadRequest(state_dir);
+      if (!failed.request_cleared) {
+        reload_request_stuck = true;
+        AppendJournal(journal, run_id, "Monitoring", "reload",
+                      "reload: failed (request not cleared)");
+      }
       return std::nullopt;
     }
     for (const auto& warning : plan_warnings) {

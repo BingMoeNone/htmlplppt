@@ -32,4 +32,15 @@ bool ShouldJournalDefer(ReloadDecision decision, bool already_journalled);
 // false when it exists and could not be removed.
 bool ClearStaleReloadRequest(const std::filesystem::path& state_dir);
 
+// Outcome of retiring a request whose rebuild failed. The request must not stay
+// pending, or every heartbeat would pause the worker and rebuild the same broken
+// plan again. When the marker itself cannot be removed the supervisor latches it:
+// later heartbeats only retry the delete, never the rebuild.
+struct FailedReload {
+  bool request_cleared = true;
+  bool latch = false;
+};
+
+FailedReload ClearFailedReloadRequest(const std::filesystem::path& state_dir);
+
 } // namespace htmlppt

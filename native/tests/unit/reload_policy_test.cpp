@@ -6,6 +6,7 @@
 #include "core/reload_policy.h"
 #include "test_utils.h"
 
+using htmlppt::ClearFailedReloadRequest;
 using htmlppt::ClearStaleReloadRequest;
 using htmlppt::DecideReload;
 using htmlppt::ReloadDecision;
@@ -56,7 +57,32 @@ HTMLPPT_TEST_CASE(reload_policy_journals_a_deferral_once) {
                                     /*already_journalled=*/false));
 }
 
-// A reload request belongs to the run that was live when it was written: the
+// A failed rebuild must not leave the request pending: without the latch every
+// heartbeat would pause the worker, rebuild the same broken plan, and journal
+// again. A request that cannot even be deleted latches; every other outcome
+// clears it.
+HTMLPPT_TEST_CASE(reload_policy_latches_a_failed_rebuild_only_when_stuck) {
+  htmlppt::test::TempDir dir;
+  const auto missing = ClearFailedReloadRequest(dir.path());
+  HTMLPPT_CHECK(missing.request_cleared);
+  HTMLPPT_CHECK(!missing.latch);
+
+  {
+    std::ofstream request(dir.path() / "reload.request", std::ios::binary);
+    HTMLPPT_CHECK(request.is_open());
+  }
+  const auto cleared = ClearFailedReloadRequest(dir.path());
+  HTMLPPT_CHECK(cleared.request_cleared);
+  HTMLPPT_CHECK(!cleared.latch);
+  HTMLPPT_CHECK(!std::filesystem::exists(dir.path() / "reload.request"));
+
+  std::filesystem::create_directories(dir.path() / "reload.request" / "child");
+  const auto stuck = ClearFailedReloadRequest(dir.path());
+  HTMLPPT_CHECK(!stuck.request_cleared);
+  HTMLPPT_CHECK(stuck.latch);
+}
+
+
 // supervisor clears any marker left in the state directory before it starts a
 // new run, so an old request cannot restart the fresh worker at its first safe
 // point. A missing marker is success too -- the common case.
