@@ -214,6 +214,7 @@ The same EXE runs as supervisor and worker.
 - `--worker --run-id <id>` reads the plan and the effective config, opens the deck in WPS, starts the slideshow, and runs the state machine loop, heartbeating the current state while the loop works. It exits on a Stop frame or after a clean state-machine exit; a supervisor loss is reported to the machine and the loop continues.
 - `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
 - `--status --run-id <id> --state-dir <dir>` prints the run id, state, worker PID, last event and the last black-box records (each line ends with the state name, e.g. `[Monitoring]`) plus the journal path.
+- `--reload --run-id <id> --state-dir <dir>` writes the empty `reload.request` marker the running supervisor polls at each heartbeat. The supervisor rebuilds the plan and restarts the worker only at a worker safe point (between Steps, parked in `Monitoring`); the command returns immediately and the request is consumed even when the rebuild fails.
 - `--diagnostics --run-id <id> --state-dir <dir> --out <path>` writes a self-contained package: `manifest.txt`, `journal.jsonl`, `watch-log.txt`, the plan/effective config, a black-box snapshot (`blackbox.txt`, when the run still owns it) and any crash dumps.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
@@ -401,14 +402,16 @@ From a second shell, inspect the run and stop it:
 
 ```powershell
 native\build\htmlppt-watchdog.exe --status --run-id demo --state-dir .\state
+native\build\htmlppt-watchdog.exe --reload --run-id demo --state-dir .\state
 native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir .\state
 ```
 
 `--status` prints the last black-box records (state number and name) and the
-journal path. `--stop` sets the stop event and returns after the supervisor has
-terminated the worker, flushed the journal, and closed its handles; it exits 0
-after a clean stop. A config or deck that cannot be resolved fails before a worker is
-launched, journals the reason, and exits 1.
+journal path. `--reload` asks the live run to rebuild its plan and restart the
+worker at the next safe point. `--stop` sets the stop event and returns after the
+supervisor has terminated the worker, flushed the journal, and closed its
+handles; it exits 0 after a clean stop. A config or deck that cannot be resolved
+fails before a worker is launched, journals the reason, and exits 1.
 
 WPS Presentation must be installed and the deck must be closed before a run:
 the supervisor reads the deck facts through COM and the worker opens that deck

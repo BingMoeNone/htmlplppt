@@ -350,8 +350,10 @@ class ConfigWindow {
   HWND detail_enabled_check_ = nullptr;
   HWND detail_apply_button_ = nullptr;
   HFONT font_ = nullptr;
-  // The resolved scheme for this window and its solid surface brush. The brush
-  // is created once per scheme and deleted with the window (WM_DESTROY).
+  // The resolved scheme for this window and its solid surface brush. The scheme
+  // is resolved once in Create (System reads AppsUseLightTheme then); a live
+  // Windows theme change is not observed after creation. The brush is created
+  // once per scheme and deleted with the window (WM_DESTROY).
   ConfigWindowColors colors_ = kConfigWindowLightColors;
   HBRUSH background_brush_ = nullptr;
   COLORREF brush_color_ = CLR_INVALID;

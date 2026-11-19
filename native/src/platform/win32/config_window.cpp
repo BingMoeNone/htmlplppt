@@ -293,7 +293,11 @@ bool ConfigWindow::Create(const ConfigWindowOptions& options) {
 
   // Resolve the scheme before the window exists: the window paints its own
   // background and its first WM_ERASEBKGND arrives before the children (and
-  // before a post-creation ApplyTheme) exist.
+  // before a post-creation ApplyTheme) exist. The scheme is create-time only:
+  // `System` reads AppsUseLightTheme here, and a live Windows theme change is
+  // picked up the next time a window is created, not through
+  // WM_THEMECHANGED/WM_SETTINGCHANGE. ApplyTheme re-applies the resolved colours
+  // on DPI changes; it never re-resolves them.
   colors_ = ColorsFor(options.theme);
   ApplyTheme();
 
@@ -1217,12 +1221,14 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       FillRect(dc, &client, background_brush_);
       return 1;
     }
+    case WM_CTLCOLORBTN:
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX: {
       // The status line, the detail labels/edits, the assets drop-down list,
-      // and the pane's check box all paint on the themed surface with the
-      // themed text colour. A disabled EDIT arrives as WM_CTLCOLORSTATIC.
+      // the pane's check box, and the push buttons all paint on the themed
+      // surface with the themed text colour. A disabled EDIT arrives as
+      // WM_CTLCOLORSTATIC; a check box arrives as WM_CTLCOLORBTN.
       auto* dc = reinterpret_cast<HDC>(wparam);
       if (dc != nullptr) {
         SetTextColor(dc, colors_.text);

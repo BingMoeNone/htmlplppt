@@ -2020,6 +2020,27 @@ HTMLPPT_TEST_CASE(win32_config_window_dark_theme_uses_dark_surfaces) {
   HTMLPPT_CHECK_EQ(*combo_background,
                    htmlppt::kConfigWindowDarkColors.background);
 
+  // The detail pane's "Enabled" check box paints through WM_CTLCOLORBTN; a
+  // button that missed the theme would keep the white dialog face.
+  HWND checkbox = nullptr;
+  for (HWND child = FindWindowExW(window.handle(), nullptr, L"BUTTON", nullptr);
+       child != nullptr;
+       child = FindWindowExW(window.handle(), child, L"BUTTON", nullptr)) {
+    if ((GetWindowLongPtrW(child, GWL_STYLE) & BS_TYPEMASK) ==
+        BS_AUTOCHECKBOX) {
+      checkbox = child;
+      break;
+    }
+  }
+  HTMLPPT_CHECK(checkbox != nullptr);
+  COLORREF checkbox_text = CLR_INVALID;
+  const std::optional<COLORREF> checkbox_background = ControlSurfaceColor(
+      window.handle(), WM_CTLCOLORBTN, checkbox, &checkbox_text);
+  HTMLPPT_CHECK(checkbox_background.has_value());
+  HTMLPPT_CHECK_EQ(*checkbox_background,
+                   htmlppt::kConfigWindowDarkColors.background);
+  HTMLPPT_CHECK_EQ(checkbox_text, htmlppt::kConfigWindowDarkColors.text);
+
   // The window itself erases to the dark surface, so a resize never flashes a
   // light rectangle around the themed children.
   const std::optional<COLORREF> erased =

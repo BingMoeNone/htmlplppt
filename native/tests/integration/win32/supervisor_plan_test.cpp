@@ -41,6 +41,12 @@ ResolvedTarget MakeSpec(int ordinal, int slide) {
 // block empty so the worker keeps the host screen.
 HTMLPPT_TEST_CASE(win32_resolve_target_screens_fills_only_display_targets) {
   Config config;
+  // A foreign/disabled target comes first, so the plan index and the source
+  // ordinal differ (plan[0] <- config[1], ordinal 2). A regression that used the
+  // plan index instead of the ordinal would read the foreign target and leave
+  // the real display target unfilled.
+  TargetConfig foreign;
+  foreign.slide = 9;
   TargetConfig with_display;
   with_display.slide = 1;
   DisplayConfig display;
@@ -48,11 +54,11 @@ HTMLPPT_TEST_CASE(win32_resolve_target_screens_fills_only_display_targets) {
   with_display.display = display;
   TargetConfig without_display;
   without_display.slide = 2;
-  config.active.targets = {with_display, without_display};
+  config.active.targets = {foreign, with_display, without_display};
 
   RunPlan plan;
   plan.targets = {MakePlanTarget(1), MakePlanTarget(2)};
-  const std::vector<ResolvedTarget> resolved = {MakeSpec(1, 1), MakeSpec(2, 2)};
+  const std::vector<ResolvedTarget> resolved = {MakeSpec(2, 1), MakeSpec(3, 2)};
 
   ResolveTargetScreens(plan, config, resolved);
   HTMLPPT_CHECK(plan.targets[0].screen_width.has_value());
