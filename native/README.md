@@ -524,10 +524,12 @@ title cannot strand a full-screen browser on top of the resumed deck. Calling
 `window.close()` after a short delay is still recommended and is what the
 template does. See `references/live-content-trigger.md` for the full protocol.
 
-Pass ASCII paths for `--config`, `--state-dir`, and `-StateDir`: the native CLI
-converts path arguments through the ANSI code page, so a non-ASCII path aborts
-the process before the run starts. Deck paths inside the config file may still
-be UTF-8.
+Non-ASCII `--config`, `--state-dir`, and deck paths are supported: the Windows
+entry point parses `GetCommandLineW` into UTF-8 arguments instead of the CRT's
+ANSI argv, and every CLI path is decoded as UTF-8. `stageName` is the one
+deliberate exception: it must stay an ASCII file name (the resolver rejects
+separators, reserved device names, and trailing dots/spaces) so the staged URL
+is predictable on every code page.
 
 ## Cover, focus, Edge, and compatibility core (Plan 5B-1)
 

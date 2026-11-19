@@ -42,7 +42,7 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 
 | # | 项目 | 命令 | 通过判据 |
 |---|---|---|---|
-| 13 | 状态/run-id/PID/最后事件 | `--status --run-id <id> --state-dir <dir>` | 首行含 `state <Name> pid <n>` 与 `last event ...` |
+| 13 | 状态/run-id/PID/最后事件 | `--status --run-id <id> --state-dir <dir>` | 首行含 `state <Name> pid <n>`；有最后事件时第二行为 `last event ...`；终态应为 `Exited` 或 `SafeMode`，不能停在 `Boot`/`Monitoring` |
 | 14 | 诊断包 | `--diagnostics --run-id <id> --state-dir <dir> --out diag`（`--config` 可选） | 生成 `manifest.txt`、journal、watch-log、plan/config；启动时写入的 `run-info.txt` 让诊断进程在不传 `--config` 时也能找到配置目录；有 dump 时一并收集（`--out` 是 state-dir 的祖先目录时同样收集） |
 | 15 | 崩溃 dump | `--dump-helper <pid> <path>` 或真实崩溃 | 生成 `.dmp`，诊断包会收集 |
 

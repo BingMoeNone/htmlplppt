@@ -61,7 +61,8 @@ native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir demo\state
 | `make_deck.py` | 生成 `deck.pptx` 与 `live-page.html`（用 `vendor/` 里的 python-pptx） |
 | `watcher.json` | 配置：目标第 3 页 → `live-page.html`，`assets.mode=file` 走 staging |
 | `live-page.html` | 生成物，来自 `templates/live-page.html` |
-| `state/` | 生成物：`worker-plan.json`、`worker-config.json`、`journal.jsonl`、`watch-log.txt` |
+| `.htmlppt-run/` | 生成物（与 `watcher.json` 同目录）：`worker-plan.json`、`worker-config.json`、`journal.jsonl` |
+| `watch-log.txt` | 生成物（与 `watcher.json` 同目录）：worker 的运行时日志 |
 
-排查：`demo/state/journal.jsonl` 是主管视角的时间线，`demo/state/watch-log.txt`
+排查：`demo/.htmlppt-run/journal.jsonl` 是主管视角的时间线，`demo/watch-log.txt`
 是 worker 的运行时日志（含着色、聚焦、返回的重试细节）。
