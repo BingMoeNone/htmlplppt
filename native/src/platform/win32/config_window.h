@@ -92,6 +92,11 @@ inline constexpr UINT kConfigChangedMessage = WM_APP + 1;
 // app and the tests can deliver the same notification the worker posts.
 inline constexpr UINT kThumbnailsReadyMessage = WM_APP + 2;
 
+// The private message the app's deck-info worker posts: the WPS (or JSON) deck
+// facts finished loading, and the installed handler may take them. Public so the
+// notification can be delivered without WPS in tests.
+inline constexpr UINT kDeckInfoReadyMessage = WM_APP + 3;
+
 // The close policy: a window with no pending edits always closes; a dirty one
 // only when the user answered the close prompt with Save and that save went
 // through (answer_save). Cancel and a failed save keep the window and its edits
@@ -205,6 +210,10 @@ class ConfigWindow {
   // reports the outcome.
   void SetScanHandler(ToolbarHandler handler);
   void SetThumbnailsHandler(std::function<void()> handler);
+  // The deck-info worker finished; the handler takes the loaded facts and
+  // refreshes the rows. Declared next to the scan handlers because it follows
+  // the same worker-thread-then-post pattern.
+  void SetDeckInfoHandler(std::function<void()> handler);
   // The scan gate: closed while a watchdog owns the deck, because the export
   // opens and closes the presentation the worker is showing. A click that still
   // reaches the window while the gate is closed is ignored.
@@ -386,6 +395,7 @@ class ConfigWindow {
   ToolbarHandler scan_handler_;
   ToolbarHandler wizard_handler_;
   std::function<void()> thumbnails_handler_;
+  std::function<void()> deck_info_handler_;
   // The list's small image list and the slot each exported slide landed in.
   // thumbnail_indices_ is parallel to the paths of the last scan (one entry per
   // slide); -1 is a slide whose BMP did not load. The list view keeps its own

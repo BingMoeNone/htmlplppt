@@ -900,6 +900,10 @@ void ConfigWindow::SetThumbnailsHandler(std::function<void()> handler) {
   thumbnails_handler_ = std::move(handler);
 }
 
+void ConfigWindow::SetDeckInfoHandler(std::function<void()> handler) {
+  deck_info_handler_ = std::move(handler);
+}
+
 void ConfigWindow::SetWizardHandler(ToolbarHandler handler) {
   wizard_handler_ = std::move(handler);
 }
@@ -1343,6 +1347,11 @@ LRESULT ConfigWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
       // Posted by the app's thumbnail export worker; the app feeds the finished
       // paths to SetThumbnails and reports the outcome.
       if (thumbnails_handler_) thumbnails_handler_();
+      return 0;
+    case kDeckInfoReadyMessage:
+      // Posted by the app's deck-info worker; the app takes the loaded facts and
+      // refreshes the rows.
+      if (deck_info_handler_) deck_info_handler_();
       return 0;
     case WM_KEYDOWN: {
       // GetKeyState reads the thread's key state, which is why the routing

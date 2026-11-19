@@ -201,10 +201,11 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   resolve_options.allow_outside_folder = ui_options.allow_outside_folder;
 
   // Deck info reaches the editor the same way it reaches --validate: the JSON
-  // provider when --deck-info is given, WPS otherwise. A config that failed to
-  // load has no deck path to resolve, so no provider is asked.
+  // provider when --deck-info is given, WPS otherwise. Only the JSON read is
+  // cheap enough for the UI thread here: activating WPS blocks for seconds, so
+  // that fallback runs on a worker thread below and posts kDeckInfoReadyMessage.
   DeckInfoLoad deck;
-  if (loaded.config.has_value()) {
+  if (loaded.config.has_value() && !ui_options.deck_info_path.empty()) {
     deck = LoadDeckInfo(ui_options.deck_info_path, *loaded.config);
   }
   const DeckInfo* deck_info = deck.info.has_value() ? &*deck.info : nullptr;
@@ -226,6 +227,20 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   std::mutex scan_mutex;
   ScanResult scan_result;
   std::thread scan_thread;
+
+  // The WPS deck-info worker's result, same handoff as the scan: written under
+  // the mutex, read on the UI thread after kDeckInfoReadyMessage. Declared
+  // before the window because the handler captures them and the thread is joined
+  // before the window is destroyed.
+  struct DeckInfoResult {
+    DeckInfoLoad load;
+    std::uint64_t generation = 0;
+  };
+  std::mutex deck_info_mutex;
+  DeckInfoResult deck_info_result;
+  std::uint64_t deck_info_generation = 0;
+  std::uint64_t deck_info_applied = 0;
+  std::thread deck_info_thread;
 
   ConfigWindow window;
   ConfigWindowOptions options;
@@ -816,6 +831,55 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                          : L"reloaded from disk; deck info unavailable");
   });
 
+  // The WPS fallback is the one deck source that blocks for seconds (COM
+  // activation plus the deck open), so it runs on a worker thread that posts
+  // kDeckInfoReadyMessage; the UI thread only takes the finished facts and
+  // refreshes. With --deck-info the JSON read already happened above.
+  window.SetDeckInfoHandler([&window, &deck, &deck_info_mutex,
+                             &deck_info_result, &deck_info_applied,
+                             refresh]() {
+    std::optional<DeckInfoLoad> loaded;
+    {
+      std::lock_guard<std::mutex> lock(deck_info_mutex);
+      if (deck_info_result.generation > deck_info_applied) {
+        deck_info_applied = deck_info_result.generation;
+        loaded = std::move(deck_info_result.load);
+        deck_info_result.load = DeckInfoLoad{};
+      }
+    }
+    if (!loaded.has_value()) return;
+    deck = std::move(*loaded);
+    const std::wstring reason = refresh();
+    if (!reason.empty()) {
+      window.SetStatus(reason);
+    } else if (deck.info.has_value()) {
+      window.SetStatus(L"deck loaded");
+    } else {
+      window.SetStatus(L"deck info unavailable");
+    }
+  });
+
+  const bool deck_load_pending =
+      loaded.config.has_value() && ui_options.deck_info_path.empty();
+  if (deck_load_pending) {
+    const HWND handle = window.handle();
+    deck_info_thread = std::thread(
+        [handle, deck_info_path = ui_options.deck_info_path,
+         config_snapshot = model.config(), &deck_info_mutex,
+         &deck_info_result, &deck_info_generation]() {
+          DeckInfoLoad loaded_deck = LoadDeckInfo(deck_info_path,
+                                                  config_snapshot);
+          {
+            std::lock_guard<std::mutex> lock(deck_info_mutex);
+            deck_info_result.load = std::move(loaded_deck);
+            deck_info_result.generation = ++deck_info_generation;
+          }
+          if (handle != nullptr) {
+            PostMessageW(handle, kDeckInfoReadyMessage, 0, 0);
+          }
+        });
+  }
+
   // Started last: it only posts the message handled above, and its destructor
   // stops the thread before the window is destroyed.
   ConfigFileWatcher watcher;
@@ -825,15 +889,18 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   window.SetRows(rows);
   window.SetStatus(model.HasProfiles()
                        ? kMultiProfileSaveDisabled
-                       : Widen(ConfigStatusText(loaded, rows, config_path)));
+                       : deck_load_pending
+                             ? L"loading deck info..."
+                             : Widen(ConfigStatusText(loaded, rows,
+                                                      config_path)));
   // One refresh derives every gate from the same model snapshot: nothing is
   // dirty before the first edit, so Save starts closed, and Start opens only
   // for a clean, runnable config that no supervisor already owns.
   refresh();
   const int result = window.RunMessageLoop();
-  // A scan worker that is still running when the loop ends posts to a window
-  // that is about to be destroyed, so it is joined here before the window goes
-  // away; its result is simply discarded.
+  // Workers that are still running when the loop ends post to a window that is
+  // about to be destroyed, so they are joined here; their results are discarded.
+  if (deck_info_thread.joinable()) deck_info_thread.join();
   if (scan_thread.joinable()) scan_thread.join();
   // The image list holds its own copies, so the BMP files are no longer needed
   // once the editor closes.
