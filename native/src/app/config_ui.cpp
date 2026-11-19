@@ -23,6 +23,7 @@
 #include "core/resolve.h"
 #include "core/single_instance.h"
 #include "core/types.h"
+#include "core/utf8_path.h"
 #include "app/deck_info_loader.h"
 #include "app/supervisor.h"
 #include "app/watchdog_launcher.h"
@@ -762,8 +763,7 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // sibling write (the .bak, the run's state directory) from being called an
   // external edit.
   window.SetConfigChangedHandler([&window, &model, config_path, refresh,
-                                  &selected_index, &last_stamp, &deck,
-                                  deck_info_path = ui_options.deck_info_path]() {
+                                  &selected_index, &last_stamp, &deck]() {
     const std::optional<ConfigStamp> stamp = ReadConfigStamp(config_path);
     if (stamp == last_stamp) return;
     if (model.dirty()) {
@@ -777,9 +777,21 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
                            : Widen(reload_error));
       return;
     }
-    // The new config may name a different deck. Re-resolve it, or validation,
-    // the wizard and thumbnails would keep using the previous deck's slide list.
-    deck = LoadDeckInfo(deck_info_path, model.config());
+    // Never ask WPS for the deck again from this handler: the load is a
+    // synchronous COM activation on the UI thread (seconds of freeze on every
+    // external edit), and the deck facts only change when the deck path does.
+    // A deck switch is not hot-reloadable anyway (the supervisor refuses one),
+    // so drop the stale facts and ask for a reopen instead of blocking.
+    const std::filesystem::path new_deck = ResolveDeckPath(model.config());
+    if (deck.info.has_value() && !PathEquals(deck.info->path, new_deck)) {
+      deck = DeckInfoLoad{};
+      last_stamp = stamp;
+      selected_index.reset();
+      refresh();
+      window.SetStatus(
+          L"the deck changed on disk; reopen the editor to reload it");
+      return;
+    }
     last_stamp = stamp;
     selected_index.reset();
     refresh();
