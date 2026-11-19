@@ -256,6 +256,31 @@ std::vector<Action> StateMachine::OnShowStarted(const Event& event) {
 }
 
 std::vector<Action> StateMachine::OnShowEnded(const Event& event) {
+  if (state_ == State::CoverIn || state_ == State::EdgeStarting) {
+    // The show ended while the cover was still up: the operator pressed Esc, or
+    // WPS closed the show. Continuing would run ExitShow and enter ShowExit
+    // with no show left -- and ShowExit has no deadline, so the machine would
+    // keep the cover visible until a manual stop. Abort the switch instead:
+    // hide the cover, kill the Edge we may have launched, and go back to idle
+    // monitoring so a new show starts cleanly.
+    const int slide = current_target_slide_.value_or(0);
+    ClearDeadlines();
+    ResetRetries();
+    com_window_.reset();
+    show_active_ = false;
+    done_slides_.clear();
+    prev_slide_ = -1;
+    current_target_slide_.reset();
+    Enter(State::Monitoring);
+    std::vector<Action> actions;
+    actions.push_back(
+        {ActionKind::CoverHide, slide, "show ended during switch"});
+    actions.push_back(
+        {ActionKind::KillEdge, slide, "show ended during switch"});
+    actions.push_back(
+        {ActionKind::Journal, slide, "show ended during switch"});
+    return actions;
+  }
   if (state_ == State::ShowExit) {
     ClearDeadline(TimeoutKind::EdgeReady);
     ResetRetries();

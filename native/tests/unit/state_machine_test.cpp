@@ -236,6 +236,45 @@ HTMLPPT_TEST_CASE(state_machine_show_ended_enters_live_and_sets_deadline) {
       600000);
 }
 
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_cover_in_aborts_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  HTMLPPT_CHECK(m.machine->state() == State::CoverIn);
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(!m.machine->Snapshot().show_active);
+  HTMLPPT_CHECK(!m.machine->NextDeadline().has_value());
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "show ended during switch"));
+  HTMLPPT_CHECK(!m.machine->IsDone(5));
+}
+
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_edge_starting_aborts_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::EdgeStarting);
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(!m.machine->Snapshot().show_active);
+  HTMLPPT_CHECK(!m.machine->NextDeadline().has_value());
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "show ended during switch"));
+}
+
+HTMLPPT_TEST_CASE(state_machine_retriggers_after_a_show_ended_during_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeShowEnded(m.clock.now()));
+  m.machine->Handle(MakeShowStarted(m.clock.now()));
+  m.Slide(4, 5);
+  const auto actions = m.Slide(5, 6);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeIn));
+  HTMLPPT_CHECK(m.machine->state() == State::CoverIn);
+}
+
 HTMLPPT_TEST_CASE(state_machine_return_requested_fades_and_resumes) {
   Machine m;
   m.ReachLive();
