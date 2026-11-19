@@ -388,17 +388,19 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     // A live editor-launched run keeps reading its old file, so the save queues
     // a hot reload; the supervisor applies it at the next safe point and logs a
     // deferral until then. The request is sent asynchronously: a stuck supervisor
-    // must not freeze the editor while the helper runs.
+    // must not freeze the editor while the helper runs. The reload status is set
+    // through SetSaveSuccessStatus, which the view prints after the handler
+    // returns: a direct SetStatus here would be overwritten.
     if (watchdog_running && !run_id.empty()) {
       if (reload_command.Running()) {
-        window.SetSaveSuccessStatus(L"saved");
-        window.SetStatus(L"saved; a reload is already in flight");
+        window.SetSaveSuccessStatus(L"saved; a reload is already in flight");
       } else {
         reload_command.Start(BuildReloadCommandLine(exe, state_dir, run_id),
                              10000);
-        window.SetSaveSuccessStatus(L"saved");
-        window.SetStatus(L"saved; reload queued");
+        window.SetSaveSuccessStatus(L"saved; reload queued");
       }
+    } else {
+      window.SetSaveSuccessStatus(L"saved");
     }
     // A successful save clears dirty, so the gate closes until the next edit.
     refresh();
