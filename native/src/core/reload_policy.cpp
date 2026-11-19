@@ -11,4 +11,10 @@ bool ShouldJournalDefer(ReloadDecision decision, bool already_journalled) {
   return decision == ReloadDecision::Defer && !already_journalled;
 }
 
+bool ClearStaleReloadRequest(const std::filesystem::path& state_dir) {
+  std::error_code error;
+  std::filesystem::remove(state_dir / "reload.request", error);
+  return !error;
+}
+
 } // namespace htmlppt

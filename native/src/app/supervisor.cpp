@@ -858,6 +858,19 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // leftover the reconcile step exists to clean up.
   const std::vector<JournalRecord> previous_tail = journal.read_tail(50);
   AppendJournal(journal, run_id, "Supervisor", "start", "supervisor start");
+  // A reload marker belongs to the run that was live when it was written. This
+  // run owns the state dir now (the mutex above proves it), so a marker left by
+  // an earlier run is stale: clearing it keeps the first safe point from
+  // restarting the fresh worker for a reload nobody asked for.
+  if (std::filesystem::exists(state_dir / "reload.request")) {
+    if (ClearStaleReloadRequest(state_dir)) {
+      AppendJournal(journal, run_id, "Supervisor", "reload",
+                    "reload: cleared a stale request");
+    } else {
+      std::cerr << "warning: cannot clear a stale reload request in "
+                << Utf8Path(state_dir) << "\n";
+    }
+  }
   ReconcilePreviousRun(journal, previous_tail, options, run_id);
 
   // Resolve the config and write the worker's plan before the worker is

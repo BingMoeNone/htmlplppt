@@ -895,6 +895,31 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
 // after a fixed 2 s. cleanup-slow makes that phase outlast the old budget; the
 // worker's guards are what remove watcher.lock and flush watch-log.txt, so a
 // forced stop leaves both behind and --stop still used to return 0.
+// A reload request belongs to the run that was live when it was written. A
+// marker left behind by an earlier run (the editor closed after saving, the
+// worker failed before a safe point, the supervisor was killed) must not be
+// replayed against the next run: that would restart the fresh worker and drop
+// the slide the operator had already advanced to. A missing config makes the
+// plan fail after the startup cleanup, so this case needs neither WPS nor a
+// worker and observes exactly the startup path.
+HTMLPPT_TEST_CASE(win32_supervisor_clears_a_stale_reload_request) {
+  const auto state_dir = TempStateDir();
+  {
+    std::ofstream request(state_dir / "reload.request", std::ios::binary);
+    HTMLPPT_CHECK(request.is_open());
+  }
+  const std::string run_id = RunId();
+  const auto result = RunCli(
+      {L"--supervisor", L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(run_id.begin(), run_id.end()), L"--config",
+       (state_dir / L"missing.json").wstring()});
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK(result.exit_code != 0);
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / "reload.request"));
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 HTMLPPT_TEST_CASE(win32_cli_stop_waits_for_slow_cleanup) {
   if (!WpsInstalled()) {
     std::cout << "SKIP: WPS not installed\n";

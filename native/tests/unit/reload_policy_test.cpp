@@ -1,7 +1,12 @@
 #include "test_main.h"
 
-#include "core/reload_policy.h"
+#include <filesystem>
+#include <fstream>
 
+#include "core/reload_policy.h"
+#include "test_utils.h"
+
+using htmlppt::ClearStaleReloadRequest;
 using htmlppt::DecideReload;
 using htmlppt::ReloadDecision;
 using htmlppt::ShouldJournalDefer;
@@ -49,4 +54,30 @@ HTMLPPT_TEST_CASE(reload_policy_journals_a_deferral_once) {
                                     /*already_journalled=*/false));
   HTMLPPT_CHECK(!ShouldJournalDefer(ReloadDecision::Idle,
                                     /*already_journalled=*/false));
+}
+
+// A reload request belongs to the run that was live when it was written: the
+// supervisor clears any marker left in the state directory before it starts a
+// new run, so an old request cannot restart the fresh worker at its first safe
+// point. A missing marker is success too -- the common case.
+HTMLPPT_TEST_CASE(reload_policy_clears_a_stale_request) {
+  htmlppt::test::TempDir dir;
+  HTMLPPT_CHECK(ClearStaleReloadRequest(dir.path()));
+  HTMLPPT_CHECK(!std::filesystem::exists(dir.path() / "reload.request"));
+  {
+    std::ofstream request(dir.path() / "reload.request", std::ios::binary);
+    HTMLPPT_CHECK(request.is_open());
+  }
+  HTMLPPT_CHECK(ClearStaleReloadRequest(dir.path()));
+  HTMLPPT_CHECK(!std::filesystem::exists(dir.path() / "reload.request"));
+}
+
+// The one case the supervisor must report: the marker exists and cannot be
+// removed. Reporting it as success would let the next safe point replay the
+// stale request after all.
+HTMLPPT_TEST_CASE(reload_policy_reports_a_request_it_cannot_remove) {
+  htmlppt::test::TempDir dir;
+  std::filesystem::create_directories(dir.path() / "reload.request" / "child");
+  HTMLPPT_CHECK(!ClearStaleReloadRequest(dir.path()));
+  HTMLPPT_CHECK(std::filesystem::exists(dir.path() / "reload.request"));
 }
