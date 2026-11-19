@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <iomanip>
 #include <map>
 #include <optional>
@@ -153,6 +154,34 @@ std::string AutoEdgeProfile(const std::string& fingerprint, int ordinal) {
   return out.str();
 }
 
+// The DOS device names Windows reserves in every directory, with or without an
+// extension ("CON" and "con.html" both open the console).
+bool IsReservedWindowsName(const std::string& value) {
+  std::string stem;
+  for (const char character : value) {
+    if (character == '.') break;
+    stem.push_back(static_cast<char>(
+        std::toupper(static_cast<unsigned char>(character))));
+  }
+  // Windows trims trailing spaces from the base name before the device check,
+  // so "con .html" opens the console too.
+  while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+  if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") {
+    return true;
+  }
+  return stem.size() == 4 &&
+         (stem.rfind("COM", 0) == 0 || stem.rfind("LPT", 0) == 0) &&
+         stem[3] >= '1' && stem[3] <= '9';
+}
+
+std::string LowerAscii(std::string value) {
+  for (char& character : value) {
+    character = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(character)));
+  }
+  return value;
+}
+
 bool ValidateStageName(const std::string& value, const std::string& target_path,
                        std::vector<ConfigIssue>& issues) {
   if (value.empty()) return true;
@@ -171,6 +200,27 @@ bool ValidateStageName(const std::string& value, const std::string& target_path,
       AddError(issues, target_path + ".stageName", "must be ASCII");
       return false;
     }
+    // Windows file names cannot carry these characters: ':' opens an alternate
+    // data stream and the rest are rejected by CreateFile.
+    if (character < 0x20 || character == '<' || character == '>' ||
+        character == ':' || character == '"' || character == '|' ||
+        character == '?' || character == '*') {
+      AddError(issues, target_path + ".stageName",
+               "contains a character Windows forbids in a file name");
+      return false;
+    }
+  }
+  // Windows strips trailing dots and spaces, so "page.html." would silently
+  // become "page.html" and collide with another target.
+  if (value.back() == '.' || value.back() == ' ') {
+    AddError(issues, target_path + ".stageName",
+             "must not end in a dot or a space");
+    return false;
+  }
+  if (IsReservedWindowsName(value)) {
+    AddError(issues, target_path + ".stageName",
+             "is a reserved Windows device name");
+    return false;
   }
   return true;
 }
@@ -482,7 +532,11 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                    std::to_string(owner->second));
       continue;
     }
-    if (const auto owner = stage_owner.find(stage); owner != stage_owner.end()) {
+    // NTFS is case-insensitive: "Same.html" and "same.html" are one staged
+    // file, so the duplicate check has to fold case as well.
+    const std::string stage_key = LowerAscii(stage);
+    if (const auto owner = stage_owner.find(stage_key);
+        owner != stage_owner.end()) {
       AddError(result.issues, target_path + ".stageName",
                "duplicate stage name '" + stage + "' (target " +
                    std::to_string(owner->second) + ")");
@@ -497,7 +551,7 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     }
 
     slide_owner.emplace(*slide, ordinal);
-    stage_owner.emplace(stage, ordinal);
+    stage_owner.emplace(stage_key, ordinal);
     profile_owner.emplace(profile, ordinal);
     resolved.stage_name = stage;
     resolved.edge_profile = profile;

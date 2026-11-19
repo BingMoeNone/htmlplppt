@@ -95,7 +95,11 @@ std::string_view ConfigSchema() {
         "html": { "type": "string", "minLength": 1 },
         "label": { "type": "string" },
         "edgeProfile": { "type": "string" },
-        "stageName": { "type": "string", "pattern": "^[ -~]*$" },
+        "stageName": {
+          "type": "string",
+          "description": "ASCII file name copied into the stage directory; no separators, alternate-data-stream colons, reserved device names, or trailing dot/space",
+          "pattern": "^(?![Aa][Uu][Xx](?:\\.|$)|[Cc][Oo][Nn](?:\\.|$)|[Pp][Rr][Nn](?:\\.|$)|[Nn][Uu][Ll](?:\\.|$)|[Cc][Oo][Mm][1-9](?:\\.|$)|[Ll][Pp][Tt][1-9](?:\\.|$))(?!.*[\\\\/:*?\"<>|])(?!.*[ .]$)[ -~]*$"
+        },
         "assets": { "$ref": "#/$defs/assets" },
         "htmlQuery": { "type": "string" },
         "trigger": { "enum": ["leave-forward", "arrive"] },

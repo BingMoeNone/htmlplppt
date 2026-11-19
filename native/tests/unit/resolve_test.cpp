@@ -516,6 +516,125 @@ HTMLPPT_TEST_CASE(resolve_rejects_stage_name_with_separator) {
   HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
 }
 
+HTMLPPT_TEST_CASE(resolve_rejects_a_windows_reserved_stage_name) {
+  // A reserved DOS device name is not a normal file even with an extension:
+  // CreateFile("CON.html") opens the console. The staged page would never exist.
+  for (const char* name : {"CON", "con.html", "NUL", "AUX.txt", "COM1",
+                           "LPT9"}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_an_alternate_data_stream_stage_name) {
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": "page.html:stream"
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_a_stage_name_ending_in_a_dot_or_space) {
+  // Windows strips trailing dots and spaces, so two distinct stage names could
+  // collide on the same file ("page.html." and "page.html").
+  for (const char* name : {"page.html.", "page "}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_invalid_filename_characters_in_a_stage_name) {
+  for (const char* name : {"pa|ge.html", "pa?ge.html", "pa*ge.html",
+                           "pa<ge.html", "pa>ge.html"}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_a_quote_in_a_stage_name) {
+  Fixture fixture;
+  // The JSON escape is what puts a literal quote in the parsed value.
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": "pa\"ge.html"
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_duplicate_stage_names_case_insensitively) {
+  // NTFS compares file names case-insensitively: "Same.html" and "same.html"
+  // are one staged file, so the second target would silently overwrite the first.
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [
+      { "slide": 1, "html": "page1.html", "stageName": "Same.html" },
+      { "slide": 2, "html": "page2.html", "stageName": "same.html" }
+    ]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[1].stageName"));
+}
+
 HTMLPPT_TEST_CASE(resolve_duplicate_slide) {
   Fixture fixture;
   const Config config = ParseConfig(fixture, R"({
