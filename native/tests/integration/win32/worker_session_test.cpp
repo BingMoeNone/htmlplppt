@@ -183,7 +183,7 @@ HTMLPPT_TEST_CASE(worker_session_survives_supervisor_loss) {
   HTMLPPT_CHECK(client_ok.load());
   HTMLPPT_CHECK_EQ(driver.lost_calls, 1);
   HTMLPPT_CHECK_EQ(driver.lost_details.size(), std::size_t{1});
-  HTMLPPT_CHECK(driver.step_calls_at_loss >= 0);
+  HTMLPPT_CHECK(driver.step_calls_at_loss > 0);
   HTMLPPT_CHECK(driver.step_calls > driver.step_calls_at_loss);
   HTMLPPT_CHECK(error.find("supervisor lost") != std::string::npos);
   HTMLPPT_CHECK_EQ(driver.request_stop_calls, 0);
