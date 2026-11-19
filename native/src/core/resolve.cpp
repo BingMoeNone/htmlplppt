@@ -440,9 +440,11 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     // so --stage-mode and stage.mode in the config actually take effect.
     const std::string assets_mode =
         target.assets_set ? target.assets.mode : config.active.stage.mode;
-    const std::string assets_root_text = target.assets.root.empty()
-                                             ? config.active.stage.root
-                                             : target.assets.root;
+    // A target with its own assets block but no root defaults to the HTML
+    // directory (ResolveAssets uses html_path.parent_path()). The global
+    // stage.root applies only to targets without an assets block.
+    const std::string assets_root_text =
+        target.assets_set ? target.assets.root : config.active.stage.root;
     std::string assets_root;
     if (!ResolveAssets(assets_mode, assets_root_text, base_dir,
                        PathFromUtf8(resolved.html_path), i,

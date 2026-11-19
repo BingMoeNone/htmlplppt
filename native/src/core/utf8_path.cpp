@@ -21,4 +21,14 @@ std::filesystem::path PathFromUtf8(std::string_view text) {
   return std::filesystem::path(utf8);
 }
 
+std::filesystem::path ConfigDirFor(const std::filesystem::path& config_path,
+                                   const std::filesystem::path& current_dir) {
+  if (config_path.empty()) return {};
+  std::filesystem::path resolved = config_path;
+  if (resolved.is_relative() && !current_dir.empty()) {
+    resolved = current_dir / resolved;
+  }
+  return resolved.parent_path();
+}
+
 } // namespace htmlppt

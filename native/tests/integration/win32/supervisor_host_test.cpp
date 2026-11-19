@@ -241,6 +241,27 @@ class ScopedEnvVar {
   std::wstring saved_;
 };
 
+// Changes the process working directory for one test. The supervisor inherits
+// it, which is how a bare `--config watcher.json` is exercised.
+class ScopedCurrentDir {
+ public:
+  explicit ScopedCurrentDir(const std::filesystem::path& dir) {
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD length = GetCurrentDirectoryW(MAX_PATH, buffer);
+    if (length > 0 && length < MAX_PATH) saved_.assign(buffer, length);
+    SetCurrentDirectoryW(dir.c_str());
+  }
+  ~ScopedCurrentDir() {
+    if (!saved_.empty()) SetCurrentDirectoryW(saved_.c_str());
+  }
+
+  ScopedCurrentDir(const ScopedCurrentDir&) = delete;
+  ScopedCurrentDir& operator=(const ScopedCurrentDir&) = delete;
+
+ private:
+  std::wstring saved_;
+};
+
 } // namespace
 
 HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
@@ -291,6 +312,51 @@ HTMLPPT_TEST_CASE(win32_worker_startup_failure_cleans_compat_state) {
     Sleep(50);
   }
   HTMLPPT_CHECK(saw_stop);
+
+  SetEvent(stop);
+  CloseHandle(stop);
+  HTMLPPT_CHECK(supervisor.WaitForExit(20000));
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"watcher.lock"));
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
+// Item 12: `--config watcher.json` (a bare relative name) used to make
+// parent_path() empty, which silently disabled the whole legacy mirror. The
+// worker must resolve it against its current directory and write the mirror
+// next to the config file.
+HTMLPPT_TEST_CASE(win32_relative_config_keeps_the_legacy_mirror) {
+  ScopedEnvVar faults(L"HTMLPPT_FAULTS", L"start-fail");
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  const std::string run_id = RunId();
+  JobHandle job;
+  ProcessHandle supervisor;
+  {
+    ScopedCurrentDir cwd(state_dir);
+    HTMLPPT_CHECK(job.Create());
+    HTMLPPT_CHECK(supervisor.LaunchSuspended(
+        ExePath(),
+        {L"--supervisor", L"--state-dir", state_dir.wstring(), L"--run-id",
+         std::wstring(run_id.begin(), run_id.end()), L"--config",
+         L"watcher.json", L"--deck-info", inputs.deck_info.wstring()},
+        job));
+    HTMLPPT_CHECK(supervisor.Resume());
+  }
+  HANDLE stop = WaitForStopEvent(
+      htmlppt::SupervisorStopEventName(run_id), 10000);
+  HTMLPPT_CHECK(stop != nullptr);
+
+  bool saw_start = false;
+  for (int i = 0; i < 100; ++i) {
+    if (ReadTextFile(state_dir / L"watch-log.txt")
+            .find("native watchdog start") != std::string::npos) {
+      saw_start = true;
+      break;
+    }
+    Sleep(50);
+  }
+  HTMLPPT_CHECK(saw_start);
 
   SetEvent(stop);
   CloseHandle(stop);
@@ -962,21 +1028,37 @@ HTMLPPT_TEST_CASE(worker_rejects_plan_with_foreign_run_id) {
 
 HTMLPPT_TEST_CASE(win32_diagnostics_package_collects_the_run_files) {
   const auto state_dir = TempStateDir();
+  const auto config_dir = state_dir / L"config";
+  const auto out = state_dir / L"out";
+  std::filesystem::create_directories(config_dir);
+  std::filesystem::create_directories(state_dir / L"crash");
   {
     std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
     journal << "{\"detail\":\"supervisor start\",\"event\":\"start\"}\n";
-    std::ofstream log(state_dir / L"watch-log.txt", std::ios::binary);
+    // The legacy mirror lives next to the config file, not in the state dir.
+    std::ofstream log(config_dir / L"watch-log.txt", std::ios::binary);
     log << "2026-01-01T00:00:00Z native watchdog start run=diag\n";
+    std::ofstream config(config_dir / L"watcher.json", std::ios::binary);
+    config << "{\"version\":1}\n";
+    std::ofstream dump(state_dir / L"crash" / L"123.dmp", std::ios::binary);
+    dump << "dump";
   }
-  const auto out = state_dir / L"diag";
-  HTMLPPT_CHECK_EQ(htmlppt::RunDiagnostics("diag-run", state_dir, out), 0);
+  HTMLPPT_CHECK_EQ(htmlppt::RunDiagnostics(
+                       "diag-run", state_dir, config_dir / L"watcher.json", out),
+                   0);
 
   HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"manifest.txt"));
   HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"journal.jsonl"));
   HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"watch-log.txt"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"watcher.json"));
+  HTMLPPT_CHECK(std::filesystem::is_regular_file(out / L"crash" / L"123.dmp"));
   const std::string manifest = ReadTextFile(out / L"manifest.txt");
   HTMLPPT_CHECK(manifest.find("run diag-run") != std::string::npos);
+  HTMLPPT_CHECK(manifest.find("config_dir " + config_dir.string()) !=
+                std::string::npos);
   HTMLPPT_CHECK(manifest.find("file journal.jsonl copied") != std::string::npos);
+  HTMLPPT_CHECK(manifest.find("file watch-log.txt copied") != std::string::npos);
+  HTMLPPT_CHECK(manifest.find("dump crash/123.dmp copied") != std::string::npos);
   // No supervisor is running for this id, so the package must say so instead of
   // silently omitting the black box.
   HTMLPPT_CHECK(manifest.find("blackbox unavailable") != std::string::npos);

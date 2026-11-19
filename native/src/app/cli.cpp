@@ -544,8 +544,10 @@ int RunCli(int argc, char** argv) {
       }
       const auto dir = state_dir.empty() ? std::filesystem::path{}
                                          : std::filesystem::path(state_dir);
-      return RunDiagnostics(parsed.options.run_id, dir,
-                            std::filesystem::path(parsed.options.diagnostics_out));
+      return RunDiagnostics(
+          parsed.options.run_id, dir,
+          std::filesystem::path(parsed.options.config_path),
+          std::filesystem::path(parsed.options.diagnostics_out));
     }
     case Command::ConfigUi: {
       ConfigUiOptions config_ui_options;

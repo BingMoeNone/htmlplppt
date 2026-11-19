@@ -5,6 +5,7 @@
 
 #include "core/utf8_path.h"
 
+using htmlppt::ConfigDirFor;
 using htmlppt::PathFromUtf8;
 using htmlppt::Utf8Path;
 
@@ -43,4 +44,12 @@ HTMLPPT_TEST_CASE(utf8_path_round_trips_utf8_bytes) {
 HTMLPPT_TEST_CASE(utf8_path_builds_ascii_path) {
   const std::filesystem::path path = PathFromUtf8("/tmp/page1.html");
   HTMLPPT_CHECK_EQ(Utf8Path(path), std::string{"/tmp/page1.html"});
+}
+
+HTMLPPT_TEST_CASE(utf8_config_dir_resolves_a_bare_filename_against_the_cwd) {
+  const auto cwd = std::filesystem::temp_directory_path() / "htmlppt-demo";
+  HTMLPPT_CHECK_EQ(ConfigDirFor("watcher.json", cwd), cwd);
+  HTMLPPT_CHECK_EQ(ConfigDirFor("sub/watcher.json", cwd), cwd / "sub");
+  HTMLPPT_CHECK_EQ(ConfigDirFor(cwd / "watcher.json", cwd), cwd);
+  HTMLPPT_CHECK(ConfigDirFor("", cwd).empty());
 }

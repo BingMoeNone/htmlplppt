@@ -659,6 +659,32 @@ HTMLPPT_TEST_CASE(resolve_inherits_the_global_stage_mode) {
   HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"direct"});
 }
 
+HTMLPPT_TEST_CASE(resolve_target_assets_block_without_root_uses_html_dir) {
+  Fixture fixture;
+  fixture.Write("pages/page1.html", "<html></html>");
+  fixture.Write("pages/a.css", "body{}");
+  // A valid global stage root: the old fallback silently used this even though
+  // the target owns an assets block.
+  fixture.Write("shared/a.css", "body{}");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "tree", "root": "shared" },
+    "targets": [{
+      "slide": 1,
+      "html": "pages/page1.html",
+      "assets": { "mode": "tree" }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+  const auto expected =
+      std::filesystem::weakly_canonical(fixture.dir.path() / "pages");
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_root, htmlppt::Utf8Path(expected));
+}
+
 HTMLPPT_TEST_CASE(resolve_target_assets_override_the_global_stage_mode) {
   Fixture fixture;
   fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");

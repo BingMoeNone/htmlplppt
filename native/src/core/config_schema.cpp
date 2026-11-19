@@ -57,7 +57,7 @@ std::string_view ConfigSchema() {
     "focus": {
       "type": "object",
       "properties": {
-        "strategy": { "type": "string", "minLength": 1 },
+        "strategy": { "enum": ["auto", "attach-alt", "switch"] },
         "require": { "type": "boolean" },
         "timeoutMs": { "type": "integer", "minimum": 1 }
       },

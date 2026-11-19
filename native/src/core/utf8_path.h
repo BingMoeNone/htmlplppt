@@ -17,4 +17,10 @@ std::string Utf8Path(const std::filesystem::path& path);
 // config string.
 std::filesystem::path PathFromUtf8(std::string_view text);
 
+// Parent directory of a config path. A bare relative filename is resolved
+// against `current_dir` first, so `--config watcher.json` still finds the
+// legacy mirror next to the file instead of disabling it.
+std::filesystem::path ConfigDirFor(const std::filesystem::path& config_path,
+                                   const std::filesystem::path& current_dir);
+
 } // namespace htmlppt

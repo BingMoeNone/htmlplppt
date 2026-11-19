@@ -214,10 +214,13 @@ class TempDirGuard {
 
 // The legacy flag files live next to the config file, the way the VBS tooling
 // and the reference docs expect. An empty result disables the mirror.
+std::filesystem::path CurrentDir() {
+  std::error_code error;
+  return std::filesystem::current_path(error);
+}
+
 std::filesystem::path CompatBaseDir(const SupervisorRunOptions& options) {
-  if (options.config_path.empty()) return {};
-  const auto parent = std::filesystem::path(options.config_path).parent_path();
-  return parent.empty() ? std::filesystem::path{} : parent;
+  return ConfigDirFor(options.config_path, CurrentDir());
 }
 
 const char* ReconcileOutcomeName(ReconcileOutcome outcome) {
@@ -541,6 +544,7 @@ int RunStop(std::string_view run_id) {
 
 int RunDiagnostics(std::string_view run_id,
                    const std::filesystem::path& state_dir,
+                   const std::filesystem::path& config_path,
                    const std::filesystem::path& out_dir) {
   if (out_dir.empty()) {
     std::cerr << "error: --diagnostics requires --out PATH\n";
@@ -554,25 +558,60 @@ int RunDiagnostics(std::string_view run_id,
     return 1;
   }
 
+  const auto config_dir = ConfigDirFor(config_path, CurrentDir());
   std::ostringstream manifest;
   manifest << "htmlppt-watchdog diagnostics\n";
   manifest << "version " << version() << "\n";
   manifest << "run " << run_id << "\n";
   manifest << "state_dir " << Utf8Path(state_dir) << "\n";
+  if (!config_dir.empty()) {
+    manifest << "config_dir " << Utf8Path(config_dir) << "\n";
+  }
   manifest << "collected_at " << UtcTimestamp() << "\n";
+
+  const auto copy_file = [&](const std::filesystem::path& source,
+                             const std::filesystem::path& target,
+                             std::string_view label) -> bool {
+    std::error_code copy_error;
+    if (!std::filesystem::is_regular_file(source, copy_error)) return false;
+    std::filesystem::create_directories(target.parent_path(), copy_error);
+    if (!copy_error) {
+      std::filesystem::copy_file(
+          source, target, std::filesystem::copy_options::overwrite_existing,
+          copy_error);
+    }
+    manifest << "file " << label << " " << (copy_error ? "failed" : "copied")
+             << "\n";
+    return !copy_error;
+  };
 
   // Everything that explains a run is copied beside the manifest, so the
   // package can be handed over without the state directory.
-  for (const char* name : {"journal.jsonl", "watch-log.txt", "worker-plan.json",
-                           "worker-config.json", "watcher.json"}) {
-    const auto source = state_dir / name;
-    std::error_code copy_error;
-    if (!std::filesystem::is_regular_file(source, copy_error)) continue;
-    std::filesystem::copy_file(source, out_dir / name,
-                               std::filesystem::copy_options::overwrite_existing,
-                               copy_error);
-    manifest << "file " << name << " " << (copy_error ? "failed" : "copied")
-             << "\n";
+  for (const char* name : {"journal.jsonl", "worker-plan.json",
+                           "worker-config.json"}) {
+    copy_file(state_dir / name, out_dir / name, name);
+  }
+
+  // The legacy mirror lives next to the config file, not in the state dir. Keep
+  // a state-dir fallback for packages written by older builds.
+  for (const char* name : {"watch-log.txt", "watcher.json", "benchmark.txt"}) {
+    bool copied = false;
+    if (!config_dir.empty()) {
+      copied = copy_file(config_dir / name, out_dir / name, name);
+    }
+    if (!copied) {
+      copy_file(state_dir / name, out_dir / name, name);
+    }
+  }
+  // The config file may not be named watcher.json; copy the actual file too.
+  if (!config_path.empty()) {
+    const auto actual = config_path.is_absolute()
+                            ? config_path
+                            : config_dir / config_path.filename();
+    const std::string name = Utf8Path(actual.filename());
+    if (name != "watcher.json") {
+      copy_file(actual, out_dir / actual.filename(), name);
+    }
   }
 
   // The black box only exists while the supervisor owns the run.
@@ -593,18 +632,47 @@ int RunDiagnostics(std::string_view run_id,
     manifest << "blackbox unavailable\n";
   }
 
-  // Crash dumps the supervisor left next to the journal.
-  for (const auto& entry :
-       std::filesystem::directory_iterator(state_dir, error)) {
-    if (error) break;
-    if (!entry.is_regular_file()) continue;
-    if (entry.path().extension() != ".dmp") continue;
-    std::error_code copy_error;
-    std::filesystem::copy_file(entry.path(), out_dir / entry.path().filename(),
-                               std::filesystem::copy_options::overwrite_existing,
-                               copy_error);
-    manifest << "dump " << Utf8Path(entry.path().filename()) << " "
-             << (copy_error ? "failed" : "copied") << "\n";
+  // Crash dumps live under state_dir/crash; scan recursively and preserve the
+  // relative path in the package (a root-only scan never found them).
+  std::filesystem::recursive_directory_iterator it(state_dir, error);
+  if (error) {
+    manifest << "dump scan failed " << error.message() << "\n";
+  } else {
+    const std::filesystem::recursive_directory_iterator end;
+    while (it != end) {
+      const auto& entry = *it;
+      std::error_code entry_error;
+      const bool regular = entry.is_regular_file(entry_error);
+      const auto relative_out =
+          std::filesystem::relative(entry.path(), out_dir, entry_error);
+      const bool inside_out =
+          !entry_error && !relative_out.empty() &&
+          relative_out.generic_string().rfind("..", 0) != 0;
+      if (!inside_out && !entry_error && regular &&
+          entry.path().extension() == ".dmp") {
+        std::error_code relative_error;
+        const auto relative =
+            std::filesystem::relative(entry.path(), state_dir, relative_error);
+        if (!relative_error) {
+          const auto destination = out_dir / relative;
+          std::error_code copy_error;
+          std::filesystem::create_directories(destination.parent_path(),
+                                              copy_error);
+          if (!copy_error) {
+            std::filesystem::copy_file(
+                entry.path(), destination,
+                std::filesystem::copy_options::overwrite_existing, copy_error);
+          }
+          manifest << "dump " << relative.generic_string() << " "
+                   << (copy_error ? "failed" : "copied") << "\n";
+        }
+      }
+      it.increment(error);
+      if (error) {
+        manifest << "dump scan stopped " << error.message() << "\n";
+        break;
+      }
+    }
   }
 
   std::ofstream manifest_file(out_dir / "manifest.txt", std::ios::binary);
@@ -1496,6 +1564,7 @@ int RunStatus(std::string_view, const std::filesystem::path&) {
 }
 
 int RunDiagnostics(std::string_view, const std::filesystem::path&,
+                   const std::filesystem::path&,
                    const std::filesystem::path&) {
   std::cerr << "error: --diagnostics requires Windows\n";
   return 2;
