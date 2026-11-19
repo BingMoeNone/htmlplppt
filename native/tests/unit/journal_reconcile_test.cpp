@@ -97,6 +97,23 @@ HTMLPPT_TEST_CASE(reconcile_faulted_enters_safe_mode) {
   const auto decision = htmlppt::ReconcileStartup(
       {Record("run-1", "Faulted", 5)}, ReconcileFacts{}, "run-1");
   HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::SafeMode);
+  // Only a real Exited stop is the terminal clean state; a failed run must never
+  // be classified as clean just because its supervisor's cleanup ran.
+  HTMLPPT_CHECK(decision.outcome != ReconcileOutcome::Clean);
+}
+
+// A failed run's Faulted state is leftover state when the next start uses a new
+// run id: it must be cleaned up like any other foreign leftover, never treated
+// as a completed run.
+HTMLPPT_TEST_CASE(reconcile_faulted_from_a_foreign_run_is_cleanup) {
+  ReconcileFacts facts;
+  facts.edge_process_alive = true;
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-failed", "Faulted", 5)}, facts, "run-next");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Cleanup);
+  HTMLPPT_CHECK(decision.outcome != ReconcileOutcome::Clean);
+  HTMLPPT_CHECK(decision.kill_edge);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 5);
 }
 
 HTMLPPT_TEST_CASE(reconcile_restore_wps_also_cleans_leftovers) {

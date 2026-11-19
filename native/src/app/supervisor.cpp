@@ -643,7 +643,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   std::vector<std::string> plan_warnings;
   if (!WriteSupervisorPlan(options, run_id, state_dir, &plan_error,
                            &plan_warnings)) {
-    AppendJournal(journal, run_id, "Plan", "plan failed", plan_error);
+    // A failed plan is the run's terminal state, not a transient "Plan" step:
+    // reconciliation treats Faulted as leftover state, while only a clean stop
+    // may journal Exited.
+    AppendJournal(journal, run_id, "Faulted", "plan failed", plan_error);
     std::cerr << "error: " << plan_error << "\n";
     blackbox.reset();
     ReleaseMutex(mutex);
@@ -690,11 +693,17 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   };
 
   std::unique_ptr<NamedPipeChannel> channel;
-  const auto cleanup = [&]() {
+  // Journals the run's terminal state before releasing its handles. Only a real
+  // clean stop may journal "Exited": reconciliation treats that one state as
+  // "the previous run released everything". A SafeMode/legacy end and a
+  // launch/restart failure each journal their own state, so the next start
+  // cleans up instead of trusting a run that did not stop cleanly.
+  const auto cleanup = [&](std::string_view state = "Exited") {
     if (channel != nullptr) channel->Close();
     server.Close();
     job.Terminate();
-    AppendJournal(journal, run_id, "Exited", "stop", "supervisor stop");
+    AppendJournal(journal, run_id, std::string(state), "stop",
+                  "supervisor stop");
     blackbox.reset();
     ReleaseMutex(mutex);
     CloseHandle(mutex);
@@ -702,7 +711,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   };
 
   if (!launch_worker()) {
-    cleanup();
+    cleanup("Faulted");
     return 1;
   }
   AppendJournal(journal, run_id, "Worker", "start", "worker started");
@@ -761,7 +770,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           if (!server.Create(SupervisorPipeName(run_id)) || !launch_worker()) {
             AppendJournal(journal, run_id, "Worker", "restart",
                           "worker restart failed");
-            cleanup();
+            cleanup("Faulted");
             return 1;
           }
           AppendJournal(journal, run_id, "Worker", "restart",
@@ -774,11 +783,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           break;
         case SupervisorActionKind::EnterSafeMode:
           AppendJournal(journal, run_id, "SafeMode", "action", action.detail);
-          cleanup();
+          cleanup("SafeMode");
           return 3;
         case SupervisorActionKind::RunLegacyFallback:
           AppendJournal(journal, run_id, "SafeMode", "legacy", action.detail);
-          cleanup();
+          cleanup("SafeMode");
           return 4;
         case SupervisorActionKind::StopComplete:
           cleanup();

@@ -297,6 +297,43 @@ HTMLPPT_TEST_CASE(win32_supervisor_completed_run_reconciles_clean) {
   std::filesystem::remove_all(state_dir, error);
 }
 
+// A failed run must not look like a clean stop. A missing config fails the plan
+// before a worker exists, and the run journals its terminal Faulted state; a
+// clean stop is the only path that journals Exited. The next start (a different
+// run id) must reconcile the failed run as leftover state -- "cleanup", never
+// "clean".
+HTMLPPT_TEST_CASE(win32_supervisor_failed_run_reconciles_cleanup) {
+  const auto state_dir = TempStateDir();
+  const std::string failed_run = RunId();
+  const auto failed = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(failed_run.begin(), failed_run.end())},
+      10000);
+  HTMLPPT_CHECK(failed.completed);
+  HTMLPPT_CHECK_EQ(failed.exit_code, DWORD{1});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(journal.find("\"state\":\"Faulted\"") != std::string::npos);
+  HTMLPPT_CHECK(journal.find("\"state\":\"Exited\"") == std::string::npos);
+
+  const std::string next_run = failed_run + "-next";
+  const auto next = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(next_run.begin(), next_run.end())},
+      10000);
+  HTMLPPT_CHECK(next.completed);
+  HTMLPPT_CHECK_EQ(next.exit_code, DWORD{1});
+  const std::string next_journal =
+      ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(next_journal.find("reconcile: cleanup previous=" + failed_run) !=
+                std::string::npos);
+  HTMLPPT_CHECK(next_journal.find("reconcile: clean previous=") ==
+                std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 // A1: a fresh state directory has no journal, so reconciliation must be a clean
 // no-op. This pins plan Review Focus #1: an empty journal can never drive the
 // startup into SafeMode.
