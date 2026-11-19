@@ -621,6 +621,51 @@ HTMLPPT_TEST_CASE(state_machine_stop_requested_cleans_up_and_exits) {
   HTMLPPT_CHECK(HasJournalContaining(done, "cleanup done"));
 }
 
+HTMLPPT_TEST_CASE(
+    state_machine_schedules_a_retry_after_a_failed_cleanup_exit_show) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
+  // The ExitShow action failed. Cleanup must not fall through: the retry owns
+  // the next attempt so --stop does not strand a full-screen show.
+  const auto actions = m.machine->Handle(MakeFailure(
+      m.clock.now(), FailureKind::Transient, FailureSource::ExitShow,
+      "exit show failed"));
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+  HTMLPPT_CHECK(HasJournalContaining(actions, "cleanup"));
+  m.Advance(6000);
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::ExitShow));
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+}
+
+HTMLPPT_TEST_CASE(
+    state_machine_reports_a_cleanup_exit_show_that_never_succeeds) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
+  bool diagnosed = false;
+  for (int attempt = 0; attempt < 8 && !diagnosed; ++attempt) {
+    const auto actions = m.machine->Handle(
+        MakeFailure(m.clock.now(), FailureKind::Transient,
+                    FailureSource::ExitShow, "exit show failed"));
+    for (const auto& action : actions) {
+      if (action.kind == ActionKind::Diagnostic &&
+          action.detail.find("exit") != std::string::npos) {
+        diagnosed = true;
+      }
+    }
+    m.Advance(6000);
+    const auto retried = m.machine->Tick();
+    if (retried.empty()) break;
+  }
+  HTMLPPT_CHECK(diagnosed);
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+  // The retry budget is spent: nothing re-arms the ExitShow forever.
+  m.Advance(6000);
+  HTMLPPT_CHECK(!HasAction(m.machine->Tick(), ActionKind::ExitShow));
+}
+
 HTMLPPT_TEST_CASE(state_machine_supervisor_loss_continue_sets_degraded) {
   Machine m;
   m.ReachLive();

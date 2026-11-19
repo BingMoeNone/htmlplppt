@@ -25,6 +25,14 @@ class StateMachine {
   State state() const { return state_; }
   bool IsDone(int slide) const { return done_slides_.count(slide) != 0; }
 
+  // True while cleanup owes the operator another ExitShow attempt. The runtime
+  // must not close the run (CleanupDone) before that attempt has run, or --stop
+  // would report a clean stop with the show still full screen.
+  bool AwaitingCleanupExitRetry() const {
+    return pending_retry_ == RetryOperation::ExitShow &&
+           retry_deadline_.has_value();
+  }
+
  private:
   enum class RetryOperation {
     None,
@@ -76,6 +84,9 @@ class StateMachine {
   std::vector<Action> HandleReturnFailure(std::string detail);
   std::vector<Action> HandleStructuralFailure(std::string detail);
   std::vector<Action> BeginCleanup(std::string detail);
+  // Bounded retry for an ExitShow that failed while cleaning up: the process is
+  // about to exit, but it still owes the operator an exit from the show.
+  std::vector<Action> RetryCleanupExitShow(const Event& event);
   std::vector<Action> Journal(std::string detail, int slide = 0) const;
 
   RunPlan plan_;
@@ -105,6 +116,9 @@ class StateMachine {
   std::optional<ClockPoint> retry_deadline_;
   RetryOperation pending_retry_ = RetryOperation::None;
   int retry_attempt_ = 0;
+  // Separate budget: a cleanup ExitShow retry must not consume (or be consumed
+  // by) a switch/return retry budget from the run that just ended.
+  int cleanup_exit_attempt_ = 0;
 };
 
 } // namespace htmlppt

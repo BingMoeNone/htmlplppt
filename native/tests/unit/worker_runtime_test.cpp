@@ -479,6 +479,26 @@ HTMLPPT_TEST_CASE(worker_runtime_stop_mid_trigger_cleans_up_once) {
   HTMLPPT_CHECK_EQ(h.runtime.journal().size(), entries);
 }
 
+// --stop still owes the operator an exit from the show when ExitShow fails the
+// first time: cleanup retries before the run closes, instead of reporting a
+// clean stop with the show full screen.
+HTMLPPT_TEST_CASE(worker_runtime_retries_a_failed_cleanup_exit_show) {
+  WorkerHarness h = HTriggeredAtSlide1();
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // Edge launched, cover held
+  h.runtime.RequestStop("test");
+  h.presentation.fail_next_exit = true;
+  h.runtime.Step();                             // cleanup: ExitShow fails
+  HTMLPPT_CHECK_EQ(h.presentation.exit_show_calls, 1);
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Stopping);
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "cleanup exit show failed"));
+  h.advance(h.config.retry.max_delay);          // let the retry deadline pass
+  h.runtime.Step();                             // retry exits the show
+  HTMLPPT_CHECK_EQ(h.presentation.exit_show_calls, 2);
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Exited);
+  HTMLPPT_CHECK(h.runtime.done());
+}
+
 // Task 6: the idle wait is bounded by the poll interval.
 HTMLPPT_TEST_CASE(worker_runtime_step_sleeps_at_most_poll_interval) {
   WorkerHarness h;

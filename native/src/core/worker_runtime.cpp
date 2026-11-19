@@ -116,8 +116,11 @@ bool WorkerRuntime::Step() {
   Dispatch(machine_.Tick());
   // Nothing in the machine emits CleanupDone: the runtime owes it the one event
   // that ends a cleanup, and exactly one, so a repeated stop can neither re-run
-  // the batch nor re-report it.
-  if (!cleanup_done_ && machine_.state() == State::Stopping) {
+  // the batch nor re-report it. A failed ExitShow leaves cleanup owing another
+  // attempt, and closing the run first would report a clean stop with the show
+  // still full screen, so wait for that retry to settle.
+  if (!cleanup_done_ && machine_.state() == State::Stopping &&
+      !machine_.AwaitingCleanupExitRetry()) {
     cleanup_done_ = true;
     Handle(MakeCleanupDone(ports_.clock.now()));
   }
@@ -371,9 +374,11 @@ void WorkerRuntime::Execute(const Action& action) {
     case ActionKind::ExitShow: {
       const HostResult result = ports_.presentation.ExitShow();
       if (!result.ok()) {
-        // RetryOperation::ExitShow owns the next attempt and its backoff.
+        // RetryOperation::ExitShow owns the next attempt and its backoff; the
+        // source lets the machine keep retrying even while Stopping, where a
+        // failed exit would otherwise leave the show full screen.
         Handle(MakeFailure(ports_.clock.now(), FailureKind::Transient,
-                           FailureSource::Other, "exit show failed"));
+                           FailureSource::ExitShow, "exit show failed"));
       }
       break;
     }

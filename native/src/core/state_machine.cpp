@@ -141,6 +141,7 @@ void StateMachine::Enter(State state) {
 void StateMachine::ResetRetries() {
   retry_.reset();
   retry_attempt_ = 0;
+  cleanup_exit_attempt_ = 0;
   pending_retry_ = RetryOperation::None;
   retry_deadline_.reset();
 }
@@ -471,10 +472,19 @@ std::vector<Action> StateMachine::OnCleanupDone(const Event& event) {
 }
 
 std::vector<Action> StateMachine::OnFailure(const Event& event) {
-  if (state_ == State::Stopping || state_ == State::Exited ||
-      state_ == State::SafeMode) {
-    return {};
+  if (state_ == State::Stopping || state_ == State::SafeMode) {
+    if (event.failure_source != FailureSource::ExitShow) return {};
+    // Cleanup still owes the operator an exit from the show. Stopping retries
+    // within a bounded budget; SafeMode is already ending the run, so it only
+    // records why the show may still be open.
+    if (state_ == State::Stopping) return RetryCleanupExitShow(event);
+    const int slide = current_target_slide_.value_or(0);
+    return {{ActionKind::Journal, slide,
+             "safe mode: could not exit the WPS show: " + event.detail},
+            {ActionKind::Diagnostic, slide,
+             "safe mode could not exit the WPS show"}};
   }
+  if (state_ == State::Exited) return {};
   if (state_ == State::Faulted) {
     return Journal("failure while faulted: " + event.detail);
   }
@@ -615,6 +625,26 @@ std::vector<Action> StateMachine::BeginRetry(RetryOperation operation,
   actions.push_back(
       {ActionKind::Diagnostic, current_target_slide_.value_or(0), detail});
   return actions;
+}
+
+std::vector<Action> StateMachine::RetryCleanupExitShow(const Event& event) {
+  const int slide = current_target_slide_.value_or(0);
+  const auto delay = retry_.next_delay(cleanup_exit_attempt_);
+  if (!delay.has_value()) {
+    // The budget is spent; the process still exits, but the journal and the
+    // diagnostics package must say that the show may be open instead of
+    // reporting a clean stop.
+    return {{ActionKind::Journal, slide,
+             "cleanup: could not exit the WPS show: " + event.detail},
+            {ActionKind::Diagnostic, slide,
+             "cleanup could not exit the WPS show"}};
+  }
+  ++cleanup_exit_attempt_;
+  // ExecuteRetry owns the next ExitShow attempt.
+  pending_retry_ = RetryOperation::ExitShow;
+  SetDeadline(TimeoutKind::Retry, event.at + *delay);
+  return Journal("cleanup exit show failed; retry in " +
+                 std::to_string(delay->count()) + "ms: " + event.detail);
 }
 
 std::vector<Action> StateMachine::ExecuteRetry(ClockPoint at) {

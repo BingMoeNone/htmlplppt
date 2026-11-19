@@ -74,6 +74,9 @@ enum class FailureSource {
   Edge,
   Title,
   Other,
+  // ExitShow failed. Cleanup still owes the operator an exit from the show, so
+  // the machine distinguishes this from an ordinary transient failure.
+  ExitShow,
 };
 
 enum class SupervisorLossPolicy {
