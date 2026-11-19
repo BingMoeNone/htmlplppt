@@ -35,6 +35,7 @@
 #include "core/lock_refresher.h"
 #include "core/reload_policy.h"
 #include "core/resolve.h"
+#include "core/run_id.h"
 #include "core/single_instance.h"
 #include "core/state_machine.h"
 #include "core/supervisor.h"
@@ -802,6 +803,13 @@ int RunStatus(std::string_view run_id,
 }
 
 int RunSupervisor(const SupervisorRunOptions& options) {
+  // The id becomes %TEMP%/htmlppt-<run-id>, which TempDirGuard removes with
+  // remove_all on every exit path. Reject traversal here as well as in the CLI:
+  // the CLI gate is user-facing, this one protects every other caller.
+  if (!options.run_id.empty() && !IsValidRunId(options.run_id)) {
+    std::cerr << "error: invalid --run-id '" << options.run_id << "'\n";
+    return 2;
+  }
   const auto state_dir = options.state_dir.empty() ? DefaultStateDir()
                                                    : options.state_dir;
   std::error_code error;
@@ -1388,6 +1396,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
 }
 
 int RunWorker(const SupervisorRunOptions& options) {
+  if (!options.run_id.empty() && !IsValidRunId(options.run_id)) {
+    std::cerr << "error: invalid --run-id '" << options.run_id << "'\n";
+    return 2;
+  }
   const auto state_dir =
       options.state_dir.empty() ? DefaultStateDir() : options.state_dir;
   const std::string run_id =

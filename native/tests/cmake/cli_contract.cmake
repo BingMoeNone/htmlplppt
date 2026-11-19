@@ -84,3 +84,19 @@ if (NOT reload_missing_state_err MATCHES "state-dir")
   message(FATAL_ERROR
     "--reload without --state-dir: ${reload_missing_state_err}")
 endif()
+
+# The run id becomes the %TEMP%/htmlppt-<run-id> directory name and a Win32
+# object name, so separators and traversal must be refused before any host
+# command runs. The temp directory is the guard that matters: TempDirGuard
+# calls remove_all on it on every exit path.
+set(run_id_dir "${CMAKE_CURRENT_BINARY_DIR}/run-id-reject-test")
+file(REMOVE_RECURSE "${run_id_dir}")
+file(MAKE_DIRECTORY "${run_id_dir}")
+expect_result(invalid_run_id_traversal 2 "letters, digits"
+  --reload --state-dir "${run_id_dir}" --run-id "../escape")
+expect_result(invalid_run_id_parent 2 "letters, digits"
+  --reload --state-dir "${run_id_dir}" --run-id "..")
+if (EXISTS "${run_id_dir}/reload.request")
+  message(FATAL_ERROR "an invalid run id still wrote reload.request")
+endif()
+file(REMOVE_RECURSE "${run_id_dir}")

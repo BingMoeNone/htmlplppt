@@ -241,6 +241,9 @@ directory, and a run id:
 native\build\htmlppt-watchdog.exe --supervisor --config watcher.json --state-dir .\state --run-id demo
 ```
 
+A run id is used as the `%TEMP%\htmlppt-<run-id>` directory name and as part of
+the supervisor's Win32 object names, so it is restricted to ASCII letters,
+digits, `.`, `_` and `-` (at most 128 characters), and `.`/`..` are rejected.
 `--supervisor` requires `--config`. It resolves the config once, with the same
 `--profile`, `--map`, and `--scheduling` overrides `--validate` uses, and
 writes `worker-plan.json` and the effective `worker-config.json` into the state

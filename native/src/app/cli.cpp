@@ -19,6 +19,7 @@
 #include "core/config_schema.h"
 #include "core/deck_info.h"
 #include "core/resolve.h"
+#include "core/run_id.h"
 #include "core/version.h"
 
 namespace htmlppt {
@@ -377,6 +378,16 @@ ParseResult ParseCli(int argc, char** argv) {
     result.ok = false;
     result.error =
         "--run-id is required for --stop, --reload, --status, or --diagnostics";
+    return result;
+  }
+  // The id is a %TEMP% directory component and a Win32 object name, so reject
+  // separators and traversal here rather than letting the supervisor build a
+  // path it later remove_all()s.
+  if (!result.options.run_id.empty() && !IsValidRunId(result.options.run_id)) {
+    result.ok = false;
+    result.error =
+        "--run-id may contain only letters, digits, '.', '_' and '-', and must "
+        "not be '.' or '..'";
     return result;
   }
   // --reload writes the request file into the run's state directory, so unlike
