@@ -53,6 +53,10 @@ class SharedBlackbox {
     std::uint16_t record_size;
     std::uint32_t capacity;
     std::uint32_t reserved;
+    // The size the creator mapped. Open refuses a header whose declared ring
+    // would run past this (or past the view), so a forged or corrupt header
+    // cannot make Snapshot/Latest read outside the section.
+    std::uint64_t mapping_bytes;
     std::atomic<std::uint64_t> appended;
     std::atomic<std::uint64_t> dropped;
   };
