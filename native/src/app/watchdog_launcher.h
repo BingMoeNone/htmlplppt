@@ -86,9 +86,11 @@ bool IsSupervisorRunning(const std::filesystem::path& state_dir);
 // so this finds a run the state-dir probe cannot see (launched by another editor
 // or with another --state-dir). The lock is the JSON CompatFlags::WriteLock
 // writes: a readable `pid` is checked with OpenProcess +
-// GetExitCodeProcess == STILL_ACTIVE; a lock with no readable owner (VBS-era or
-// truncated) counts as live only while non-empty and younger than 60 s, which is
-// long enough for the worker's 5 s refresh to cover a slow start.
+// GetExitCodeProcess == STILL_ACTIVE and must also have been written within the
+// last 120 s, because the worker refreshes the lock every heartbeat (~5 s) and a
+// recycled pid must not keep the gate closed. A lock with no readable owner
+// (VBS-era or truncated) counts as live only while non-empty and younger than
+// 60 s, which is long enough for the worker's 5 s refresh to cover a slow start.
 bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path);
 
 // Launches `cmdline` with CREATE_NO_WINDOW and no inherited handles, so a

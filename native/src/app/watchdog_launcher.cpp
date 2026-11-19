@@ -164,8 +164,18 @@ bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path) {
                          std::istreambuf_iterator<char>()};
   if (text.empty()) return false;
 
+  // Every liveness proof is bounded by the lock's age: the worker refreshes the
+  // lock every heartbeat (~5 s), so a lock that has not been written for minutes
+  // belongs to a run that is gone. Without this a recycled pid could keep the
+  // Start gate closed forever.
+  const auto written = std::filesystem::last_write_time(lock, error);
+  if (error) return false;
+  const auto age = std::filesystem::file_time_type::clock::now() - written;
+
   // The lock payload is the JSON CompatFlags::WriteLock writes. Its pid is the
-  // worker that actually owns the run, so a live pid is a live watchdog.
+  // worker that actually owns the run, so a live pid and a fresh lock are a live
+  // watchdog. 120 s is twenty missed 5 s refreshes: long enough for a slow start,
+  // short enough that a reused pid cannot wedge the gate.
   const auto parsed = nlohmann::json::parse(text, nullptr, false);
   if (!parsed.is_discarded() && parsed.is_object()) {
     const auto pid = parsed.find("pid");
@@ -179,17 +189,13 @@ bool IsWatchdogLiveForConfig(const std::filesystem::path& config_path) {
         const bool alive = GetExitCodeProcess(process, &exit_code) != FALSE &&
                            exit_code == STILL_ACTIVE;
         CloseHandle(process);
-        return alive;
+        return alive && age < std::chrono::seconds(120);
       }
     }
   }
 
-  // No readable owner: a VBS-era watcher.lock. Trust it only while fresh. The
-  // native worker refreshes the lock every 5 s, and 60 s leaves room for a slow
-  // start without trusting a lock a crashed run left behind.
-  const auto written = std::filesystem::last_write_time(lock, error);
-  if (error) return false;
-  const auto age = std::filesystem::file_time_type::clock::now() - written;
+  // No readable owner: a VBS-era watcher.lock. Trust it only while fresh. 60 s
+  // leaves room for a slow start without trusting a crashed run's lock.
   return age < std::chrono::seconds(60);
 }
 

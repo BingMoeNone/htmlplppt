@@ -200,6 +200,23 @@ HTMLPPT_TEST_CASE(win32_watchdog_live_for_config_reads_the_compat_lock) {
   HTMLPPT_CHECK(std::filesystem::is_regular_file(lock));
   HTMLPPT_CHECK(htmlppt::IsWatchdogLiveForConfig(config));
 
+  // A reused pid is not enough: the worker refreshes the lock every heartbeat
+  // (~5 s), so a lock untouched for ten minutes belongs to a run that is gone
+  // even though its pid now names an unrelated live process.
+  std::error_code age_error;
+  std::filesystem::last_write_time(
+      lock,
+      std::filesystem::file_time_type::clock::now() - std::chrono::minutes(10),
+      age_error);
+  HTMLPPT_CHECK(!age_error);
+  HTMLPPT_CHECK(!htmlppt::IsWatchdogLiveForConfig(config));
+  // Freshening the same live-pid lock restores the verdict: the age, not the
+  // pid, is what changed.
+  std::filesystem::last_write_time(
+      lock, std::filesystem::file_time_type::clock::now(), age_error);
+  HTMLPPT_CHECK(!age_error);
+  HTMLPPT_CHECK(htmlppt::IsWatchdogLiveForConfig(config));
+
   // Same format, but the pid belongs to a process that has already exited: a
   // leftover lock must not keep the Start gate closed.
   PROCESS_INFORMATION dead{};
