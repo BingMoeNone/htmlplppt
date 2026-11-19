@@ -463,14 +463,28 @@ int RunWorkerSession(WorkerDriver& driver, FrameChannel& channel,
         snapshot.state == State::Monitoring) {
       paused.store(true, std::memory_order_relaxed);
     }
-    if (!keep_going) break;
+    // Publish before the terminal break: the state that ended the run belongs to
+    // this heartbeat too, so a warm-up heartbeat cannot be the last one seen.
     published_state.store(static_cast<int>(snapshot.state),
                           std::memory_order_relaxed);
+    if (!keep_going) break;
   }
 
   // Stop the sender before the final Cleanup frame: the two share the send
   // mutex, and the Cleanup must carry the last sequence.
   heartbeat.Stop();
+  // The heartbeat thread was the only blackbox writer; stopping it first keeps
+  // that contract, and this record is what --status reads after the run: the
+  // final state must not look like a stale heartbeat from Monitoring.
+  {
+    BlackboxRecord record;
+    record.timestamp_ms = static_cast<std::int64_t>(NowMs());
+    record.event = BlackboxEvent::StateChange;
+    record.pid = GetCurrentProcessId();
+    record.state = static_cast<std::int32_t>(driver.snapshot().state);
+    std::snprintf(record.detail, sizeof(record.detail), "worker final state");
+    blackbox.Append(record);
+  }
   // The safe-point atomic lives on this stack; detach it before the driver can
   // outlive the session.
   driver.SetSafePointFlag(nullptr);

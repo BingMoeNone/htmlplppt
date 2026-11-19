@@ -169,10 +169,14 @@ std::vector<std::uint32_t> CollectWpsPids() {
 }
 
 void AppendWorkerDiagnostic(SharedBlackbox& blackbox, BlackboxEvent event,
-                            std::int64_t value, const std::string& detail) {
+                            State state, std::int64_t value,
+                            const std::string& detail) {
   BlackboxRecord record;
   record.timestamp_ms = NowMs();
   record.event = event;
+  // --status reports the last record's state, so a diagnostic without a state
+  // would make the run look like it was still in Boot.
+  record.state = static_cast<std::int32_t>(state);
   record.pid = GetCurrentProcessId();
   record.value = value;
   std::snprintf(record.detail, sizeof(record.detail), "%s", detail.c_str());
@@ -1497,7 +1501,7 @@ int RunWorker(const SupervisorRunOptions& options) {
     facts.faults = ParseFaults(faults_env);
   }
   if (HasAnyFault(facts.faults)) {
-    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0,
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, State::Boot, 0,
                            "faults: " + FaultsToString(facts.faults));
     std::cerr << "warning: fault injection active: "
               << FaultsToString(facts.faults) << "\n";
@@ -1514,7 +1518,7 @@ int RunWorker(const SupervisorRunOptions& options) {
   facts.screen = screen.metrics;
   if (!screen.error.empty()) {
     std::cerr << "warning: " << screen.error << "\n";
-    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0,
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, State::Boot, 0,
                            "display: " + screen.error);
   }
   if (const auto edge = FindEdgeExecutable(); edge.has_value()) {
@@ -1655,14 +1659,15 @@ int RunWorker(const SupervisorRunOptions& options) {
   }
   if (started.launch_failed) {
     AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure,
-                           started.launch_error,
+                           State::Faulted, started.launch_error,
                            "WPS launch failed: " + started.launch_detail);
     std::cerr << "error: cannot open " << plan->deck_utf8 << ": "
               << started.launch_detail << "\n";
     return 1;
   }
   if (started.show_failed) {
-    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, started.show_error,
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, State::Faulted,
+                           started.show_error,
                            "start show failed: " + started.show_detail);
     std::cerr << "error: cannot start the WPS slideshow: "
               << started.show_detail << "\n";
@@ -1670,12 +1675,13 @@ int RunWorker(const SupervisorRunOptions& options) {
   }
   // Starting the show is a success fact worth seeing in --status: a regression
   // that drops StartShow must be visible in the blackbox, not just inferred.
-  AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, 0, "start show");
+  AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Event, State::Warming, 0,
+                         "start show");
   const auto pid_count = static_cast<std::int64_t>(started.wps_pid_count);
   // An empty list is a warning, not a failure: some WPS builds expose no
   // slideshow window class, and the run continues with FocusWps inert.
   AppendWorkerDiagnostic(
-      *blackbox, BlackboxEvent::Event, pid_count,
+      *blackbox, BlackboxEvent::Event, State::Warming, pid_count,
       pid_count == 0
           ? std::string{"wps pids: 0 (no slideshow window class)"}
           : "wps pids: " + std::to_string(pid_count));
@@ -1738,8 +1744,8 @@ int RunWorker(const SupervisorRunOptions& options) {
     // The machine's Diagnostic action is journal-only (the runtime has no
     // blackbox port); record it here so --status and the diagnostics package
     // show why the run ended in SafeMode.
-    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, 0,
-                           "safe mode: worker entered SafeMode");
+    AppendWorkerDiagnostic(*blackbox, BlackboxEvent::Failure, State::SafeMode,
+                           0, "safe mode: worker entered SafeMode");
   }
   // --benchmark: report the loop and COM latencies next to the worker config, so
   // --diagnostics collects them and the acceptance doc's numbers are evidence.

@@ -58,6 +58,9 @@ class FakeWorkerDriver final : public WorkerDriver {
   void RequestStop(std::string reason) override {
     ++request_stop_calls;
     stop_reasons.push_back(std::move(reason));
+    // Model WorkerRuntime: a stop request ends the machine in Exited, which is
+    // the terminal state the session must publish as its final record.
+    state_snapshot.state = State::Exited;
     if (stop_ends) done_ = true;
   }
 

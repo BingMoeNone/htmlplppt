@@ -137,6 +137,13 @@ HTMLPPT_TEST_CASE(worker_session_heartbeats_and_stops) {
   HTMLPPT_CHECK_EQ(driver.stop_reasons.size(), std::size_t{1});
   HTMLPPT_CHECK_EQ(driver.stop_reasons.front(), std::string{"supervisor stop"});
   HTMLPPT_CHECK(blackbox->appended() > 0);
+  // The final record is what --status reports, so the session must publish its
+  // terminal state after the loop: a last heartbeat from Monitoring/Stopping
+  // would make a finished run look like it is still starting.
+  const auto records = blackbox->Snapshot();
+  HTMLPPT_CHECK(!records.empty());
+  HTMLPPT_CHECK_EQ(records.back().state,
+                   static_cast<std::int32_t>(State::Exited));
   HTMLPPT_CHECK(error.empty());
 
   channel->Close();
