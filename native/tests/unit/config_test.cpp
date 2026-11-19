@@ -3,6 +3,7 @@
 #include <string>
 
 #include "core/config.h"
+#include "core/config_issue.h"
 
 using htmlppt::ConfigLoadResult;
 using htmlppt::IssueSeverity;
@@ -93,7 +94,7 @@ HTMLPPT_TEST_CASE(config_parses_nested_target_and_defaults) {
   HTMLPPT_CHECK_EQ(config.defaults.cover.hold_ms, 500);
   HTMLPPT_CHECK_EQ(config.defaults.cover.max_hold_ms, 8000);
   HTMLPPT_CHECK_EQ(config.defaults.edge.max_live_ms, 120000);
-  HTMLPPT_CHECK(config.defaults.edge.prewarm_profile);
+  HTMLPPT_CHECK(config.defaults.edge.prewarm_profile.value_or(false));
   HTMLPPT_CHECK_EQ(config.defaults.scheduling, std::string{"aggressive"});
   HTMLPPT_CHECK_EQ(config.defaults.max_consecutive_trigger_failures, 4);
   const auto& target = config.active.targets[0];
@@ -377,6 +378,34 @@ HTMLPPT_TEST_CASE(config_legacy_inherits_defaults) {
   HTMLPPT_CHECK_EQ(target.on_failure, std::string{"strict"});
 }
 
+HTMLPPT_TEST_CASE(config_stage_max_bytes_round_trips) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "tree", "root": "assets", "maxBytes": 4096 },
+    "targets": [ { "slide": 1, "html": "page1.html" } ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK_EQ(result.config->active.stage.max_bytes,
+                   std::int64_t{4096});
+  const std::string serialized = htmlppt::ConfigToJson(*result.config);
+  HTMLPPT_CHECK(serialized.find("\"maxBytes\": 4096") != std::string::npos);
+  const auto reloaded = Parse(serialized);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK_EQ(reloaded.config->active.stage.max_bytes,
+                   std::int64_t{4096});
+}
+
+HTMLPPT_TEST_CASE(config_rejects_a_negative_stage_max_bytes) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "maxBytes": -1 },
+    "targets": [ { "slide": 1, "html": "page1.html" } ]
+  })");
+  HTMLPPT_CHECK(HasIssueAt(result, "stage.maxBytes"));
+}
+
 HTMLPPT_TEST_CASE(config_profile_stage_inherits_top_level_root) {
   const auto result = Parse(R"({
     "version": 1,
@@ -648,4 +677,96 @@ HTMLPPT_TEST_CASE(config_reports_single_html_error) {
   HTMLPPT_CHECK(HasError(empty));
   HTMLPPT_CHECK_EQ(CountIssuesAt(empty, "targets[0].html"), std::size_t{1});
   HTMLPPT_CHECK(HasIssueAtWithMessage(empty, "targets[0].html", "must not be empty"));
+}
+
+HTMLPPT_TEST_CASE(config_rejects_an_unknown_focus_strategy) {
+  const auto bad = htmlppt::LoadConfigFromString(
+      R"({"version":1,"deck":"d.pptx","targets":[{"slide":1,"html":"a.html","focus":{"strategy":"bogus"}}]})",
+      "watcher.json", {});
+  HTMLPPT_CHECK(htmlppt::HasErrorIssue(bad.issues));
+
+  const auto good = htmlppt::LoadConfigFromString(
+      R"({"version":1,"deck":"d.pptx","targets":[{"slide":1,"html":"a.html","focus":{"strategy":"attach-alt"}}]})",
+      "watcher.json", {});
+  HTMLPPT_CHECK(!htmlppt::HasErrorIssue(good.issues));
+  HTMLPPT_CHECK(good.config.has_value());
+  HTMLPPT_CHECK_EQ(good.config->active.targets[0].focus->strategy,
+                   std::string{"attach-alt"});
+}
+
+HTMLPPT_TEST_CASE(config_round_trips_the_focus_timeout) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": {
+      "focus": { "timeoutMs": 4000 }
+    },
+    "targets": [
+      {
+        "slide": 1,
+        "html": "a.html",
+        "focus": { "strategy": "attach-alt", "require": false,
+                   "timeoutMs": 2500 }
+      },
+      { "slide": 2, "html": "b.html" }
+    ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.config->defaults.focus.timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->defaults.focus.timeout_ms, 4000);
+  HTMLPPT_CHECK(result.config->active.targets[0].focus.has_value());
+  HTMLPPT_CHECK(result.config->active.targets[0].focus->timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->active.targets[0].focus->timeout_ms, 2500);
+  HTMLPPT_CHECK(!result.config->active.targets[1].focus.has_value());
+
+  // The editor's save path re-serializes the effective config; a field it drops
+  // would be lost the next time the operator saves.
+  const std::string json = htmlppt::ConfigToJson(*result.config);
+  HTMLPPT_CHECK(json.find("\"timeoutMs\": 4000") != std::string::npos);
+  HTMLPPT_CHECK(json.find("\"timeoutMs\": 2500") != std::string::npos);
+
+  const auto reloaded = Parse(json);
+  HTMLPPT_CHECK(reloaded.config.has_value());
+  HTMLPPT_CHECK(!HasError(reloaded));
+  HTMLPPT_CHECK_EQ(*reloaded.config->defaults.focus.timeout_ms, 4000);
+  HTMLPPT_CHECK_EQ(*reloaded.config->active.targets[0].focus->timeout_ms, 2500);
+}
+
+// A target focus block with no timeout keeps the defaults timeout, exactly like
+// strategy/require inherit from the base focus config.
+HTMLPPT_TEST_CASE(config_focus_timeout_inherits_from_defaults) {
+  const auto result = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "focus": { "timeoutMs": 3500 } },
+    "targets": [
+      { "slide": 1, "html": "a.html", "focus": { "strategy": "switch" } }
+    ]
+  })");
+  HTMLPPT_CHECK(result.config.has_value());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.config->active.targets[0].focus.has_value());
+  HTMLPPT_CHECK(result.config->active.targets[0].focus->timeout_ms.has_value());
+  HTMLPPT_CHECK_EQ(*result.config->active.targets[0].focus->timeout_ms, 3500);
+}
+
+HTMLPPT_TEST_CASE(config_rejects_a_non_positive_focus_timeout) {
+  const auto zero = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "targets": [{ "slide": 1, "html": "a.html",
+                  "focus": { "timeoutMs": 0 } }]
+  })");
+  HTMLPPT_CHECK(HasError(zero));
+  HTMLPPT_CHECK(HasIssueAt(zero, "targets[0].focus.timeoutMs"));
+
+  const auto negative = Parse(R"({
+    "version": 1,
+    "deck": "deck-live.pptx",
+    "defaults": { "focus": { "timeoutMs": -1 } },
+    "targets": [{ "slide": 1, "html": "a.html" }]
+  })");
+  HTMLPPT_CHECK(HasError(negative));
+  HTMLPPT_CHECK(HasIssueAt(negative, "defaults.focus.timeoutMs"));
 }

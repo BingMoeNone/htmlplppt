@@ -177,6 +177,12 @@ HTMLPPT_TEST_CASE(resolve_utf8_assets_root) {
   const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
   HTMLPPT_CHECK(!HasError(result));
   HTMLPPT_CHECK_EQ(result.targets.size(), std::size_t{1});
+  // The staging policy travels with the resolved target so the worker can stage
+  // without re-reading the config.
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+  HTMLPPT_CHECK(result.targets[0].assets_root.find(" assets") !=
+                std::string::npos);
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_max_bytes, std::int64_t{0});
 }
 
 HTMLPPT_TEST_CASE(resolve_slide_out_of_range) {
@@ -510,6 +516,125 @@ HTMLPPT_TEST_CASE(resolve_rejects_stage_name_with_separator) {
   HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
 }
 
+HTMLPPT_TEST_CASE(resolve_rejects_a_windows_reserved_stage_name) {
+  // A reserved DOS device name is not a normal file even with an extension:
+  // CreateFile("CON.html") opens the console. The staged page would never exist.
+  for (const char* name : {"CON", "con.html", "NUL", "AUX.txt", "COM1",
+                           "LPT9"}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_an_alternate_data_stream_stage_name) {
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": "page.html:stream"
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_a_stage_name_ending_in_a_dot_or_space) {
+  // Windows strips trailing dots and spaces, so two distinct stage names could
+  // collide on the same file ("page.html." and "page.html").
+  for (const char* name : {"page.html.", "page "}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_invalid_filename_characters_in_a_stage_name) {
+  for (const char* name : {"pa|ge.html", "pa?ge.html", "pa*ge.html",
+                           "pa<ge.html", "pa>ge.html"}) {
+    Fixture fixture;
+    const Config config = ParseConfig(
+        fixture, std::string(R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": ")") +
+                     name + R"("
+    }]
+  })");
+    const auto deck = MakeDeck();
+    const auto result =
+        htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+    HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+  }
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_a_quote_in_a_stage_name) {
+  Fixture fixture;
+  // The JSON escape is what puts a literal quote in the parsed value.
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "stageName": "pa\"ge.html"
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[0].stageName"));
+}
+
+HTMLPPT_TEST_CASE(resolve_rejects_duplicate_stage_names_case_insensitively) {
+  // NTFS compares file names case-insensitively: "Same.html" and "same.html"
+  // are one staged file, so the second target would silently overwrite the first.
+  Fixture fixture;
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [
+      { "slide": 1, "html": "page1.html", "stageName": "Same.html" },
+      { "slide": 2, "html": "page2.html", "stageName": "same.html" }
+    ]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(HasErrorAt(result, "targets[1].stageName"));
+}
+
 HTMLPPT_TEST_CASE(resolve_duplicate_slide) {
   Fixture fixture;
   const Config config = ParseConfig(fixture, R"({
@@ -636,4 +761,109 @@ HTMLPPT_TEST_CASE(resolve_table_contains_rows) {
   HTMLPPT_CHECK(table.find("SLIDE") != std::string::npos);
   HTMLPPT_CHECK(table.find("page1.html") != std::string::npos);
   HTMLPPT_CHECK(table.find("resolved") != std::string::npos);
+}
+
+HTMLPPT_TEST_CASE(resolve_inherits_the_global_stage_mode) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "direct" },
+    "targets": [{ "slide": 1, "html": "page1.html" }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"direct"});
+}
+
+HTMLPPT_TEST_CASE(resolve_target_assets_block_without_root_uses_html_dir) {
+  Fixture fixture;
+  fixture.Write("pages/page1.html", "<html></html>");
+  fixture.Write("pages/a.css", "body{}");
+  // A valid global stage root: the old fallback silently used this even though
+  // the target owns an assets block.
+  fixture.Write("shared/a.css", "body{}");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "tree", "root": "shared" },
+    "targets": [{
+      "slide": 1,
+      "html": "pages/page1.html",
+      "assets": { "mode": "tree" }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+  const auto expected =
+      std::filesystem::weakly_canonical(fixture.dir.path() / "pages");
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_root, htmlppt::Utf8Path(expected));
+}
+
+HTMLPPT_TEST_CASE(resolve_target_assets_override_the_global_stage_mode) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  fixture.Write(htmlppt::PathFromUtf8("assets/a.css"), "body{}");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "stage": { "mode": "direct" },
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "assets": { "mode": "tree", "root": "assets" }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].assets_mode, std::string{"tree"});
+}
+
+HTMLPPT_TEST_CASE(resolve_carries_the_target_edge_overrides_into_the_plan) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "edge": { "args": ["--kiosk", "--no-sandbox"], "prewarmProfile": true }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK_EQ(result.targets[0].edge_args.size(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(result.targets[0].edge_args[0], std::string{"--kiosk"});
+  HTMLPPT_CHECK(result.targets[0].edge_args_set);
+  HTMLPPT_CHECK(result.targets[0].edge_prewarm.has_value());
+  HTMLPPT_CHECK(*result.targets[0].edge_prewarm);
+}
+
+HTMLPPT_TEST_CASE(resolve_leaves_unset_target_edge_prewarm_to_inherit) {
+  Fixture fixture;
+  fixture.Write(htmlppt::PathFromUtf8("page1.html"), "<html></html>");
+  const Config config = ParseConfig(fixture, R"({
+    "version": 1,
+    "deck": "deck.pptx",
+    "targets": [{
+      "slide": 1,
+      "html": "page1.html",
+      "edge": { "maxLiveMs": 5000 }
+    }]
+  })");
+  const auto deck = MakeDeck();
+  const auto result = htmlppt::ResolveTargets(config, &deck, DefaultOptions());
+  HTMLPPT_CHECK(!HasError(result));
+  HTMLPPT_CHECK(result.targets[0].edge_args.empty());
+  // The target owns an edge block, so its (inherited, empty) args are explicit;
+  // only prewarm was omitted and stays unset to inherit.
+  HTMLPPT_CHECK(result.targets[0].edge_args_set);
+  HTMLPPT_CHECK(!result.targets[0].edge_prewarm.has_value());
 }

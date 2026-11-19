@@ -145,8 +145,10 @@ stale heartbeats.
 `core/supervisor` is a declarative decision engine. It emits `StartWorker`,
 `RequestDump`, `TerminateWorker`, `RestartWorker`, `EnterSafeMode`,
 `RunLegacyFallback`, and `StopComplete`. It uses a 2 s heartbeat timeout, a
-5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s backoff with
-jitter. `NextDeadline()` exposes the pending restart; `Tick()` dispatches it.
+12 s loop-progress stall timeout (above the longest permitted blocking COM
+action), a 5-restarts-per-10-minutes budget, and a 200 ms/500 ms/1 s/2 s/5 s
+backoff with jitter. `NextDeadline()` exposes the pending restart; `Tick()`
+dispatches it.
 The host must call `Tick()` at least every 100 ms (design spec 6.1);
 `NextDeadline()` exposes restart deadlines but not the heartbeat-stall check.
 `Start()` and a late `Started` are ignored while a restart is scheduled; the
@@ -208,15 +210,332 @@ MSVC `/WX` clean.
 
 The same EXE runs as supervisor and worker.
 
-- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job; it expects heartbeats every 200 ms with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
-- `--worker --run-id <id>` connects to the pipe, sends a heartbeat every 200 ms, appends a black-box record every five heartbeats, and exits on a Stop frame or when the pipe breaks.
-- `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup (10 s cap) before returning.
-- `--status --run-id <id> --state-dir <dir>` prints the last black-box records and the journal path.
+- `--supervisor --state-dir <dir> --run-id <id>` creates the stop event, single-instance mutex, shared black box, named-pipe server, and worker Job. It resolves the config with the CLI overrides applied, writes `worker-plan.json` and the effective `worker-config.json` into the state dir, then launches the worker with that config; it expects heartbeats with a 2 s timeout, restarts the worker with the Plan 4A budget/backoff, and exits after `--stop`. A worker restart recreates the pipe server before relaunching the worker.
+- `--worker --run-id <id>` reads the plan and the effective config, opens the deck in WPS, starts the slideshow, and runs the state machine loop, heartbeating the current state while the loop works. It exits on a Stop frame or after a clean state-machine exit; a supervisor loss is reported to the machine and the loop continues.
+- `--stop --run-id <id>` sets the named stop event and waits for the supervisor to finish worker termination, journal flush, and handle cleanup. The supervisor gives the worker a 10 s cleanup budget and `--stop` waits up to 20 s for the outcome; the result file is kept so a concurrent or late `--stop` reports the same result.
+- `--status --run-id <id> --state-dir <dir>` prints the run id, state, worker PID, last event and the last black-box records (each line ends with the state name, e.g. `[Monitoring]`) plus the journal path.
+- `--reload --run-id <id> --state-dir <dir>` writes the empty `reload.request` marker the running supervisor polls at each heartbeat. The supervisor rebuilds the plan and restarts the worker only at a worker safe point (between Steps, parked in `Monitoring`); the command returns immediately and the request is consumed even when the rebuild fails.
+- `--diagnostics --run-id <id> --state-dir <dir> --out <path>` writes a self-contained package: `manifest.txt`, `journal.jsonl`, `watch-log.txt`, the plan/effective config, a black-box snapshot (`blackbox.txt`, when the run still owns it) and any crash dumps. `--config` is optional: the supervisor records the launch-time config path and working directory in `<state-dir>/run-info.txt`, so the diagnostics process finds the config directory even when it runs from elsewhere. Passing `--config` still overrides it.
 - `--dump-helper <pid> <path>` writes a MiniDump.
 
 The shared black box is written only by the worker; the supervisor reads a read-only view. On Linux these host modes print a Windows-only error and exit 2; the diagnostic CLI is unchanged.
 
-Windows gate: `htmlppt_core_tests` 189/189, `htmlppt_win32_tests` 22/22, CTest 9/9, `/WX` clean.
+Every supervisor case in `htmlppt_win32_tests` launches a worker that opens the
+deck in WPS and starts a real slideshow when WPS is present. The end-to-end case
+(`win32_supervisor_starts_and_stops`) additionally asserts the show-start
+record, so when the `Kwpp.Application` COM ProgID is not registered it prints
+`SKIP: WPS not installed` and passes; the other cases still exercise the
+supervisor and worker lifecycle around that attempt. The cases terminate only
+the WPS processes they started, so repeated runs do not accumulate automation
+instances.
+
+Windows gate: `htmlppt_core_tests` 284/284, `htmlppt_win32_tests` 61/61 (the
+WPS case is skipped without WPS), CTest 9/9, `-Werror` clean.
+
+## Running the watchdog
+
+The supervisor and the worker are the same EXE. A run needs a config, a state
+directory, and a run id:
+
+```powershell
+native\build\htmlppt-watchdog.exe --supervisor --config watcher.json --state-dir .\state --run-id demo
+```
+
+A run id is used as the `%TEMP%\htmlppt-<run-id>` directory name and as part of
+the supervisor's Win32 object names, so it is restricted to ASCII letters,
+digits, `.`, `_` and `-` (at most 128 characters), and `.`/`..` are rejected.
+`--supervisor` requires `--config`. It resolves the config once, with the same
+`--profile`, `--map`, and `--scheduling` overrides `--validate` uses, and
+writes `worker-plan.json` and the effective `worker-config.json` into the state
+directory before anything is launched. The worker is spawned automatically; do
+not run `--worker` by hand. The worker opens the deck in WPS, starts the
+slideshow, and drives the cover, Edge, and show actions while heartbeating its
+state into the shared black box.
+
+A slide change is only observable through the WPS COM poll, so the poll interval
+is the trigger latency: the loop polls every 20 ms while it is `Monitoring` a
+running show and falls back to 100 ms otherwise (`WorkerHostConfig::active_poll_interval`).
+
+### WPS COM events (probe result)
+
+`tools/probe-wps-events.cpp` (built as `htmlppt-probe-wps-events` on Windows)
+answers whether the watchdog could take slide changes from a COM event instead
+of polling:
+
+```powershell
+native\build\htmlppt-probe-wps-events.exe demo\deck.pptx
+```
+
+Finding on WPS 12.1: the automation server exposes exactly one connection point,
+`{914934C2-5A91-11CF-8700-00AA0060263B}`, and it is connectable. The registered
+type library does not resolve `SlideShowNextSlide`, but a sink that accepts any
+DISPID sees exactly two events per slide change (DISPID 2013 with one argument,
+DISPID 2019 with two) and none while the show is idle.
+
+Decision: the event sink is **not** integrated. The loop already polls every
+20 ms while `Monitoring`, so an event would save at most one poll interval --
+the remaining latency is the COM round trip itself -- while integration costs a
+connection point on the worker's STA, a message pump in the loop's wait, and
+advise/unadvise lifetime handling. The probe stays in the tree so the decision
+can be revisited if the cadence is ever raised or WPS exposes a named event
+interface.
+
+### Fault injection
+
+`HTMLPPT_FAULTS` in the supervisor's environment enables the spec 6.6 switches,
+so the resilience paths can be exercised on a real machine without wedging WPS:
+
+| switch | effect |
+|---|---|
+| `com-hang` | every COM query fails, driving the 2 s error window towards SafeMode |
+| `com-462` | the same path with the classic WPS busy HRESULT |
+| `edge-slow` | Edge readiness is held back 3 s (cold start); the machine's EdgeStarting deadline still bounds it |
+| `cover-hang` | the cover never reports its hold, so the machine's cover deadline owns recovery |
+| `focus-deny` | activation always fails, so Edge never becomes ready |
+| `supervisor-loss` | the worker is told the supervisor is gone at start; the loop must continue |
+| `sleep-resume` | injects a 60 s suspend gap and a resume, exercising the deadline shift |
+| `multi-monitor` | injects a display-topology change (half-size reference metrics) |
+| `cleanup-slow` | delays the cleanup batch by 3 s, so `--stop` must outwait it instead of force-killing the worker |
+| `start-fail` | fails WPS launch before the show starts, exercising the worker's startup-failure cleanup |
+
+The worker journals `faults: <list>` into the black box and prints a warning, so
+an injected run is never silent:
+
+```powershell
+$env:HTMLPPT_FAULTS = 'edge-slow'
+native\build\htmlppt-watchdog.exe --supervisor --config demo\watcher.json --state-dir demo\state --run-id demo
+```
+
+`HTMLPPT_BENCHMARK=1` (worker environment) makes the worker write
+`benchmark.txt` next to `worker-config.json` with per-step and per-COM-query
+p50/p99/max latencies, so a real run's numbers are evidence rather than a guess:
+
+```text
+steps 118 p50 31ms p99 140ms max 233ms
+com   118 p50  3ms p99   9ms max  19ms
+```
+
+The cover window also re-covers on `WM_DISPLAYCHANGE`, `WM_DPICHANGED` and
+`WM_POWERBROADCAST` resume: the loop's wait pumps messages, so a topology change
+or resume reaches the overlay immediately instead of waiting for the next COM
+call. A resume also re-bases every pending deadline by the measured suspend gap
+(`power resume: shifted deadlines by <n> ms`), so waking up does not look like a
+pile of expired timers; a display change updates the reference metrics used for
+show-window scoring.
+
+### Config editor (`--config-ui`)
+
+```powershell
+native\build\htmlppt-watchdog.exe --config-ui --config watcher.json
+```
+
+Windows only. Add `--deck-info deck-info.json` on a machine without WPS, exactly
+like `--validate`. The window is a thin Win32 view over `core/config_editor`,
+which edits the effective profile, validates through the same resolver a run
+uses, and saves atomically. `--allow-outside-folder` is forwarded to a run
+launched from the window, so the editor and the run resolve HTML paths with the
+same permission.
+
+1. The table lists one row per effective target: slide, label, HTML, assets
+   mode, and the resolver's state. An error row carries its first issue in the
+   STATE column.
+2. Selecting a row fills the right-hand pane: slide, label, HTML, an assets
+   mode (`inherit` clears the target's own block so the stage mode applies), and
+   the enabled switch. Edit the fields and press **Apply**; the status line
+   reports `applied`, or the first blocking reason when the refresh leaves Save
+   closed.
+3. **Add** appends a target with a placeholder HTML, **Remove** asks for
+   confirmation and drops the selected target, and **Validate** re-runs the
+   resolver and shows the first issue -- including a config-wide error such as a
+   missing deck, which has no row of its own. **Scan deck** exports one
+   thumbnail per slide; it stays disabled while a watchdog owns the config,
+   because the export opens and closes the deck WPS is presenting.
+4. **Save** stays disabled while the model is clean or blocked by an error. It
+   writes a sibling temporary file and only then replaces the config, copying
+   the previous contents to `<name>.bak`; a failed write never truncates the
+   config. The gate closes again once the save succeeds.
+5. Closing with unsaved edits asks Yes/No/Cancel. Yes saves first -- only while
+   the Save gate is open, so a blocked config is never persisted -- and closes
+   only when the save succeeds; a failed save stays open and shows the reason.
+   No discards the edits and closes, and Cancel keeps the window and its edits.
+   The window declares a minimum size and follows `WM_DPICHANGED`, so the pane
+   and its Apply button never cover the status line.
+6. **Start** launches a supervisor for this config as a detached process (the
+   same EXE re-entered with `--supervisor`), and **Stop** asks it to shut down
+   through `--stop` and reports the exit code. Start stays disabled unless the
+   config is clean and no supervisor owns the run's state directory; it also
+   saves unsaved edits first, through the same gate the Save button uses, so a
+   run always reads the file the editor shows. The status line shows the run id
+   (`ui-<timestamp>`) and then the state the run last journalled, spelled the
+   same way `--status` spells it. A 500 ms poll reaps the child, so a supervisor
+   that exits on its own reopens Start and reports `watchdog stopped`.
+
+An editor-launched run writes its state to `<config-dir>\.htmlppt-run`, a hidden
+sibling of the config file, so the plan and journal are discoverable next to the
+config instead of mixing into the user's folder. That is deliberately different
+from the CLI's per-user default (`%LOCALAPPDATA%\htmlppt-watchdog`) and from the
+smoke script's explicit `-StateDir`, because the editor must not share one state
+directory across unrelated configs. Closing the editor leaves a running
+supervisor alive (a UI crash must not kill the watchdog); stop it with
+`--stop --run-id <id> --state-dir <config-dir>\.htmlppt-run`.
+
+**Profile-based configs are read-only for saving in v1.** When the file uses
+`profiles` or `activeProfile`, the editor loads the effective profile but Save
+stays disabled and the status line says so: the model serializes the effective
+profile only, so saving would flatten the file and drop the other profiles. Edit
+the profile blocks in the JSON itself.
+
+A missing or broken config is not fatal: the window opens with the loader's
+first issue in the status line instead of exiting. The deck is config-wide and
+is not editable in the window, so Save stays blocked until the file is repaired
+outside the window. The auto-mapping wizard from spec 9.3 is available from the
+toolbar: it scans the deck, proposes slide-to-HTML pairs from a folder, previews
+them with per-row include, and imports the checked rows as one undoable edit.
+Slides that are already mapped are skipped (the status line reports how many).
+
+### Threading model
+
+The worker is a single STA thread that owns the COM objects, the cover window,
+and the state loop. A helper thread only sends heartbeat frames (under a send
+mutex) so a blocking COM action cannot starve the supervisor.
+
+The loop's wait is `PumpingClock` (`platform/win32/pumping_clock`): it waits with
+`MsgWaitForMultipleObjectsEx` and dispatches queued messages in slices of at most
+50 ms. That matters because the loop thread is the apartment that hosts the COM
+objects and the cover window -- a plain `sleep_until` would leave their callbacks
+queued until the next COM call. It is deliberately not a multi-thread rework: the
+heartbeat helper already covers the supervisor-side liveness requirement, and a
+split COM/UI/IPC model only pays off if the slide source becomes an event sink.
+
+From a second shell, inspect the run and stop it:
+
+```powershell
+native\build\htmlppt-watchdog.exe --status --run-id demo --state-dir .\state
+native\build\htmlppt-watchdog.exe --reload --run-id demo --state-dir .\state
+native\build\htmlppt-watchdog.exe --stop --run-id demo --state-dir .\state
+```
+
+`--status` prints the last black-box records (state number and name) and the
+journal path. `--reload` asks the live run to rebuild its plan: the supervisor
+pauses the worker at a safe point, waits for the paused heartbeat, rebuilds and
+replaces the process, and resumes the old worker if the rebuild fails. A reload
+cannot switch to a different deck (that needs a restart), because reopening the
+deck would close the one the running show uses. A request left behind by an
+earlier run is removed when the next run starts, so a stale marker cannot
+restart a fresh worker. `--stop` sets the stop event and
+returns after the supervisor has terminated the worker, flushed the journal, and
+closed its handles; it exits 0 after a clean stop. A config or deck that cannot
+be resolved fails before a worker is launched, journals the reason, and exits 1.
+
+WPS Presentation must be installed and the deck must be closed before a run:
+the supervisor reads the deck facts through COM and the worker opens that deck
+and starts the show. The supervisor's planning step needs a responsive WPS (or
+`--deck-info`), and a wedged WPS is a prerequisite failure, not a watchdog
+failure. Hang detection fires after ~12 s of frozen loop progress because 5C
+permits blocking COM actions; a wedged WPS is restarted within that budget.
+
+The on-machine check is `scripts/smoke-watchdog.ps1`. It starts a run with the
+run id `smoke`, waits for `worker-plan.json`, polls `--status` once a second
+until the worker reaches `Monitoring` (state 2) -- i.e. the deck is open and the
+show is actually running -- then runs `--stop` and requires the supervisor to
+exit 0. An earlier faulted/safe-mode state fails immediately instead of waiting
+out the window. `-ExpectState` raises or lowers the required state:
+
+```powershell
+pwsh -File scripts/smoke-watchdog.ps1 -Config watcher.json -StateDir .\state -Exe native\build\htmlppt-watchdog.exe
+```
+
+The script targets Windows PowerShell 5.1 and later, so a host without `pwsh`
+can run the same command through `powershell -File` instead.
+
+The script tears the supervisor down and prints the last 20 journal records
+when any step fails. Each run step is bounded by `-HoldSeconds` (default 60);
+teardown after a failure adds a fixed ~25 s before the journal tail. A pass
+means the supervisor resolved the config, launched the worker, the worker
+opened the deck and started the show, and the run stopped cleanly -- not merely
+that a heartbeat arrived. Triggering the HTML still needs the presenter (or a
+slide-driving COM script); the check opens a real slideshow, so run it only on
+a machine where that is acceptable; it is not part of `ctest`.
+
+`--stop` exits the slideshow during cleanup (`ExitShow`) but never quits WPS:
+`PresentationHost::Release` promises to leave the application alone, so the
+editor stays open with the deck loaded.
+
+Edge's `--user-data-dir` is a full browser profile (~15 MB). The worker creates
+it under `%TEMP%\htmlppt-<run-id>` and removes the directory on exit, so the
+state directory holds only `worker-plan.json`, `worker-config.json`, and
+`journal.jsonl`.
+
+### Legacy compatibility mirror
+
+While a run owns the config directory, the worker keeps the VBS-era contract
+alive: it writes `watcher.lock` next to the config file and refreshes it every
+5 s on its own timer (never on the heartbeat thread; the legacy watcher treats a
+lock older than 15 s as stale), appends the runtime journal to `watch-log.txt`
+when it exits, and removes the flag files it owns. `stop-live.vbs`-style tooling
+and the troubleshooting steps in `docs/04-reproduce.md` therefore keep working
+against a native run. A worker that is killed leaves the lock behind, which is
+exactly the stale-lock case the legacy watcher already handles.
+
+### Asset staging
+
+`targets[].assets.mode` decides what Edge opens:
+
+- `file` (default): the HTML is copied to
+  `%TEMP%\htmlppt-<run-id>\stage\<stageName>` and Edge opens that copy.
+- `tree`: the same, plus the whole `assets.root` tree (default: the HTML's
+  folder), preserving relative paths, filtered by `assets.include` /
+  `assets.exclude` globs (a non-empty include whitelists; exclude always wins;
+  `*` and `**` match across `/`), and capped by `assets.maxBytes` (0 = no cap).
+- `direct`: Edge opens the resolved source path in place, with no copy.
+
+Staging runs when the cover is fading in. A missing source or an over-cap tree
+fails the trigger -- it is journalled and the retry policy owns the next attempt
+-- instead of opening a broken page. Destination names come from `stageName`, so
+a CJK source filename still produces a predictable URL, and the stage directory
+is removed with the run's temp directory.
+
+`stage.mode` / `stage.root` are the defaults for targets without their own
+`assets` block, and `--stage-mode` overrides that default for the run; a target's
+own `assets` block always wins.
+
+`stage.maxBytes` caps the bytes this run copies into its shared stage directory
+(0 or absent = no cap). Every target in a run writes into the same directory, so
+the cap is charged across targets: a target's effective limit is the smaller of
+its own `assets.maxBytes` and what is left of `stage.maxBytes`, and a target that
+would exceed the remainder fails its trigger instead of filling the disk.
+
+### Display, focus, and prewarm
+
+- `display.monitor` (`"primary"`, `"secondary"`, or a 1-based index) selects the
+  reference monitor for show-window scoring and focus. The cover itself always
+  spans the virtual screen, so every display goes dark; an out-of-range selector
+  falls back to the primary with a `display:` record in the black box.
+- `focus.strategy` (`auto`, `attach-alt`, `switch`) selects the activation chain:
+  `auto` runs the full multi-stage chain (topmost, restore, foreground, switch,
+  thread attach, Alt unlock), `attach-alt` and `switch` restrict it to that one
+  technique. Unknown values are a config error.
+- `edge.prewarmProfile: true` launches each target's Edge profile headless for up
+  to 2 s before the show starts, so the browser's first real launch does not pay
+  the profile-initialization cost. The prewarm processes are terminated and never
+  show a window.
+
+### Live page contract
+
+`templates/live-page.html` is the reference page. The watchdog watches the Edge
+window title for `TEF-LIVE-RETURN`; on that signal it fades the cover in, closes
+Edge under the cover (`KillEdge`), resumes the WPS show, and fades the cover
+out. Because the watchdog now closes Edge itself, a page that only renames its
+title cannot strand a full-screen browser on top of the resumed deck. Calling
+`window.close()` after a short delay is still recommended and is what the
+template does. See `references/live-content-trigger.md` for the full protocol.
+
+Non-ASCII `--config`, `--state-dir`, and deck paths are supported: the Windows
+entry point parses `GetCommandLineW` into UTF-8 arguments instead of the CRT's
+ANSI argv, and every CLI path is decoded as UTF-8. `stageName` is the one
+deliberate exception: it must stay an ASCII file name (the resolver rejects
+separators, reserved device names, and trailing dots/spaces) so the staged URL
+is predictable on every code page.
 
 ## Cover, focus, Edge, and compatibility core (Plan 5B-1)
 

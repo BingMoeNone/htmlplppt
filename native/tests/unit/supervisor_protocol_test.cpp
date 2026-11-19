@@ -8,12 +8,18 @@
 
 using htmlppt::Crc32;
 using htmlppt::DecodeFrame;
+using htmlppt::DecodeHeartbeatPayload;
 using htmlppt::DecodeStatus;
 using htmlppt::Duration;
 using htmlppt::EncodeFrame;
+using htmlppt::EncodeHeartbeatPayload;
 using htmlppt::FakeClock;
 using htmlppt::Frame;
 using htmlppt::FrameType;
+using htmlppt::HeartbeatPayload;
+using htmlppt::kHeartbeatFlagSafePoint;
+using htmlppt::kProgressNotStarted;
+using htmlppt::ProgressTracker;
 using htmlppt::SequenceTracker;
 
 namespace {
@@ -54,12 +60,26 @@ HTMLPPT_TEST_CASE(decode_rejects_bad_magic) {
   HTMLPPT_CHECK_EQ(decoded.consumed, std::size_t{1});
 }
 
+// The 10-byte heartbeat payload grew the wire format, so the frame version was
+// bumped: a version-1 frame from a mixed build must be refused at the handshake
+// instead of reaching DecodeHeartbeatPayload as a nullopt.
 HTMLPPT_TEST_CASE(decode_rejects_bad_version) {
   auto encoded = EncodeFrame(Frame{});
-  encoded[4] = 2;
+  encoded[4] = 1;
   const auto decoded = DecodeFrame(encoded);
   HTMLPPT_CHECK(decoded.status == DecodeStatus::BadVersion);
   HTMLPPT_CHECK_EQ(decoded.consumed, htmlppt::kFrameHeaderSize);
+}
+
+// The current build handshakes at version 2 and accepts its own frames.
+HTMLPPT_TEST_CASE(frame_version_two_is_accepted) {
+  HTMLPPT_CHECK_EQ(htmlppt::kFrameVersion, std::uint16_t{2});
+  const auto encoded = EncodeFrame(Frame{});
+  HTMLPPT_CHECK_EQ(encoded[4], std::uint8_t{2});
+  HTMLPPT_CHECK_EQ(encoded[5], std::uint8_t{0});
+  const auto decoded = DecodeFrame(encoded);
+  HTMLPPT_CHECK(decoded.status == DecodeStatus::Ok);
+  HTMLPPT_CHECK_EQ(decoded.frame.header.version, htmlppt::kFrameVersion);
 }
 
 HTMLPPT_TEST_CASE(decode_rejects_bad_crc) {
@@ -90,7 +110,9 @@ HTMLPPT_TEST_CASE(decode_rejects_oversized_payload) {
   malicious[1] = 0x54;
   malicious[2] = 0x50;
   malicious[3] = 0x48;
-  malicious[4] = 1;
+  malicious[4] = static_cast<std::uint8_t>(htmlppt::kFrameVersion & 0xFF);
+  malicious[5] =
+      static_cast<std::uint8_t>((htmlppt::kFrameVersion >> 8) & 0xFF);
   malicious[22] = static_cast<std::uint8_t>(length & 0xFF);
   malicious[23] = static_cast<std::uint8_t>((length >> 8) & 0xFF);
   malicious[24] = static_cast<std::uint8_t>((length >> 16) & 0xFF);
@@ -98,6 +120,82 @@ HTMLPPT_TEST_CASE(decode_rejects_oversized_payload) {
   const auto decoded = DecodeFrame(malicious);
   HTMLPPT_CHECK(decoded.status == DecodeStatus::TooLarge);
   HTMLPPT_CHECK_EQ(decoded.consumed, htmlppt::kFrameHeaderSize);
+}
+
+HTMLPPT_TEST_CASE(heartbeat_payload_round_trip) {
+  HeartbeatPayload payload;
+  payload.state = 7;
+  payload.progress = 0x0102030405060708ull;
+  payload.flags = kHeartbeatFlagSafePoint;
+  const auto encoded = EncodeHeartbeatPayload(payload);
+  HTMLPPT_CHECK_EQ(encoded.size(), htmlppt::kHeartbeatPayloadSize);
+  // State, little-endian progress, then the flags byte: 1 + 8 + 1.
+  HTMLPPT_CHECK_EQ(htmlppt::kHeartbeatPayloadSize, std::size_t{10});
+  HTMLPPT_CHECK_EQ(encoded[0], std::uint8_t{7});
+  const std::vector<std::uint8_t> progress_bytes{8, 7, 6, 5, 4, 3, 2, 1};
+  for (std::size_t i = 0; i < progress_bytes.size(); ++i) {
+    HTMLPPT_CHECK_EQ(encoded[i + 1], progress_bytes[i]);
+  }
+  HTMLPPT_CHECK_EQ(encoded[9], kHeartbeatFlagSafePoint);
+  const auto decoded = DecodeHeartbeatPayload(encoded);
+  HTMLPPT_CHECK(decoded.has_value());
+  HTMLPPT_CHECK_EQ(decoded->state, std::uint8_t{7});
+  HTMLPPT_CHECK_EQ(decoded->progress, std::uint64_t{0x0102030405060708ull});
+  HTMLPPT_CHECK_EQ(decoded->flags, kHeartbeatFlagSafePoint);
+}
+
+// The safe point is bit 0 of the flags byte; no other bit may be read as one.
+HTMLPPT_TEST_CASE(heartbeat_safe_point_is_the_low_flags_bit) {
+  HTMLPPT_CHECK_EQ(kHeartbeatFlagSafePoint, std::uint8_t{0x01});
+  HeartbeatPayload payload;
+  payload.flags = 0xFE;
+  const auto decoded = DecodeHeartbeatPayload(EncodeHeartbeatPayload(payload));
+  HTMLPPT_CHECK(decoded.has_value());
+  HTMLPPT_CHECK((decoded->flags & kHeartbeatFlagSafePoint) == 0);
+}
+
+HTMLPPT_TEST_CASE(heartbeat_payload_rejects_wrong_size) {
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(
+                     std::span<const std::uint8_t>()).has_value());
+  const std::vector<std::uint8_t> one_byte{1};
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(one_byte).has_value());
+  // The pre-safe-point 9-byte payload is no longer a valid heartbeat: a worker
+  // and supervisor from different builds must not silently disagree on flags.
+  const std::vector<std::uint8_t> legacy_nine(9, 0);
+  HTMLPPT_CHECK(!DecodeHeartbeatPayload(legacy_nine).has_value());
+}
+
+HTMLPPT_TEST_CASE(progress_tracker_detects_unchanged_progress) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(tracker.observe(0, clock.now()));
+  clock.advance(Duration{1999});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(!tracker.observe(0, clock.now()));
+  clock.advance(Duration{1});
+  HTMLPPT_CHECK(tracker.stalled(clock.now(), Duration{2000}));
+}
+
+HTMLPPT_TEST_CASE(progress_tracker_advancing_progress_is_healthy) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  tracker.observe(0, clock.now());
+  clock.advance(Duration{1500});
+  HTMLPPT_CHECK(tracker.observe(1, clock.now()));
+  clock.advance(Duration{1500});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+}
+
+// Startup heartbeats carry the sentinel and no loop progress: they must not
+// make the tracker look stalled before the worker's loop even starts.
+HTMLPPT_TEST_CASE(progress_tracker_startup_sentinel_is_not_a_stall) {
+  FakeClock clock;
+  ProgressTracker tracker(clock.now());
+  HTMLPPT_CHECK(!tracker.observe(kProgressNotStarted, clock.now()));
+  clock.advance(Duration{5000});
+  HTMLPPT_CHECK(!tracker.stalled(clock.now(), Duration{2000}));
+  HTMLPPT_CHECK(!tracker.has_progress());
 }
 
 HTMLPPT_TEST_CASE(sequence_tracker_detects_stall) {

@@ -18,11 +18,13 @@ using htmlppt::FakeClock;
 using htmlppt::FailureKind;
 using htmlppt::FailureSource;
 using htmlppt::MakeCleanupDone;
+using htmlppt::MakeComHealthy;
 using htmlppt::MakeCoverDone;
 using htmlppt::MakeCoverHold;
 using htmlppt::MakeEdgeClosed;
 using htmlppt::MakeEdgeReady;
 using htmlppt::MakeFailure;
+using htmlppt::MakePowerResume;
 using htmlppt::MakeReturnRequested;
 using htmlppt::MakeShowEnded;
 using htmlppt::MakeShowStarted;
@@ -234,6 +236,45 @@ HTMLPPT_TEST_CASE(state_machine_show_ended_enters_live_and_sets_deadline) {
       600000);
 }
 
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_cover_in_aborts_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  HTMLPPT_CHECK(m.machine->state() == State::CoverIn);
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(!m.machine->Snapshot().show_active);
+  HTMLPPT_CHECK(!m.machine->NextDeadline().has_value());
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "show ended during switch"));
+  HTMLPPT_CHECK(!m.machine->IsDone(5));
+}
+
+HTMLPPT_TEST_CASE(state_machine_show_ended_during_edge_starting_aborts_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::EdgeStarting);
+  const auto actions = m.machine->Handle(MakeShowEnded(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Monitoring);
+  HTMLPPT_CHECK(!m.machine->Snapshot().show_active);
+  HTMLPPT_CHECK(!m.machine->NextDeadline().has_value());
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "show ended during switch"));
+}
+
+HTMLPPT_TEST_CASE(state_machine_retriggers_after_a_show_ended_during_switch) {
+  Machine m;
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeShowEnded(m.clock.now()));
+  m.machine->Handle(MakeShowStarted(m.clock.now()));
+  m.Slide(4, 5);
+  const auto actions = m.Slide(5, 6);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeIn));
+  HTMLPPT_CHECK(m.machine->state() == State::CoverIn);
+}
+
 HTMLPPT_TEST_CASE(state_machine_return_requested_fades_and_resumes) {
   Machine m;
   m.ReachLive();
@@ -254,6 +295,10 @@ HTMLPPT_TEST_CASE(state_machine_cover_hold_in_returning_resumes_show) {
   HTMLPPT_CHECK(resume != nullptr);
   HTMLPPT_CHECK_EQ(resume->slide, 5);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::FocusWps));
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  // Routine return focus stays subject to the target's focus.require opt-out.
+  HTMLPPT_CHECK(!focus->emergency);
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeOut));
   HTMLPPT_CHECK(HasJournalContaining(actions, "resumed at slide 5"));
   std::size_t resume_index = actions.size();
@@ -308,6 +353,11 @@ HTMLPPT_TEST_CASE(state_machine_cover_timeout_self_heals) {
   const auto* restore = FindAction(actions, ActionKind::RestoreShow);
   HTMLPPT_CHECK(restore != nullptr);
   HTMLPPT_CHECK_EQ(restore->slide, 5);
+  // Recovering from a switch failure hands WPS back to the operator; that focus
+  // is emergency-only and must bypass the target's routine focus opt-out.
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  HTMLPPT_CHECK(focus->emergency);
   HTMLPPT_CHECK(!m.machine->IsDone(5));
   HTMLPPT_CHECK_EQ(m.machine->Snapshot().consecutive_trigger_failures, 1);
   m.Advance(2001);
@@ -494,6 +544,40 @@ HTMLPPT_TEST_CASE(state_machine_faulted_return_request_retries_return) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverFadeIn));
 }
 
+HTMLPPT_TEST_CASE(state_machine_return_kills_edge_before_the_cover_fades_out) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  m.Advance(2000);  // the host fade completes; CoverHold is a host event
+  const auto actions = m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  // Edge must go while the cover is still opaque, or a page that only renamed
+  // its title would stay on top of the resumed show.
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::ResumeShow));
+}
+
+HTMLPPT_TEST_CASE(state_machine_return_resumes_before_closing_edge) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  m.Advance(2000);  // the host fade completes; CoverHold is a host event
+  const auto actions = m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  std::size_t resume_index = actions.size();
+  std::size_t kill_index = actions.size();
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    if (actions[i].kind == ActionKind::ResumeShow) resume_index = i;
+    if (actions[i].kind == ActionKind::KillEdge) kill_index = i;
+  }
+  // Resume first: if it fails the runtime enters Faulted, and the page's still
+  // renamed title is the retry signal. Closing Edge first erases that signal.
+  HTMLPPT_CHECK(resume_index < kill_index);
+  HTMLPPT_CHECK(kill_index < actions.size());
+}
+
 HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   Machine m;
   const auto actions = m.machine->Handle(
@@ -503,6 +587,19 @@ HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::CoverHide));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
   HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
+  // Spec 11.2: SafeMode must also leave the slideshow, hand WPS back to the
+  // operator, and leave a diagnostic behind -- not just hide the cover.
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::ExitShow));
+  const auto* focus = FindAction(actions, ActionKind::FocusWps);
+  HTMLPPT_CHECK(focus != nullptr);
+  // Handing the desktop back in SafeMode is not routine focus: it runs even when
+  // the target opted out with focus.require=false.
+  HTMLPPT_CHECK(focus->emergency);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::Diagnostic));
+  // The screen is uncovered first, so the operator never sees a stuck black
+  // screen while the show exits.
+  HTMLPPT_CHECK_EQ(actions.front().kind, ActionKind::CoverHide);
+  HTMLPPT_CHECK_EQ(actions.back().kind, ActionKind::Diagnostic);
 }
 
 HTMLPPT_TEST_CASE(state_machine_stop_requested_cleans_up_and_exits) {
@@ -513,12 +610,60 @@ HTMLPPT_TEST_CASE(state_machine_stop_requested_cleans_up_and_exits) {
   HTMLPPT_CHECK(m.machine->state() == State::Stopping);
   HTMLPPT_CHECK(HasJournalContaining(stopping, "cleanup start"));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::CoverHide));
+  // Cleanup must leave the slideshow, not just hide the cover; otherwise
+  // --stop strands a full-screen show on the operator's desktop.
+  HTMLPPT_CHECK(HasAction(stopping, ActionKind::ExitShow));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::KillEdge));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::StopHelperThreads));
   HTMLPPT_CHECK(HasAction(stopping, ActionKind::ReleaseLock));
   const auto done = m.machine->Handle(MakeCleanupDone(m.clock.now()));
   HTMLPPT_CHECK(m.machine->state() == State::Exited);
   HTMLPPT_CHECK(HasJournalContaining(done, "cleanup done"));
+}
+
+HTMLPPT_TEST_CASE(
+    state_machine_schedules_a_retry_after_a_failed_cleanup_exit_show) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
+  // The ExitShow action failed. Cleanup must not fall through: the retry owns
+  // the next attempt so --stop does not strand a full-screen show.
+  const auto actions = m.machine->Handle(MakeFailure(
+      m.clock.now(), FailureKind::Transient, FailureSource::ExitShow,
+      "exit show failed"));
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+  HTMLPPT_CHECK(HasJournalContaining(actions, "cleanup"));
+  m.Advance(6000);
+  const auto retried = m.machine->Tick();
+  HTMLPPT_CHECK(HasAction(retried, ActionKind::ExitShow));
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+}
+
+HTMLPPT_TEST_CASE(
+    state_machine_reports_a_cleanup_exit_show_that_never_succeeds) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
+  bool diagnosed = false;
+  for (int attempt = 0; attempt < 8 && !diagnosed; ++attempt) {
+    const auto actions = m.machine->Handle(
+        MakeFailure(m.clock.now(), FailureKind::Transient,
+                    FailureSource::ExitShow, "exit show failed"));
+    for (const auto& action : actions) {
+      if (action.kind == ActionKind::Diagnostic &&
+          action.detail.find("exit") != std::string::npos) {
+        diagnosed = true;
+      }
+    }
+    m.Advance(6000);
+    const auto retried = m.machine->Tick();
+    if (retried.empty()) break;
+  }
+  HTMLPPT_CHECK(diagnosed);
+  HTMLPPT_CHECK(m.machine->state() == State::Stopping);
+  // The retry budget is spent: nothing re-arms the ExitShow forever.
+  m.Advance(6000);
+  HTMLPPT_CHECK(!HasAction(m.machine->Tick(), ActionKind::ExitShow));
 }
 
 HTMLPPT_TEST_CASE(state_machine_supervisor_loss_continue_sets_degraded) {
@@ -666,6 +811,27 @@ HTMLPPT_TEST_CASE(state_machine_com_success_resets_window) {
   HTMLPPT_CHECK(!HasAction(actions, ActionKind::EnterSafeMode));
 }
 
+// Spec 3.6: ComHealthy is the machine's explicit "reset the window" signal, so
+// a healthy poll after a run of COM failures must start the window over.
+HTMLPPT_TEST_CASE(state_machine_com_healthy_resets_error_window) {
+  auto config = MakeConfig();
+  config.com_error_window = Duration{2000};
+  config.retry.max_attempts = 10;
+  Machine m(config);
+  m.TriggerTargetFive();
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  m.machine->Handle(MakeFailure(m.clock.now(), FailureKind::Transient,
+                                FailureSource::Com, "COM busy"));
+  const auto healthy = m.machine->Handle(MakeComHealthy(m.clock.now()));
+  HTMLPPT_CHECK(healthy.empty());
+  m.Advance(2000);
+  const auto actions = m.machine->Handle(
+      MakeFailure(m.clock.now(), FailureKind::Transient, FailureSource::Com,
+                  "COM busy"));
+  HTMLPPT_CHECK(m.machine->state() != State::SafeMode);
+  HTMLPPT_CHECK(!HasAction(actions, ActionKind::EnterSafeMode));
+}
+
 HTMLPPT_TEST_CASE(state_machine_per_target_cover_max_hold_override) {
   auto plan = MakePlan();
   plan.targets[0].cover_max_hold = Duration{5000};
@@ -690,6 +856,43 @@ HTMLPPT_TEST_CASE(state_machine_per_target_failure_threshold_override) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::EnterSafeMode));
 }
 
+// The edge.maxLiveMs override belongs to the target, not the run: a target that
+// asks for a short live window must time out on it even when the global value is
+// far longer, and a target without the override must keep using the global.
+HTMLPPT_TEST_CASE(state_machine_per_target_edge_max_live_override) {
+  StateMachineConfig config = MakeConfig();
+  config.edge_max_live = Duration{10000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].edge_max_live = Duration{100};
+
+  Machine m(config, plan);
+  m.ReachLive();
+  m.Advance(99);
+  HTMLPPT_CHECK(m.machine->Tick().empty());
+  HTMLPPT_CHECK(m.machine->state() == State::Live);
+  m.Advance(1);
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+}
+
+HTMLPPT_TEST_CASE(state_machine_edge_max_live_falls_back_to_the_global_value) {
+  StateMachineConfig config = MakeConfig();
+  config.edge_max_live = Duration{10000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].edge_max_live = std::nullopt;
+
+  Machine m(config, plan);
+  m.ReachLive();
+  m.Advance(9999);
+  HTMLPPT_CHECK(m.machine->Tick().empty());
+  HTMLPPT_CHECK(m.machine->state() == State::Live);
+  m.Advance(2);  // now past the 10 s global deadline
+  const auto actions = m.machine->Tick();
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  HTMLPPT_CHECK(HasAction(actions, ActionKind::KillEdge));
+}
+
 HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {
   Machine m;
   m.machine->Handle(MakeStopRequested(m.clock.now(), "test"));
@@ -697,4 +900,42 @@ HTMLPPT_TEST_CASE(state_machine_events_after_exit_are_ignored) {
   HTMLPPT_CHECK(m.machine->state() == State::Exited);
   HTMLPPT_CHECK(m.Slide(1, 2).empty());
   HTMLPPT_CHECK(m.machine->Handle(MakeShowStarted(m.clock.now())).empty());
+}
+
+HTMLPPT_TEST_CASE(state_machine_return_deadlines_honour_the_target_max_hold) {
+  // The per-target cover.maxHoldMs must bound the return wait too, not only the
+  // forward trigger; otherwise a wedged resume waits the global value.
+  StateMachineConfig config = MakeConfig();
+  config.cover_max_hold = Duration{9000};
+  RunPlan plan = MakePlan();
+  plan.targets[0].cover_max_hold = Duration{1000};
+  Machine m(config, plan);
+  m.ReachLive();
+
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  const auto resume = m.machine->NextDeadline();
+  HTMLPPT_CHECK(resume.has_value());
+  HTMLPPT_CHECK_EQ(*resume - m.clock.now(), Duration{1000});
+
+  m.Advance(200);  // cover fade completed; host reports the hold
+  m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  const auto cover_done = m.machine->NextDeadline();
+  HTMLPPT_CHECK(cover_done.has_value());
+  HTMLPPT_CHECK_EQ(*cover_done - m.clock.now(), Duration{1000});
+}
+HTMLPPT_TEST_CASE(state_machine_power_resume_shifts_pending_deadlines) {
+  Machine m;
+  m.TriggerTargetFive();  // CoverIn with a hold deadline pending
+  const auto before = m.machine->NextDeadline();
+  HTMLPPT_CHECK(before.has_value());
+
+  const auto actions =
+      m.machine->Handle(MakePowerResume(m.clock.now(), Duration{60000}));
+  HTMLPPT_CHECK(HasJournalContaining(actions, "power resume"));
+
+  const auto after = m.machine->NextDeadline();
+  HTMLPPT_CHECK(after.has_value());
+  HTMLPPT_CHECK_EQ(*after - *before, Duration{60000});
 }

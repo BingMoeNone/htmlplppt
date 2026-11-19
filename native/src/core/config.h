@@ -18,7 +18,9 @@ struct CoverConfig {
 
 struct EdgeConfig {
   int max_live_ms = 600000;
-  bool prewarm_profile = false;
+  // Unset on a target's own edge block means "inherit the global defaults";
+  // explicit true/false overrides it. The global default is false when unset.
+  std::optional<bool> prewarm_profile;
   std::vector<std::string> args;
 };
 
@@ -29,6 +31,9 @@ struct DisplayConfig {
 struct FocusConfig {
   std::string strategy = "auto";
   bool require = true;
+  // How long a focus attempt may take. Unset means the built-in state-machine
+  // default (6 s); the editor round-trips it like the other focus fields.
+  std::optional<int> timeout_ms;
 };
 
 struct AssetsConfig {
@@ -53,6 +58,9 @@ struct TargetConfig {
   std::string edge_profile;
   std::string stage_name;
   AssetsConfig assets;
+  // True when the target carries its own assets block. Otherwise the global
+  // stage.mode / stage.root apply, so --stage-mode is not silently ignored.
+  bool assets_set = false;
   std::string html_query;
   std::string trigger = "leave-forward";
   std::optional<CoverConfig> cover;
@@ -81,6 +89,11 @@ struct DefaultsConfig {
 struct StageConfig {
   std::string mode = "file";
   std::string root;
+  // Run-wide cap on the bytes copied into the run's stage directory. 0 means
+  // unlimited. A target also has its own assets.maxBytes; the effective limit is
+  // the smaller of the two and the run total is charged across targets, because
+  // every target writes into the same stage directory.
+  std::int64_t max_bytes = 0;
 };
 
 struct ProfileConfig {

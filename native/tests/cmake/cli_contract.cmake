@@ -39,3 +39,64 @@ expect_result(validate_missing_html 1 "HTML file does not exist"
 expect_result(map_duplicate 1 "already mapped by target"
   --resolve --config "${FIXTURES}/watcher.json"
   --deck-info "${FIXTURES}/deck-info.json" --map 1=page2.html)
+
+# A supervisor without a config must be rejected by the CLI, never started: the
+# timeout keeps a regression that starts one from hanging the suite.
+execute_process(
+  COMMAND "${EXE}" --supervisor
+  TIMEOUT 10
+  ERROR_VARIABLE supervisor_err
+  RESULT_VARIABLE supervisor_rc)
+if (NOT supervisor_rc EQUAL 2)
+  message(FATAL_ERROR "--supervisor without --config: rc=${supervisor_rc}")
+endif()
+if (NOT supervisor_err MATCHES "config is required")
+  message(FATAL_ERROR "--supervisor without --config: ${supervisor_err}")
+endif()
+
+# --reload is the editor's hot-reload request: it needs a run's state directory
+# but no config, prints the confirmation, and creates the empty request file the
+# running supervisor polls. The directory is created when missing.
+set(reload_dir "${CMAKE_CURRENT_BINARY_DIR}/reload-request-test")
+file(REMOVE_RECURSE "${reload_dir}")
+expect_result(reload_request 0 "reload requested"
+  --reload --state-dir "${reload_dir}" --run-id ui-contract)
+if (NOT EXISTS "${reload_dir}/reload.request")
+  message(FATAL_ERROR "--reload did not create reload.request")
+endif()
+file(SIZE "${reload_dir}/reload.request" reload_size)
+if (NOT reload_size EQUAL 0)
+  message(FATAL_ERROR "--reload request file is not empty")
+endif()
+file(REMOVE_RECURSE "${reload_dir}")
+
+# --reload names the state directory explicitly: without one there is no file
+# to write, so the CLI must refuse instead of guessing a location.
+execute_process(
+  COMMAND "${EXE}" --reload --run-id ui-contract
+  RESULT_VARIABLE reload_missing_state_rc
+  ERROR_VARIABLE reload_missing_state_err)
+if (NOT reload_missing_state_rc EQUAL 2)
+  message(FATAL_ERROR
+    "--reload without --state-dir: rc=${reload_missing_state_rc}")
+endif()
+if (NOT reload_missing_state_err MATCHES "state-dir")
+  message(FATAL_ERROR
+    "--reload without --state-dir: ${reload_missing_state_err}")
+endif()
+
+# The run id becomes the %TEMP%/htmlppt-<run-id> directory name and a Win32
+# object name, so separators and traversal must be refused before any host
+# command runs. The temp directory is the guard that matters: TempDirGuard
+# calls remove_all on it on every exit path.
+set(run_id_dir "${CMAKE_CURRENT_BINARY_DIR}/run-id-reject-test")
+file(REMOVE_RECURSE "${run_id_dir}")
+file(MAKE_DIRECTORY "${run_id_dir}")
+expect_result(invalid_run_id_traversal 2 "letters, digits"
+  --reload --state-dir "${run_id_dir}" --run-id "../escape")
+expect_result(invalid_run_id_parent 2 "letters, digits"
+  --reload --state-dir "${run_id_dir}" --run-id "..")
+if (EXISTS "${run_id_dir}/reload.request")
+  message(FATAL_ERROR "an invalid run id still wrote reload.request")
+endif()
+file(REMOVE_RECURSE "${run_id_dir}")

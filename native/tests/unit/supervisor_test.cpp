@@ -39,6 +39,14 @@ WorkerEvent Heartbeat(htmlppt::ClockPoint at, std::uint32_t sequence) {
   return event;
 }
 
+WorkerEvent HeartbeatWithProgress(htmlppt::ClockPoint at,
+                                  std::uint32_t sequence,
+                                  std::uint64_t progress) {
+  WorkerEvent event = Heartbeat(at, sequence);
+  event.progress = progress;
+  return event;
+}
+
 WorkerEvent Event(WorkerEventKind kind, htmlppt::ClockPoint at) {
   WorkerEvent event;
   event.kind = kind;
@@ -72,6 +80,75 @@ HTMLPPT_TEST_CASE(supervisor_heartbeats_keep_worker_healthy) {
   clock.advance(Duration{1000});
   core.Handle(Heartbeat(clock.now(), 2));
   clock.advance(Duration{1000});
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+}
+
+// I2: the helper thread keeps the sequence moving while the worker loop is
+// wedged in a COM call, so an advancing sequence with frozen progress is a
+// hang, not a healthy worker. The progress stall is measured against
+// progress_timeout, not the (shorter) heartbeat timeout.
+HTMLPPT_TEST_CASE(supervisor_detects_stalled_worker_progress) {
+  HTMLPPT_CHECK_EQ(SupervisorConfig{}.heartbeat_timeout, Duration{2000});
+  HTMLPPT_CHECK_EQ(SupervisorConfig{}.progress_timeout, Duration{12000});
+  FakeClock clock;
+  auto config = Config();
+  config.progress_timeout = Duration{2000};
+  SupervisorCore core(config, clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 2, 0));
+  clock.advance(Duration{1000});  // sequence moved 1 s ago, progress 2 s ago
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::TerminateWorker));
+  HTMLPPT_CHECK(!core.worker_running());
+  HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+// A progress freeze beyond progress_timeout is still a hang even though the
+// sequence is alive and heartbeat_timeout has not passed. A test config keeps
+// the unit case fast.
+HTMLPPT_TEST_CASE(supervisor_progress_timeout_governs_progress_stall) {
+  FakeClock clock;
+  auto config = Config();
+  config.progress_timeout = Duration{100};
+  SupervisorCore core(config, clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{99});
+  HTMLPPT_CHECK(core.Tick().empty());  // sequence and progress both live
+  clock.advance(Duration{1});
+  const auto actions = core.Tick();
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::RequestDump));
+  HTMLPPT_CHECK(HasAction(actions, SupervisorActionKind::TerminateWorker));
+  HTMLPPT_CHECK(!core.worker_running());
+}
+
+HTMLPPT_TEST_CASE(supervisor_advancing_worker_progress_is_healthy) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(HeartbeatWithProgress(clock.now(), 1, 0));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 2, 1));
+  clock.advance(Duration{1000});
+  core.Handle(HeartbeatWithProgress(clock.now(), 3, 2));
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+  HTMLPPT_CHECK(!core.safe_mode());
+}
+
+// A heartbeat without a progress payload (a pre-progress worker) must not be
+// declared hung by the progress rule; sequence liveness still applies.
+HTMLPPT_TEST_CASE(supervisor_heartbeat_without_progress_is_not_hung) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1000});
+  core.Handle(Heartbeat(clock.now(), 2));
   HTMLPPT_CHECK(core.Tick().empty());
   HTMLPPT_CHECK(core.worker_running());
 }
@@ -242,6 +319,26 @@ HTMLPPT_TEST_CASE(supervisor_started_during_backoff_is_ignored) {
   HTMLPPT_CHECK(started.empty());
   HTMLPPT_CHECK(!core.worker_running());
   HTMLPPT_CHECK(core.NextDeadline().has_value());
+}
+
+// Hot reload replaces the worker process without a crash and without a
+// restart deadline: the replacement's heartbeat sequence starts over at 1,
+// which the old sequence tracker would reject forever. The explicit resync is
+// what keeps the new, healthy worker from being declared hung.
+HTMLPPT_TEST_CASE(supervisor_resyncs_liveness_after_a_worker_replacement) {
+  FakeClock clock;
+  SupervisorCore core(Config(), clock);
+  core.Start();
+  core.Handle(Heartbeat(clock.now(), 900));
+  clock.advance(Duration{1000});
+  core.NoteWorkerRestarted(clock.now());
+  // Startup heartbeats of the replacement restart the sequence at 1.
+  core.Handle(Heartbeat(clock.now(), 1));
+  clock.advance(Duration{1000});
+  core.Handle(Heartbeat(clock.now(), 2));
+  HTMLPPT_CHECK(core.Tick().empty());
+  HTMLPPT_CHECK(core.worker_running());
+  HTMLPPT_CHECK(!core.safe_mode());
 }
 
 HTMLPPT_TEST_CASE(supervisor_duplicate_started_does_not_reset_heartbeat) {

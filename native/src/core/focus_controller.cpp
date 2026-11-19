@@ -8,14 +8,34 @@ namespace htmlppt {
 
 FocusController::FocusController(WindowSystem& windows, Clock& clock,
                                  FocusTiming timing)
-    : windows_(windows), clock_(clock), timing_(timing) {
+    : windows_(windows), clock_(clock) {
+  SetTiming(timing);
+}
+
+void FocusController::SetTiming(FocusTiming timing) {
+  timing_ = timing;
   if (timing_.interval < Duration{1}) {
     timing_.interval = Duration{1};
   }
 }
 
+FocusStrategy ParseFocusStrategy(std::string_view text) {
+  if (text == "attach-alt") return FocusStrategy::AttachAlt;
+  if (text == "switch") return FocusStrategy::Switch;
+  return FocusStrategy::Auto;
+}
+
+std::string_view FocusStrategyName(FocusStrategy strategy) {
+  switch (strategy) {
+    case FocusStrategy::AttachAlt: return "attach-alt";
+    case FocusStrategy::Switch: return "switch";
+    case FocusStrategy::Auto: break;
+  }
+  return "auto";
+}
+
 bool FocusController::FocusWindow(WindowId id) {
-  if (!windows_.Activate(id)) return false;
+  if (!windows_.ActivateWith(id, timing_.strategy)) return false;
   return windows_.IsForeground(id);
 }
 
@@ -27,6 +47,12 @@ bool FocusController::FocusEdge(std::uint32_t edge_pid) {
     clock_.sleep_until(std::min(clock_.now() + timing_.interval, deadline));
   }
   return false;
+}
+
+bool FocusController::TryFocusEdge(std::uint32_t edge_pid) {
+  const auto selected = SelectEdgeWindow(windows_.Enumerate(), edge_pid);
+  if (!selected.has_value()) return false;
+  return FocusWindow(*selected);
 }
 
 bool FocusController::FocusWps(const std::vector<std::uint32_t>& wps_pids,

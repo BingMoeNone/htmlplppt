@@ -4,6 +4,11 @@ dist/
 *.pptx
 *.zip
 
+# Demo generated files (built by demo/make_deck.py)
+demo/deck.pptx
+demo/live-page.html
+demo/state/
+
 # Python
 __pycache__/
 *.pyc
@@ -37,3 +42,14 @@ native/build/
 
 # Test fixture deck is intentionally tracked
 !native/tests/fixtures/deck.pptx
+# Vendored python-pptx template: Presentation() fails without it
+!vendor/pptx/templates/default.pptx
+
+demo/diag/
+
+# Demo compatibility files written next to the config by a run
+demo/watcher.lock
+demo/watch-log.txt
+demo/*.owner
+demo/*.err
+demo/benchmark.txt

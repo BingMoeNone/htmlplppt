@@ -59,6 +59,14 @@ def check_native_timing(slide_element, expected_videos: int, first_auto: bool,
             )
 
 
+def count_media_nodes(slide_element) -> int:
+    """Return the number of `p:video` media nodes in the slide timing."""
+    timing = slide_element.find(p('timing'))
+    if timing is None:
+        return 0
+    return len(list(timing.iter(p('video'))))
+
+
 def find_main_seq(slide_element):
     timing = slide_element.find(p('timing'))
     if timing is None:
@@ -157,6 +165,11 @@ def main() -> int:
 
             first_auto = not args.no_first_auto
             if args.mode == 'native':
+                if find_main_seq(target._element) is not None:
+                    failures.append(
+                        'native mode: an injected mainSeq is present; native mode must '
+                        'step through the media nodes only'
+                    )
                 check_native_timing(target._element, args.expected_videos, first_auto, failures)
             else:
                 if slide_xml.count('playFrom(0.0)') != args.expected_videos:
@@ -164,6 +177,12 @@ def main() -> int:
                 if slide_xml.count('style.visibility') != args.expected_videos:
                     failures.append('appear mode: appear count mismatch')
                 check_appear_timing(target._element, args.expected_videos, first_auto, failures)
+                remaining = count_media_nodes(target._element)
+                if remaining != 0:
+                    failures.append(
+                        f'appear mode: {remaining} p:video media nodes remain; each one is '
+                        'an extra click stop on top of the injected click groups'
+                    )
 
     if failures:
         print('FAIL:')

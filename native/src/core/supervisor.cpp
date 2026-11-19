@@ -9,6 +9,7 @@ SupervisorCore::SupervisorCore(SupervisorConfig config, Clock& clock)
     : config_(std::move(config)),
       clock_(clock),
       sequence_(clock_.now()),
+      progress_(clock_.now()),
       budget_(config_.max_restarts, config_.restart_window),
       random_state_(config_.seed == 0 ? 0x9e3779b9u : config_.seed) {}
 
@@ -19,6 +20,7 @@ std::vector<SupervisorAction> SupervisorCore::Start() {
   }
   worker_running_ = true;
   sequence_.reset(clock_.now());
+  progress_.reset(clock_.now());
   return {{SupervisorActionKind::StartWorker, "start worker"}};
 }
 
@@ -37,10 +39,14 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
       }
       worker_running_ = true;
       sequence_.reset(event.at);
+      progress_.reset(event.at);
       return {};
     case WorkerEventKind::Heartbeat:
       if (!worker_running_ || stopping_) return {};
       sequence_.observe(event.sequence, event.at);
+      if (event.progress.has_value()) {
+        progress_.observe(*event.progress, event.at);
+      }
       return {};
     case WorkerEventKind::Exited: {
       if (!worker_running_) return {};
@@ -52,16 +58,9 @@ std::vector<SupervisorAction> SupervisorCore::Handle(
       actions.insert(actions.end(), scheduled.begin(), scheduled.end());
       return actions;
     }
-    case WorkerEventKind::Hung: {
+    case WorkerEventKind::Hung:
       if (!worker_running_ || stopping_) return {};
-      worker_running_ = false;
-      auto actions = std::vector<SupervisorAction>{
-          {SupervisorActionKind::RequestDump, "worker hung"},
-          {SupervisorActionKind::TerminateWorker, "worker hung"}};
-      auto scheduled = ScheduleRestart(event.at, "worker hung");
-      actions.insert(actions.end(), scheduled.begin(), scheduled.end());
-      return actions;
-    }
+      return HangActions(event.at, "worker hung");
     case WorkerEventKind::StopRequested:
       stopping_ = true;
       restart_deadline_.reset();
@@ -84,21 +83,36 @@ std::vector<SupervisorAction> SupervisorCore::Tick() {
     if (now < *restart_deadline_) return {};
     restart_deadline_.reset();
     sequence_.reset(now);
+    progress_.reset(now);
     worker_running_ = true;
     ++restart_count_;
     return {{SupervisorActionKind::RestartWorker, "restart worker"}};
   }
-  if (worker_running_ &&
-      sequence_.stalled(now, config_.heartbeat_timeout)) {
-    worker_running_ = false;
-    auto actions = std::vector<SupervisorAction>{
-        {SupervisorActionKind::RequestDump, "heartbeat stalled"},
-        {SupervisorActionKind::TerminateWorker, "heartbeat stalled"}};
-    auto scheduled = ScheduleRestart(now, "heartbeat stalled");
-    actions.insert(actions.end(), scheduled.begin(), scheduled.end());
-    return actions;
+  if (worker_running_) {
+    // The helper thread keeps the sequence advancing while the loop is stuck in
+    // a call, so progress that stops moving is the hang signal (I2). Progress
+    // uses its own, longer timeout: a bounded blocking COM action is not a hang,
+    // and recovering a true hang at ~12 s is preferred to killing a slow but
+    // healthy worker. A missing heartbeat still falls back to the 2 s sequence
+    // tracker.
+    const bool sequence_stalled =
+        sequence_.stalled(now, config_.heartbeat_timeout);
+    const bool progress_stalled =
+        progress_.stalled(now, config_.progress_timeout);
+    if (sequence_stalled || progress_stalled) {
+      return HangActions(now, progress_stalled && !sequence_stalled
+                                  ? "worker progress stalled"
+                                  : "heartbeat stalled");
+    }
   }
   return {};
+}
+
+void SupervisorCore::NoteWorkerRestarted(ClockPoint at) {
+  if (stopping_ || safe_mode_) return;
+  worker_running_ = true;
+  sequence_.reset(at);
+  progress_.reset(at);
 }
 
 std::optional<Duration> SupervisorCore::BackoffFor(int attempt) {
@@ -139,6 +153,17 @@ std::vector<SupervisorAction> SupervisorCore::EnterSafeMode(
     actions.push_back(
         {SupervisorActionKind::RunLegacyFallback, "safe mode fallback"});
   }
+  return actions;
+}
+
+std::vector<SupervisorAction> SupervisorCore::HangActions(ClockPoint at,
+                                                          std::string detail) {
+  worker_running_ = false;
+  auto actions = std::vector<SupervisorAction>{
+      {SupervisorActionKind::RequestDump, detail},
+      {SupervisorActionKind::TerminateWorker, detail}};
+  auto scheduled = ScheduleRestart(at, std::move(detail));
+  actions.insert(actions.end(), scheduled.begin(), scheduled.end());
   return actions;
 }
 

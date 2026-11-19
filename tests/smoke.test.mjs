@@ -23,6 +23,7 @@ test('live browser scripts stay ASCII for Windows Script Host', () => {
     'scripts/black-fade.ps1',
     'scripts/focus-agent.ps1',
     'scripts/focus-lib.ps1',
+    'scripts/smoke-watchdog.ps1',
   ];
   for (const rel of files) {
     const text = readFileSync(join(root, rel), 'utf8');
@@ -38,4 +39,21 @@ test('vendored python-pptx imports', () => {
     env: { ...process.env, PYTHONPATH: join(root, 'vendor') },
   });
   assert.match(out.trim(), /^1\.0\.2/);
+});
+
+test('vendored python-pptx can create a blank presentation', () => {
+  // Presentation() loads the bundled default.pptx template. A vendor copy
+  // installed with --no-deps can miss it, which breaks every from-scratch
+  // deck without failing the plain `import pptx` check above.
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const out = execFileSync(
+    python,
+    ['-c', 'from pptx import Presentation; print(len(Presentation().slides))'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, PYTHONPATH: join(root, 'vendor') },
+    },
+  );
+  assert.match(out.trim(), /^\d+$/);
 });

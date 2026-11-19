@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "deck": "deck.pptx",
+  "targets": [
+    {
+      "slide": 3,
+      "html": "live-page.html",
+      "label": "Live demo",
+      "assets": { "mode": "file" },
+      "cover": { "fadeMs": 300, "holdMs": 900, "maxHoldMs": 9000 }
+    }
+  ]
+}

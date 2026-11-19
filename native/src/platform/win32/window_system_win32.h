@@ -16,6 +16,7 @@ class Win32WindowSystem final : public WindowSystem {
   WindowId Foreground() override;
   bool IsForeground(WindowId id) override;
   bool Activate(WindowId id) override;
+  bool ActivateWith(WindowId id, FocusStrategy strategy) override;
   bool IsWindow(WindowId id) override;
 };
 

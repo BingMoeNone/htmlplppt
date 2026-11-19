@@ -1,6 +1,8 @@
 #include "test_main.h"
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -49,6 +51,26 @@ HTMLPPT_TEST_CASE(config_schema_rejects_unknown_top_level_fields) {
       HTMLPPT_CHECK(definition->at("additionalProperties") == false);
     }
   }
+}
+
+HTMLPPT_TEST_CASE(config_schema_focus_strategy_matches_validation) {
+  const auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
+  const auto& strategy = schema["$defs"]["focus"]["properties"]["strategy"];
+  HTMLPPT_CHECK(strategy.contains("enum"));
+  const auto values = strategy["enum"].get<std::vector<std::string>>();
+  HTMLPPT_CHECK_EQ(values.size(), std::size_t{3});
+  HTMLPPT_CHECK(std::find(values.begin(), values.end(), "auto") != values.end());
+  HTMLPPT_CHECK(std::find(values.begin(), values.end(), "attach-alt") !=
+                values.end());
+  HTMLPPT_CHECK(std::find(values.begin(), values.end(), "switch") !=
+                values.end());
+}
+
+HTMLPPT_TEST_CASE(config_schema_focus_accepts_a_timeout) {
+  const auto schema = nlohmann::json::parse(htmlppt::ConfigSchema());
+  const auto& timeout = schema["$defs"]["focus"]["properties"]["timeoutMs"];
+  HTMLPPT_CHECK(timeout["type"] == "integer");
+  HTMLPPT_CHECK(timeout["minimum"] == 1);
 }
 
 HTMLPPT_TEST_CASE(config_schema_display_monitor_accepts_integer) {

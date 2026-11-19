@@ -34,6 +34,10 @@ struct Action {
   ActionKind kind = ActionKind::Journal;
   int slide = 0;
   std::string detail;
+  // Emergency actions hand the desktop back to the operator (SafeMode restore,
+  // switch-failure recovery). They run even when the in-flight target opted out
+  // of routine focus with focus.require=false, and use the host baseline timing.
+  bool emergency = false;
 };
 
 enum class EventKind {
@@ -52,6 +56,7 @@ enum class EventKind {
   ConfigReloaded,
   Failure,
   SupervisorLost,
+  ComHealthy,
 };
 
 enum class TimeoutKind {
@@ -69,6 +74,9 @@ enum class FailureSource {
   Edge,
   Title,
   Other,
+  // ExitShow failed. Cleanup still owes the operator an exit from the show, so
+  // the machine distinguishes this from an ordinary transient failure.
+  ExitShow,
 };
 
 enum class SupervisorLossPolicy {
@@ -85,6 +93,9 @@ struct Event {
   FailureKind failure = FailureKind::Transient;
   FailureSource failure_source = FailureSource::Other;
   std::string detail;
+  // PowerResume only: the suspend gap measured by the host. Pending deadlines
+  // are shifted by it so a resume does not look like a pile of expired timers.
+  Duration jump{};
 };
 
 struct TargetPlan {
@@ -95,6 +106,19 @@ struct TargetPlan {
   OnFailurePolicy on_failure = OnFailurePolicy::SelfHeal;
   std::optional<int> max_consecutive_trigger_failures;
   std::optional<Duration> cover_max_hold;
+  // Per-target overrides carried from the config/host handoff. Unset means the
+  // machine's or the host's global value applies; the app layer fills the screen
+  // fields because display metrics are a platform fact.
+  std::optional<Duration> edge_max_live = std::nullopt;
+  std::optional<Duration> focus_timeout = std::nullopt;
+  std::optional<std::string> focus_strategy = std::nullopt;
+  std::optional<int> screen_width = std::nullopt;
+  std::optional<int> screen_height = std::nullopt;
+  // The config's display.monitor selector for this target. The app fills it and
+  // re-resolves screen_width/height after a display change; a target without a
+  // selector inherits the host baseline.
+  std::string display_monitor{};
+  bool focus_require = true;
   bool enabled = true;
 };
 
@@ -146,9 +170,10 @@ Event MakeReturnRequested(ClockPoint at);
 Event MakeTimeout(ClockPoint at, TimeoutKind kind);
 Event MakeStopRequested(ClockPoint at, std::string source);
 Event MakeCleanupDone(ClockPoint at);
-Event MakePowerResume(ClockPoint at);
+Event MakePowerResume(ClockPoint at, Duration jump = {});
 Event MakeFailure(ClockPoint at, FailureKind kind, FailureSource source,
                   std::string detail);
 Event MakeSupervisorLost(ClockPoint at, std::string detail);
+Event MakeComHealthy(ClockPoint at);
 
 } // namespace htmlppt

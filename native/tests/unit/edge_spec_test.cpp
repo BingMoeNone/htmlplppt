@@ -128,3 +128,27 @@ HTMLPPT_TEST_CASE(edge_spec_uses_configured_flags_when_present) {
   }
   HTMLPPT_CHECK(found);
 }
+
+HTMLPPT_TEST_CASE(edge_prewarm_spec_is_headless_and_uses_the_profile) {
+  const EdgeConfig config;
+  const auto spec = MakeEdgePrewarmSpec(std::filesystem::path{"edge.exe"},
+                                        std::filesystem::path{"profile"}, config);
+  HTMLPPT_CHECK_EQ(spec.url, std::string{"about:blank"});
+  bool saw_headless = false;
+  bool saw_profile = false;
+  bool saw_about = false;
+  bool saw_app = false;
+  bool saw_fullscreen = false;
+  for (const auto& argument : spec.arguments) {
+    if (argument == "--headless=new") saw_headless = true;
+    if (argument.find("--user-data-dir=") == 0) saw_profile = true;
+    if (argument == "about:blank") saw_about = true;
+    if (argument.find("--app=") == 0) saw_app = true;
+    if (argument == "--start-fullscreen") saw_fullscreen = true;
+  }
+  HTMLPPT_CHECK(saw_headless);
+  HTMLPPT_CHECK(saw_profile);
+  HTMLPPT_CHECK(saw_about);
+  HTMLPPT_CHECK(!saw_app);
+  HTMLPPT_CHECK(!saw_fullscreen);
+}

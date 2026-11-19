@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <iomanip>
 #include <map>
 #include <optional>
@@ -153,6 +154,34 @@ std::string AutoEdgeProfile(const std::string& fingerprint, int ordinal) {
   return out.str();
 }
 
+// The DOS device names Windows reserves in every directory, with or without an
+// extension ("CON" and "con.html" both open the console).
+bool IsReservedWindowsName(const std::string& value) {
+  std::string stem;
+  for (const char character : value) {
+    if (character == '.') break;
+    stem.push_back(static_cast<char>(
+        std::toupper(static_cast<unsigned char>(character))));
+  }
+  // Windows trims trailing spaces from the base name before the device check,
+  // so "con .html" opens the console too.
+  while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+  if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") {
+    return true;
+  }
+  return stem.size() == 4 &&
+         (stem.rfind("COM", 0) == 0 || stem.rfind("LPT", 0) == 0) &&
+         stem[3] >= '1' && stem[3] <= '9';
+}
+
+std::string LowerAscii(std::string value) {
+  for (char& character : value) {
+    character = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(character)));
+  }
+  return value;
+}
+
 bool ValidateStageName(const std::string& value, const std::string& target_path,
                        std::vector<ConfigIssue>& issues) {
   if (value.empty()) return true;
@@ -171,6 +200,27 @@ bool ValidateStageName(const std::string& value, const std::string& target_path,
       AddError(issues, target_path + ".stageName", "must be ASCII");
       return false;
     }
+    // Windows file names cannot carry these characters: ':' opens an alternate
+    // data stream and the rest are rejected by CreateFile.
+    if (character < 0x20 || character == '<' || character == '>' ||
+        character == ':' || character == '"' || character == '|' ||
+        character == '?' || character == '*') {
+      AddError(issues, target_path + ".stageName",
+               "contains a character Windows forbids in a file name");
+      return false;
+    }
+  }
+  // Windows strips trailing dots and spaces, so "page.html." would silently
+  // become "page.html" and collide with another target.
+  if (value.back() == '.' || value.back() == ' ') {
+    AddError(issues, target_path + ".stageName",
+             "must not end in a dot or a space");
+    return false;
+  }
+  if (IsReservedWindowsName(value)) {
+    AddError(issues, target_path + ".stageName",
+             "is a reserved Windows device name");
+    return false;
   }
   return true;
 }
@@ -319,16 +369,17 @@ bool ResolveHtml(const TargetConfig& target, const std::filesystem::path& base_d
   return true;
 }
 
-bool ResolveAssets(const TargetConfig& target,
+bool ResolveAssets(const std::string& mode, const std::string& root_text,
                    const std::filesystem::path& base_dir,
                    const std::filesystem::path& html_path, std::size_t index,
                    bool allow_outside_folder,
-                   std::vector<ConfigIssue>& issues) {
-  if (target.assets.mode != "tree") return true;
+                   std::vector<ConfigIssue>& issues,
+                   std::string* resolved_root) {
+  if (mode != "tree") return true;
   const std::string target_path = "targets[" + std::to_string(index) + "]";
-  std::filesystem::path root = target.assets.root.empty()
+  std::filesystem::path root = root_text.empty()
                                    ? html_path.parent_path()
-                                   : PathFromUtf8(target.assets.root);
+                                   : PathFromUtf8(root_text);
   if (root.is_relative()) root = base_dir / root;
   root = NormalizePath(root);
   if (!allow_outside_folder && !IsWithin(base_dir, root)) {
@@ -343,6 +394,7 @@ bool ResolveAssets(const TargetConfig& target,
              "asset root does not exist: " + Utf8Path(root));
     return false;
   }
+  if (resolved_root != nullptr) *resolved_root = Utf8Path(root);
   return true;
 }
 
@@ -434,9 +486,33 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                      &resolved, result.issues)) {
       continue;
     }
-    if (!ResolveAssets(target, base_dir, PathFromUtf8(resolved.html_path), i,
-                       options.allow_outside_folder, result.issues)) {
+    // A target without its own assets block inherits the global stage policy,
+    // so --stage-mode and stage.mode in the config actually take effect.
+    const std::string assets_mode =
+        target.assets_set ? target.assets.mode : config.active.stage.mode;
+    // A target with its own assets block but no root defaults to the HTML
+    // directory (ResolveAssets uses html_path.parent_path()). The global
+    // stage.root applies only to targets without an assets block.
+    const std::string assets_root_text =
+        target.assets_set ? target.assets.root : config.active.stage.root;
+    std::string assets_root;
+    if (!ResolveAssets(assets_mode, assets_root_text, base_dir,
+                       PathFromUtf8(resolved.html_path), i,
+                       options.allow_outside_folder, result.issues,
+                       &assets_root)) {
       continue;
+    }
+    resolved.assets_mode = assets_mode;
+    resolved.assets_root = std::move(assets_root);
+    resolved.assets_max_bytes = target.assets.max_bytes;
+    resolved.assets_include = target.assets.include;
+    resolved.assets_exclude = target.assets.exclude;
+    if (target.edge.has_value()) {
+      // Carry the target's own Edge block into the plan; the worker previously
+      // dropped both fields and always launched with the global config.
+      resolved.edge_args = target.edge->args;
+      resolved.edge_args_set = true;
+      resolved.edge_prewarm = target.edge->prewarm_profile;
     }
 
     const std::string stage = target.stage_name.empty()
@@ -456,7 +532,11 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
                    std::to_string(owner->second));
       continue;
     }
-    if (const auto owner = stage_owner.find(stage); owner != stage_owner.end()) {
+    // NTFS is case-insensitive: "Same.html" and "same.html" are one staged
+    // file, so the duplicate check has to fold case as well.
+    const std::string stage_key = LowerAscii(stage);
+    if (const auto owner = stage_owner.find(stage_key);
+        owner != stage_owner.end()) {
       AddError(result.issues, target_path + ".stageName",
                "duplicate stage name '" + stage + "' (target " +
                    std::to_string(owner->second) + ")");
@@ -471,7 +551,7 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
     }
 
     slide_owner.emplace(*slide, ordinal);
-    stage_owner.emplace(stage, ordinal);
+    stage_owner.emplace(stage_key, ordinal);
     profile_owner.emplace(profile, ordinal);
     resolved.stage_name = stage;
     resolved.edge_profile = profile;
@@ -482,18 +562,9 @@ ResolveResult ResolveTargets(const Config& config, const DeckInfo* deck,
 }
 
 std::string ResolveTableToText(const ResolveResult& result) {
-  struct Row {
-    std::string ordinal;
-    std::string slide;
-    std::string label;
-    std::string html;
-    std::string stage;
-    std::string profile;
-    std::string state;
-  };
-  std::vector<Row> rows;
-  rows.push_back({"#", "SLIDE", "LABEL", "HTML", "STAGE", "EDGE-PROFILE",
-                  "STATE"});
+  std::vector<std::vector<std::string>> rows;
+  rows.push_back({"#", "SLIDE", "LABEL", "HTML", "STAGE", "ASSETS",
+                  "EDGE-PROFILE", "STATE"});
   for (const auto& target : result.targets) {
     rows.push_back(
         {std::to_string(target.ordinal),
@@ -502,30 +573,24 @@ std::string ResolveTableToText(const ResolveResult& result) {
          target.label.empty() ? "-" : target.label,
          target.html_path.empty() ? "-" : target.html_path,
          target.stage_name.empty() ? "-" : target.stage_name,
+         target.assets_mode.empty() ? "-" : target.assets_mode,
          target.edge_profile.empty() ? "-" : target.edge_profile,
          target.state == ResolveState::Disabled ? "disabled" : "resolved"});
   }
-  std::vector<std::size_t> widths(7, 0);
+  std::vector<std::size_t> widths(rows.front().size(), 0);
   for (const auto& row : rows) {
-    const std::array<std::string, 7> cells = {
-        row.ordinal, row.slide, row.label, row.html,
-        row.stage,   row.profile, row.state};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      widths[i] = std::max(widths[i], cells[i].size());
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      widths[i] = std::max(widths[i], row[i].size());
     }
   }
   std::ostringstream out;
   for (const auto& row : rows) {
-    const std::array<std::string, 7> cells = {
-        row.ordinal, row.slide, row.label, row.html,
-        row.stage,   row.profile, row.state};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      out << std::left << std::setw(static_cast<int>(widths[i])) << cells[i];
-      if (i + 1 != cells.size()) out << "  ";
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      out << std::left << std::setw(static_cast<int>(widths[i])) << row[i];
+      if (i + 1 != row.size()) out << "  ";
     }
     out << '\n';
   }
   return out.str();
 }
-
 } // namespace htmlppt

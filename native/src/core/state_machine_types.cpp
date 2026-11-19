@@ -85,10 +85,11 @@ Event MakeCleanupDone(ClockPoint at) {
   return event;
 }
 
-Event MakePowerResume(ClockPoint at) {
+Event MakePowerResume(ClockPoint at, Duration jump) {
   Event event;
   event.kind = EventKind::PowerResume;
   event.at = at;
+  event.jump = jump;
   return event;
 }
 
@@ -108,6 +109,13 @@ Event MakeSupervisorLost(ClockPoint at, std::string detail) {
   event.kind = EventKind::SupervisorLost;
   event.at = at;
   event.detail = std::move(detail);
+  return event;
+}
+
+Event MakeComHealthy(ClockPoint at) {
+  Event event;
+  event.kind = EventKind::ComHealthy;
+  event.at = at;
   return event;
 }
 

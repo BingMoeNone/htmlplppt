@@ -260,10 +260,23 @@ FocusConfig ParseFocus(const json& value, const std::string& path,
     AddError(issues, path, "must be an object");
     return result;
   }
-  CheckKnownKeys(value, {"strategy", "require"}, path, issues);
+  CheckKnownKeys(value, {"strategy", "require", "timeoutMs"}, path, issues);
   if (auto strategy = ReadString(value, "strategy", path, issues)) result.strategy = *strategy;
   if (auto required = ReadBool(value, "require", path, issues)) result.require = *required;
-  if (result.strategy.empty()) AddError(issues, FieldPath(path, "strategy"), "must not be empty");
+  // Absent timeoutMs keeps the base value: a target focus block inherits the
+  // defaults, exactly like strategy/require.
+  if (auto timeout = ReadInt(value, "timeoutMs", path, issues)) {
+    result.timeout_ms = *timeout;
+  }
+  if (result.strategy.empty()) {
+    AddError(issues, FieldPath(path, "strategy"), "must not be empty");
+  } else if (!IsOneOf(result.strategy, {"auto", "attach-alt", "switch"})) {
+    AddError(issues, FieldPath(path, "strategy"),
+             "must be auto, attach-alt, or switch");
+  }
+  if (result.timeout_ms.has_value() && *result.timeout_ms <= 0) {
+    AddError(issues, FieldPath(path, "timeoutMs"), "must be >= 1");
+  }
   return result;
 }
 
@@ -349,6 +362,7 @@ TargetConfig ParseTarget(const json& value, const std::string& path, int priorit
   target.stage_name = ReadString(value, "stageName", path, issues).value_or("");
   target.html_query = ReadString(value, "htmlQuery", path, issues).value_or("");
   if (const auto it = value.find("assets"); it != value.end()) {
+    target.assets_set = true;
     target.assets = ParseAssets(*it, FieldPath(path, "assets"), target.assets, issues);
   }
   target.trigger = ReadString(value, "trigger", path, issues).value_or(defaults.trigger);
@@ -472,9 +486,15 @@ StageConfig ParseStage(const json& value, const std::string& path,
     AddError(issues, path, "must be an object");
     return result;
   }
-  CheckKnownKeys(value, {"mode", "root"}, path, issues);
+  CheckKnownKeys(value, {"mode", "root", "maxBytes"}, path, issues);
   if (auto mode = ReadString(value, "mode", path, issues)) result.mode = *mode;
   if (auto root = ReadString(value, "root", path, issues)) result.root = *root;
+  if (auto bytes = ReadInt64(value, "maxBytes", path, issues)) {
+    result.max_bytes = *bytes;
+  }
+  if (result.max_bytes < 0) {
+    AddError(issues, FieldPath(path, "maxBytes"), "must be >= 0");
+  }
   if (!IsOneOf(result.mode, {"file", "tree", "direct"})) {
     AddError(issues, FieldPath(path, "mode"), "must be file, tree, or direct");
   }
@@ -566,7 +586,7 @@ nlohmann::ordered_json CoverToJson(const CoverConfig& cover) {
 nlohmann::ordered_json EdgeToJson(const EdgeConfig& edge) {
   nlohmann::ordered_json result{
       {"maxLiveMs", edge.max_live_ms},
-      {"prewarmProfile", edge.prewarm_profile},
+      {"prewarmProfile", edge.prewarm_profile.value_or(false)},
   };
   if (!edge.args.empty()) result["args"] = edge.args;
   return result;
@@ -577,7 +597,13 @@ nlohmann::ordered_json DisplayToJson(const DisplayConfig& display) {
 }
 
 nlohmann::ordered_json FocusToJson(const FocusConfig& focus) {
-  return {{"strategy", focus.strategy}, {"require", focus.require}};
+  nlohmann::ordered_json result{
+      {"strategy", focus.strategy},
+      {"require", focus.require},
+  };
+  // Serialized whenever set so the editor's save path cannot drop the timeout.
+  if (focus.timeout_ms.has_value()) result["timeoutMs"] = *focus.timeout_ms;
+  return result;
 }
 
 nlohmann::ordered_json AssetsToJson(const AssetsConfig& assets) {
@@ -605,7 +631,10 @@ nlohmann::ordered_json TargetToJson(const TargetConfig& target) {
   if (!target.label.empty()) result["label"] = target.label;
   if (!target.edge_profile.empty()) result["edgeProfile"] = target.edge_profile;
   if (!target.stage_name.empty()) result["stageName"] = target.stage_name;
-  result["assets"] = AssetsToJson(target.assets);
+  // Only a target that owns an assets block writes one. An inheriting target
+  // must stay block-less, or a save+reload would silently make the inherited
+  // stage mode an explicit per-target override.
+  if (target.assets_set) result["assets"] = AssetsToJson(target.assets);
   if (!target.html_query.empty()) result["htmlQuery"] = target.html_query;
   result["trigger"] = target.trigger;
   if (target.cover.has_value()) result["cover"] = CoverToJson(*target.cover);
@@ -635,7 +664,9 @@ nlohmann::ordered_json DefaultsToJson(const DefaultsConfig& defaults) {
 }
 
 nlohmann::ordered_json StageToJson(const StageConfig& stage) {
-  return {{"mode", stage.mode}, {"root", stage.root}};
+  nlohmann::ordered_json result = {{"mode", stage.mode}, {"root", stage.root}};
+  if (stage.max_bytes > 0) result["maxBytes"] = stage.max_bytes;
+  return result;
 }
 
 void ApplyOverrides(Config& config, const CliConfigOverrides& overrides,

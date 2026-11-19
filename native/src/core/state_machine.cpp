@@ -45,13 +45,18 @@ std::vector<Action> StateMachine::Handle(const Event& event) {
     case EventKind::CleanupDone:
       return OnCleanupDone(event);
     case EventKind::PowerResume:
-      return Journal("power resume");
+      return OnPowerResume(event);
     case EventKind::ConfigReloaded:
       return Journal("config reload ignored");
     case EventKind::Failure:
       return OnFailure(event);
     case EventKind::SupervisorLost:
       return OnSupervisorLost(event);
+    case EventKind::ComHealthy:
+      // Spec 3.6: a successful COM read resets the contiguous-error window. The
+      // healthy path stays silent (no journal) so a normal poll adds no noise.
+      com_window_.reset();
+      return {};
   }
   return {};
 }
@@ -117,6 +122,17 @@ Duration StateMachine::EffectiveCoverMaxHold(const TargetPlan& target) const {
   return target.cover_max_hold.value_or(config_.cover_max_hold);
 }
 
+Duration StateMachine::EffectiveEdgeMaxLive(const TargetPlan& target) const {
+  return target.edge_max_live.value_or(config_.edge_max_live);
+}
+
+Duration StateMachine::ReturnCoverMaxHold() const {
+  if (!current_target_slide_.has_value()) return config_.cover_max_hold;
+  const TargetPlan* target = FindTarget(*current_target_slide_);
+  return target != nullptr ? EffectiveCoverMaxHold(*target)
+                           : config_.cover_max_hold;
+}
+
 void StateMachine::Enter(State state) {
   state_ = state;
   if (state == State::SafeMode) safe_mode_ = true;
@@ -125,6 +141,7 @@ void StateMachine::Enter(State state) {
 void StateMachine::ResetRetries() {
   retry_.reset();
   retry_attempt_ = 0;
+  cleanup_exit_attempt_ = 0;
   pending_retry_ = RetryOperation::None;
   retry_deadline_.reset();
 }
@@ -240,6 +257,31 @@ std::vector<Action> StateMachine::OnShowStarted(const Event& event) {
 }
 
 std::vector<Action> StateMachine::OnShowEnded(const Event& event) {
+  if (state_ == State::CoverIn || state_ == State::EdgeStarting) {
+    // The show ended while the cover was still up: the operator pressed Esc, or
+    // WPS closed the show. Continuing would run ExitShow and enter ShowExit
+    // with no show left -- and ShowExit has no deadline, so the machine would
+    // keep the cover visible until a manual stop. Abort the switch instead:
+    // hide the cover, kill the Edge we may have launched, and go back to idle
+    // monitoring so a new show starts cleanly.
+    const int slide = current_target_slide_.value_or(0);
+    ClearDeadlines();
+    ResetRetries();
+    com_window_.reset();
+    show_active_ = false;
+    done_slides_.clear();
+    prev_slide_ = -1;
+    current_target_slide_.reset();
+    Enter(State::Monitoring);
+    std::vector<Action> actions;
+    actions.push_back(
+        {ActionKind::CoverHide, slide, "show ended during switch"});
+    actions.push_back(
+        {ActionKind::KillEdge, slide, "show ended during switch"});
+    actions.push_back(
+        {ActionKind::Journal, slide, "show ended during switch"});
+    return actions;
+  }
   if (state_ == State::ShowExit) {
     ClearDeadline(TimeoutKind::EdgeReady);
     ResetRetries();
@@ -247,7 +289,11 @@ std::vector<Action> StateMachine::OnShowEnded(const Event& event) {
     Enter(State::Live);
     show_active_ = false;
     consecutive_trigger_failures_ = 0;
-    SetDeadline(TimeoutKind::EdgeLive, event.at + config_.edge_max_live);
+    const int slide = current_target_slide_.value_or(0);
+    const TargetPlan* target = FindTarget(slide);
+    SetDeadline(TimeoutKind::EdgeLive,
+                event.at + (target != nullptr ? EffectiveEdgeMaxLive(*target)
+                                              : config_.edge_max_live));
     auto actions = Journal("live", current_target_slide_.value_or(0));
     actions.push_back({ActionKind::CoverFadeOut,
                        current_target_slide_.value_or(0), "reveal Edge"});
@@ -291,9 +337,15 @@ std::vector<Action> StateMachine::OnCoverHold(const Event& event) {
     const int slide = current_target_slide_.value_or(0);
     Enter(State::ReturnCoverOut);
     show_active_ = true;
-    SetDeadline(TimeoutKind::CoverDone, event.at + config_.cover_max_hold);
+    SetDeadline(TimeoutKind::CoverDone, event.at + ReturnCoverMaxHold());
     auto actions = Journal("resumed at slide " + std::to_string(slide), slide);
+    // Resume before closing Edge: if the resume fails the machine enters
+    // Faulted, and the page's still-renamed Edge title is the signal that lets
+    // the operator (or the rate-limited retry) try the return again. Closing
+    // Edge first erases that signal. The cover stays opaque until the fade-out
+    // below, so Edge is still closed before it is revealed.
     actions.push_back({ActionKind::ResumeShow, slide, "resume WPS"});
+    actions.push_back({ActionKind::KillEdge, slide, "return: close Edge"});
     actions.push_back({ActionKind::FocusWps, slide, "focus WPS"});
     actions.push_back({ActionKind::CoverFadeOut, slide, "fade out cover"});
     return actions;
@@ -420,10 +472,19 @@ std::vector<Action> StateMachine::OnCleanupDone(const Event& event) {
 }
 
 std::vector<Action> StateMachine::OnFailure(const Event& event) {
-  if (state_ == State::Stopping || state_ == State::Exited ||
-      state_ == State::SafeMode) {
-    return {};
+  if (state_ == State::Stopping || state_ == State::SafeMode) {
+    if (event.failure_source != FailureSource::ExitShow) return {};
+    // Cleanup still owes the operator an exit from the show. Stopping retries
+    // within a bounded budget; SafeMode is already ending the run, so it only
+    // records why the show may still be open.
+    if (state_ == State::Stopping) return RetryCleanupExitShow(event);
+    const int slide = current_target_slide_.value_or(0);
+    return {{ActionKind::Journal, slide,
+             "safe mode: could not exit the WPS show: " + event.detail},
+            {ActionKind::Diagnostic, slide,
+             "safe mode could not exit the WPS show"}};
   }
+  if (state_ == State::Exited) return {};
   if (state_ == State::Faulted) {
     return Journal("failure while faulted: " + event.detail);
   }
@@ -440,6 +501,13 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
     com_window_.record(event.at);
     if (com_window_.expired(event.at)) {
       return HandleStructuralFailure("COM busy: " + event.detail);
+    }
+    // Startup goes through the same 2 s window as Monitoring: the first polls
+    // happen while WPS is still warming, and one Busy/Unavailable sample there
+    // must not skip the window and end the whole run in SafeMode. The next poll
+    // is the retry.
+    if (state_ == State::Warming || state_ == State::Boot) {
+      return Journal("transient COM failure while warming: " + event.detail);
     }
   }
   RetryOperation operation = RetryOperation::None;
@@ -476,6 +544,25 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
   return BeginRetry(operation, event.at, event.detail);
 }
 
+std::vector<Action> StateMachine::OnPowerResume(const Event& event) {
+  // Spec 11.2: after a resume the steady clock has advanced by the whole suspend
+  // gap, so every pending absolute deadline would look expired and fire at once.
+  // Shift them by the gap instead; the remaining wait is preserved.
+  if (event.jump.count() > 0) {
+    ShiftDeadlines(event.jump);
+  }
+  return Journal("power resume: shifted deadlines by " +
+                 std::to_string(event.jump.count()) + "ms");
+}
+
+void StateMachine::ShiftDeadlines(Duration jump) {
+  for (auto* deadline : {&cover_hold_deadline_, &edge_ready_deadline_,
+                         &edge_live_deadline_, &return_resume_deadline_,
+                         &cover_done_deadline_, &retry_deadline_}) {
+    if (deadline->has_value()) **deadline += jump;
+  }
+}
+
 std::vector<Action> StateMachine::OnSupervisorLost(const Event& event) {
   if (state_ == State::Stopping) return {};
   if (config_.supervisor_loss == SupervisorLossPolicy::Cleanup) {
@@ -510,7 +597,7 @@ std::vector<Action> StateMachine::BeginReturn(ClockPoint at, bool prepared,
   ResetRetries();
   ClearDeadlines();
   Enter(State::Returning);
-  SetDeadline(TimeoutKind::ReturnResume, at + config_.cover_max_hold);
+  SetDeadline(TimeoutKind::ReturnResume, at + ReturnCoverMaxHold());
   auto actions = Journal(std::move(detail), slide);
   actions.push_back({ActionKind::CoverFadeIn, slide, "return cover fade"});
   return actions;
@@ -538,6 +625,26 @@ std::vector<Action> StateMachine::BeginRetry(RetryOperation operation,
   actions.push_back(
       {ActionKind::Diagnostic, current_target_slide_.value_or(0), detail});
   return actions;
+}
+
+std::vector<Action> StateMachine::RetryCleanupExitShow(const Event& event) {
+  const int slide = current_target_slide_.value_or(0);
+  const auto delay = retry_.next_delay(cleanup_exit_attempt_);
+  if (!delay.has_value()) {
+    // The budget is spent; the process still exits, but the journal and the
+    // diagnostics package must say that the show may be open instead of
+    // reporting a clean stop.
+    return {{ActionKind::Journal, slide,
+             "cleanup: could not exit the WPS show: " + event.detail},
+            {ActionKind::Diagnostic, slide,
+             "cleanup could not exit the WPS show"}};
+  }
+  ++cleanup_exit_attempt_;
+  // ExecuteRetry owns the next ExitShow attempt.
+  pending_retry_ = RetryOperation::ExitShow;
+  SetDeadline(TimeoutKind::Retry, event.at + *delay);
+  return Journal("cleanup exit show failed; retry in " +
+                 std::to_string(delay->count()) + "ms: " + event.detail);
 }
 
 std::vector<Action> StateMachine::ExecuteRetry(ClockPoint at) {
@@ -607,7 +714,7 @@ std::vector<Action> StateMachine::HandleSwitchFailure(ClockPoint at,
   actions.push_back(
       {ActionKind::RestoreShow, slide, "restore WPS after switch failure"});
   actions.push_back(
-      {ActionKind::FocusWps, slide, "focus WPS after switch failure"});
+      {ActionKind::FocusWps, slide, "focus WPS after switch failure", true});
   actions.push_back(
       {ActionKind::Journal, slide,
        "switch failure recovered; monitoring at slide " +
@@ -647,8 +754,16 @@ std::vector<Action> StateMachine::HandleStructuralFailure(std::string detail) {
   actions.push_back({ActionKind::KillEdge, slide, "structural failure"});
   actions.push_back(
       {ActionKind::Journal, slide, "structural failure: " + detail});
+  // Spec 11.2: entering SafeMode must leave the slideshow and hand WPS back to
+  // the operator instead of leaving a full-screen show behind the hidden cover,
+  // and must leave a diagnostic record. The cover is hidden first so the
+  // operator never stares at a black screen while these run.
+  actions.push_back({ActionKind::ExitShow, slide, "safe mode: exit show"});
+  actions.push_back(
+      {ActionKind::FocusWps, slide, "safe mode: restore WPS", true});
   actions.push_back(
       {ActionKind::EnterSafeMode, slide, "structural failure"});
+  actions.push_back({ActionKind::Diagnostic, slide, "safe mode: " + detail});
   if (policy == OnFailurePolicy::Legacy) {
     actions.push_back(
         {ActionKind::LegacyFallback, slide, "structural failure"});
@@ -666,6 +781,9 @@ std::vector<Action> StateMachine::BeginCleanup(std::string detail) {
   std::vector<Action> actions;
   actions.push_back({ActionKind::Journal, slide, "cleanup start"});
   actions.push_back({ActionKind::CoverHide, slide, detail});
+  // Leave the slideshow before releasing: --stop must not strand a full-screen
+  // show on the operator's desktop.
+  actions.push_back({ActionKind::ExitShow, slide, detail});
   actions.push_back({ActionKind::KillEdge, slide, detail});
   actions.push_back({ActionKind::StopHelperThreads, slide, detail});
   actions.push_back({ActionKind::ReleaseLock, slide, detail});

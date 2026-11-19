@@ -34,6 +34,10 @@ class CompatFlags {
 
   const CompatIdentity& identity() const { return identity_; }
 
+  // The directory the legacy flag files live in. The flag mirror needs it to
+  // spell the two paths the persistent focus agent writes.
+  const std::filesystem::path& base_dir() const { return base_dir_; }
+
   bool WriteLock(std::string_view timestamp);
   bool WriteFlag(std::string_view name, std::string_view payload = {});
   std::string ReadFlag(std::string_view name) const;
@@ -62,5 +66,11 @@ class LegacyLog {
 };
 
 std::string UtcTimestamp();
+
+// Spec 11.3: stop-live.vbs asks for a stop by deleting watcher.lock. A missing
+// lock is only that signal when this run actually created it, and a failed
+// existence check is not a deletion.
+bool LegacyLockWasRemoved(bool lock_written, bool lock_exists,
+                          bool stat_failed);
 
 } // namespace htmlppt

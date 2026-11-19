@@ -107,6 +107,11 @@ bool LegacyLog::Append(std::string_view file, std::string_view line) const {
   return output.good();
 }
 
+bool LegacyLockWasRemoved(bool lock_written, bool lock_exists,
+                          bool stat_failed) {
+  return lock_written && !stat_failed && !lock_exists;
+}
+
 std::string UtcTimestamp() {
   const auto now = std::chrono::system_clock::now();
   const auto time = std::chrono::system_clock::to_time_t(now);

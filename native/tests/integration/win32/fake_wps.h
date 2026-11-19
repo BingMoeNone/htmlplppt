@@ -36,6 +36,14 @@ struct FakeWps {
   int open_count = 0;
   int close_count = 0;
   std::function<HRESULT(VARIANT*, EXCEPINFO*)> position_override;
+  // Slide::Export calls, in order: each slide's target file name (UTF-16) plus
+  // the filter and scale arguments the host asked for. export_fail_from, when
+  // set, makes that 1-based slide's export fail.
+  std::vector<std::wstring> exported_files;
+  std::string export_filter;
+  int export_width = 0;
+  int export_height = 0;
+  int export_fail_from = 0;
 
   FakeWps() {
     app = MakeFake();
@@ -154,6 +162,26 @@ struct FakeWps {
 
       slide_raw->SetObject(L"Shapes", shapes_raw);
       slide_raw->SetString(L"Name", L"Slide" + std::to_wstring(index));
+      const int slide_number = index;
+      slide_raw->SetMethod(
+          L"Export",
+          [this, slide_number](std::vector<VARIANT> args, VARIANT*,
+                               EXCEPINFO*) {
+            if (export_fail_from == slide_number) {
+              return static_cast<HRESULT>(E_FAIL);
+            }
+            if (args.size() != 4 || args[0].vt != VT_BSTR ||
+                args[1].vt != VT_BSTR || args[2].vt != VT_I4 ||
+                args[3].vt != VT_I4) {
+              return static_cast<HRESULT>(DISP_E_BADPARAMCOUNT);
+            }
+            exported_files.push_back(std::wstring(args[0].bstrVal));
+            const std::wstring filter(args[1].bstrVal);
+            export_filter.assign(filter.begin(), filter.end());
+            export_width = args[2].lVal;
+            export_height = args[3].lVal;
+            return S_OK;
+          });
       shapes_raw->SetObject(L"Title", title_raw);
       title_raw->SetObject(L"TextFrame", text_frame_raw);
       text_frame_raw->SetObject(L"TextRange", text_range_raw);

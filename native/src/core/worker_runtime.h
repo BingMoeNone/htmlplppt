@@ -1,0 +1,202 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "core/clock.h"
+#include "core/config.h"
+#include "core/cover_controller.h"
+#include "core/cover_timeline.h"
+#include "core/edge_controller.h"
+#include "core/faults.h"
+#include "core/focus_controller.h"
+#include "core/latency_stats.h"
+#include "core/presentation_host.h"
+#include "core/state_machine.h"
+#include "core/state_machine_types.h"
+#include "core/window_system.h"
+#include "core/worker_driver.h"
+#include "core/worker_plan.h"
+
+namespace htmlppt {
+
+// Caller-owned ports. They must outlive the runtime.
+struct WorkerPorts {
+  PresentationHost& presentation;
+  CoverOverlay& overlay;
+  EdgeLauncher& launcher;
+  WindowSystem& windows;
+  Clock& clock;
+};
+
+struct WorkerHostConfig {
+  std::filesystem::path temp_dir;
+  std::filesystem::path edge_exe;
+  EdgeConfig edge;
+  CoverTiming cover;
+  FocusTiming focus;
+  // Run-wide cap on the bytes copied into the shared stage directory (config
+  // stage.maxBytes). 0 means unlimited; a target's assets.maxBytes still applies
+  // and the smaller limit wins.
+  std::int64_t stage_max_bytes = 0;
+  // Global focus.require default. The plan carries an effective per-target value,
+  // but a show-start focus has no target, so the runtime needs the config-level
+  // opt-out here too.
+  bool focus_require = true;
+  ScreenMetrics screen;
+  std::vector<std::uint32_t> wps_pids;
+  // Spec 6.6 fault switches. Off in production; see core/faults.h.
+  Faults faults;
+  // Minimum spacing between two return attempts after a return failure. The
+  // page keeps its renamed title, so without this the Faulted retry would fire
+  // on every poll and hammer a wedged WPS with COM calls.
+  Duration return_retry_interval{2000};
+  // Idle cadence, and the faster cadence used while Monitoring a running show
+  // (slide changes are only visible through the COM poll, so the poll interval
+  // is the trigger latency).
+  Duration active_poll_interval{20};
+  Duration poll_interval{100};
+  // Resolves a display.monitor selector to fresh metrics. The app installs the
+  // platform query; unset means a display change cannot re-resolve a target's
+  // override (tests and headless builds keep their pre-resolved values).
+  std::function<ScreenMetrics(std::string_view selector)> resolve_screen;
+};
+
+// Samples the ports into state-machine events, executes the resulting
+// actions, and keeps the machine ticking. The state machine remains the only
+// state owner; ports only report facts. Implements WorkerDriver so the app's
+// session (pipe, heartbeats, stop, supervisor loss) is testable without it.
+//
+// The stage budget for one target: the smaller of the target's assets.maxBytes
+// and what is left of the run-wide stage.maxBytes, after charging `staged_bytes`
+// already copied this run. 0 means unlimited; -1 means the run cap is spent.
+std::int64_t EffectiveStageBudget(std::int64_t run_max_bytes,
+                                  std::uint64_t staged_bytes,
+                                  std::int64_t target_max_bytes);
+class WorkerRuntime : public WorkerDriver {
+ public:
+  WorkerRuntime(WorkerPlan plan, StateMachineConfig config, WorkerPorts ports,
+                WorkerHostConfig host);
+
+  WorkerRuntime(const WorkerRuntime&) = delete;
+  WorkerRuntime& operator=(const WorkerRuntime&) = delete;
+
+  void Start() override;
+  bool Step() override;
+  bool done() const override { return done_; }
+  void RequestStop(std::string reason) override;
+  void HandleSupervisorLost(std::string detail) override;
+  // The bounded idle wait in Step is the only safe point: the flag is set to
+  // `state() == Monitoring` immediately before the wait and cleared right after
+  // it, so a heartbeat sees "parked in Monitoring" for most of the poll interval
+  // instead of the microsecond between two Steps. Null means no consumer.
+  void SetSafePointFlag(std::atomic<bool>* flag) override {
+    safe_point_ = flag;
+  }
+  const StateSnapshot& snapshot() const override { return snapshot_; }
+  const std::vector<std::string>& journal() const { return journal_; }
+  // Introspection for tests: the effective plan (target screen overrides are
+  // refreshed in place on a display change).
+  const WorkerPlan& plan() const { return plan_; }
+  // --benchmark instrumentation: per-step and per-COM-query latencies.
+  const LatencyStats& step_stats() const { return step_stats_; }
+  const LatencyStats& com_stats() const { return com_stats_; }
+
+ private:
+  void ObserveShow();
+  void ObserveCover();
+  void ObserveEdge();
+  void LaunchEdge(int slide);
+  void ReportEdgeLaunchFailure(std::string detail);
+  // The global Edge config with the target's own args/prewarm overrides applied.
+  EdgeConfig EffectiveEdgeConfig(const ResolvedTarget& target) const;
+  void SyncSnapshot();
+  void AllowReturnRetry();
+  void AppendJournal(std::string entry);
+  void Handle(const Event& event);
+  void Dispatch(const std::vector<Action>& actions);
+  void Execute(const Action& action);
+  // Applies the in-flight target's focus/screen overrides on top of the host
+  // baseline. Called when a trigger starts; a target without an override keeps
+  // the baseline, so the previous target's values never leak forward.
+  void ApplyTargetSettings(int slide);
+  // Restores the host focus/screen baseline. Used by emergency hand-backs and by
+  // the target-less show-start focus so a finished target's settings never leak.
+  void ApplyBaselineSettings();
+  const TargetPlan* FindTarget(int slide) const;
+  // Re-resolves every target's display.monitor after the overlay reports a
+  // display change, so the 90 % show-window score uses the new geometry instead
+  // of the size captured at plan-build time.
+  void RefreshTargetScreens();
+  // focus.require=false makes routine FocusWps inert; a slide without a target
+  // (the show-start focus) uses the host's global focus.require instead.
+  bool FocusRequired(int slide) const;
+
+  WorkerPlan plan_;
+  WorkerHostConfig host_;
+  // The global focus/screen values from the host config. Every trigger derives
+  // the effective settings from these instead of restoring the shared host
+  // fields after the target finishes.
+  FocusTiming base_focus_;
+  ScreenMetrics base_screen_;
+  WorkerPorts ports_;
+  CoverController cover_;
+  EdgeController edge_;
+  FocusController focus_;
+  StateMachine machine_;
+  std::vector<std::string> journal_;
+  StateSnapshot snapshot_;
+  ShowState last_show_;
+  int last_slide_ = 0;
+  // True while the most recent COM show poll failed. The first Ok poll after
+  // one or more failures reports ComHealthy so the machine resets its
+  // contiguous-error window instead of escalating isolated errors (spec 3.6).
+  bool last_com_failed_ = false;
+  // The previous cover tick's phase edges. Hold/done are emitted on a rising
+  // edge only, so the poll loop cannot flood the machine with duplicates.
+  bool last_cover_hold_ = false;
+  bool last_cover_done_ = false;
+  // The process this runtime launched, or 0 when no launch is outstanding.
+  // ObserveEdge stays idle at 0 so a fresh runtime cannot report a closure, and
+  // KillEdge clears it because the runtime itself ended that process.
+  std::uint32_t edge_pid_ = 0;
+  // Readiness and return are reported once per launch: EdgeReady once focused,
+  // ReturnRequested once even though the page keeps its renamed title. After a
+  // return failure the signal is unlatched again at most once per
+  // return_retry_interval.
+  bool ready_sent_ = false;
+  bool return_sent_ = false;
+  // Set only by the edge-slow fault: readiness is not reported before this
+  // point, modelling a browser whose window appears late.
+  std::optional<ClockPoint> edge_ready_not_before_;
+  // When the current Faulted retry window opened: after the bounded idle wait
+  // of the Step that observed the fault. AllowReturnRetry() measures
+  // return_retry_interval from this point.
+  ClockPoint last_return_retry_{};
+  std::optional<std::string> pending_stop_;
+  // Set once the runtime has fed the machine the CleanupDone it never emits
+  // itself, so a repeated stop cannot run or report the cleanup twice.
+  bool cleanup_done_ = false;
+  bool done_ = false;
+  // --benchmark samples, bounded by the histogram's ring.
+  LatencyStats step_stats_;
+  LatencyStats com_stats_;
+  // Wall time of the previous Step, used to measure a resume gap.
+  ClockPoint last_step_time_{};
+  bool injected_sleep_resume_ = false;
+  bool injected_multi_monitor_ = false;
+  // The cleanup-slow fault sleeps once, before the cleanup batch starts, so the
+  // supervisor's stop budget is exercised instead of its old fixed 2 s wait.
+  bool injected_cleanup_slow_ = false;
+  // The session's heartbeat safe-point flag; set only while the loop is parked in
+  // Monitoring. Owned by the caller (RunWorkerSession's loop stack).
+  std::atomic<bool>* safe_point_ = nullptr;
+};
+
+} // namespace htmlppt

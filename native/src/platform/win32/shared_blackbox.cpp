@@ -25,7 +25,7 @@ SharedBlackbox::SharedBlackbox(HANDLE mapping, void* view,
       view_(view),
       capacity_(capacity),
       writable_(writable) {
-  static_assert(sizeof(Header) == 32, "shared blackbox header layout");
+  static_assert(sizeof(Header) == 40, "shared blackbox header layout");
   Attach(capacity);
 }
 
@@ -73,6 +73,7 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::Create(
   box->header_->version = kBlackboxVersion;
   box->header_->record_size = static_cast<std::uint16_t>(sizeof(BlackboxRecord));
   box->header_->capacity = static_cast<std::uint32_t>(capacity);
+  box->header_->mapping_bytes = bytes;
   box->header_->appended.store(0, std::memory_order_relaxed);
   box->header_->dropped.store(0, std::memory_order_relaxed);
   return box;
@@ -101,6 +102,20 @@ std::unique_ptr<SharedBlackbox> SharedBlackbox::OpenWithAccess(
       header->version != kBlackboxVersion ||
       header->record_size != sizeof(BlackboxRecord) ||
       header->capacity == 0) {
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    return nullptr;
+  }
+  // The header is attacker/corruption controlled: validate the declared ring
+  // against the size the creator mapped and against the view's actual region
+  // before trusting capacity as an array length.
+  const std::uint64_t expected_bytes =
+      sizeof(Header) + static_cast<std::uint64_t>(header->capacity) *
+                           sizeof(BlackboxRecord);
+  MEMORY_BASIC_INFORMATION region{};
+  if (header->mapping_bytes < expected_bytes ||
+      VirtualQuery(view, &region, sizeof region) == 0 ||
+      region.RegionSize < header->mapping_bytes) {
     UnmapViewOfFile(view);
     CloseHandle(mapping);
     return nullptr;
@@ -142,6 +157,17 @@ std::vector<BlackboxRecord> SharedBlackbox::Snapshot() const {
     snapshot.push_back(records_[(start + i) % capacity_]);
   }
   return snapshot;
+}
+
+std::optional<BlackboxRecord> SharedBlackbox::Latest() const {
+  if (header_ == nullptr || records_ == nullptr || capacity_ == 0) {
+    return std::nullopt;
+  }
+  const std::uint64_t appended =
+      header_->appended.load(std::memory_order_acquire);
+  if (appended == 0) return std::nullopt;
+  // appended-1 is the newest slot; the modulo wraps exactly like Append.
+  return records_[(appended - 1) % capacity_];
 }
 
 std::uint64_t SharedBlackbox::appended() const {

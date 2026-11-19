@@ -6,11 +6,18 @@
 #include <string>
 
 #include "core/deck_info.h"
+#include "core/utf8_path.h"
 
 using htmlppt::DeckInfoResult;
 using htmlppt::IssueSeverity;
 
 namespace {
+
+// The basename of a UTF-8 path, so an assertion names the file without
+// depending on the platform's path separator.
+std::string BaseName(const std::string& utf8_path) {
+  return htmlppt::PathFromUtf8(utf8_path).filename().string();
+}
 
 DeckInfoResult ParseDeckInfo(std::string_view text) {
   return htmlppt::LoadDeckInfoFromJson(text, std::filesystem::path{"deck.pptx"});
@@ -125,6 +132,54 @@ HTMLPPT_TEST_CASE(deck_info_provider_reports_missing_file) {
   const auto result = provider.Load(dir.path() / "deck.pptx");
   HTMLPPT_CHECK(!result.info.has_value());
   HTMLPPT_CHECK(HasIssueAt(result, "$"));
+}
+
+HTMLPPT_TEST_CASE(deck_thumbnail_file_names_are_zero_padded) {
+  const std::filesystem::path dir = std::filesystem::path{"thumbs"};
+  const auto names = htmlppt::ThumbnailFileNames(3, dir);
+  HTMLPPT_CHECK_EQ(names.size(), std::size_t{3});
+  HTMLPPT_CHECK_EQ(BaseName(names[0]), std::string{"slide-01.bmp"});
+  HTMLPPT_CHECK_EQ(BaseName(names[1]), std::string{"slide-02.bmp"});
+  HTMLPPT_CHECK_EQ(BaseName(names[2]), std::string{"slide-03.bmp"});
+  // Every name lives in the requested directory.
+  for (const auto& name : names) {
+    HTMLPPT_CHECK(htmlppt::PathFromUtf8(name).parent_path() == dir);
+  }
+}
+
+HTMLPPT_TEST_CASE(deck_thumbnail_file_names_widen_a_large_deck) {
+  const std::filesystem::path dir = std::filesystem::path{"thumbs"};
+  const auto names = htmlppt::ThumbnailFileNames(120, dir);
+  HTMLPPT_CHECK_EQ(names.size(), std::size_t{120});
+  HTMLPPT_CHECK_EQ(BaseName(names[0]), std::string{"slide-001.bmp"});
+  HTMLPPT_CHECK_EQ(BaseName(names[99]), std::string{"slide-100.bmp"});
+  HTMLPPT_CHECK_EQ(BaseName(names[119]), std::string{"slide-120.bmp"});
+}
+
+HTMLPPT_TEST_CASE(deck_thumbnail_file_names_are_empty_without_slides) {
+  const std::filesystem::path dir = std::filesystem::path{"thumbs"};
+  HTMLPPT_CHECK(htmlppt::ThumbnailFileNames(0, dir).empty());
+  HTMLPPT_CHECK(htmlppt::ThumbnailFileNames(-3, dir).empty());
+}
+
+HTMLPPT_TEST_CASE(deck_thumbnail_file_names_keep_a_non_ascii_directory) {
+  const std::filesystem::path dir =
+      htmlppt::PathFromUtf8("\xE6\xBC\x94\xE7\xA4\xBA");
+  const auto names = htmlppt::ThumbnailFileNames(1, dir);
+  HTMLPPT_CHECK_EQ(names.size(), std::size_t{1});
+  HTMLPPT_CHECK(htmlppt::PathFromUtf8(names[0]).parent_path() == dir);
+}
+
+HTMLPPT_TEST_CASE(deck_slide_thumbnails_pair_numbers_with_paths) {
+  const std::filesystem::path dir = std::filesystem::path{"thumbs"};
+  const auto thumbnails = htmlppt::SlideThumbnails(2, dir);
+  HTMLPPT_CHECK_EQ(thumbnails.size(), std::size_t{2});
+  HTMLPPT_CHECK_EQ(thumbnails[0].number, 1);
+  HTMLPPT_CHECK_EQ(thumbnails[1].number, 2);
+  const auto names = htmlppt::ThumbnailFileNames(2, dir);
+  HTMLPPT_CHECK_EQ(thumbnails[0].image_path, names[0]);
+  HTMLPPT_CHECK_EQ(thumbnails[1].image_path, names[1]);
+  HTMLPPT_CHECK(htmlppt::SlideThumbnails(0, dir).empty());
 }
 
 HTMLPPT_TEST_CASE(deck_fingerprint_is_stable_and_content_sensitive) {

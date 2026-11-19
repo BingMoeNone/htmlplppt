@@ -158,4 +158,57 @@ HTMLPPT_TEST_CASE(win32_named_pipe_accept_failure_does_not_wait) {
   server.Close();
 }
 
+HTMLPPT_TEST_CASE(win32_named_pipe_payload_frames_do_not_desync) {
+  // A read that completes just as its wait times out must count its bytes, not
+  // report a clean timeout: the payload byte of a heartbeat then stays in the
+  // stream and the next frame is parsed from the middle of the previous one.
+  // Polling with a short timeout while payload frames arrive quickly hits that
+  // window; a desync shows up as broken() or a lost/garbled frame.
+  NamedPipeServer server;
+  const std::wstring name = UniquePipeName();
+  HTMLPPT_CHECK(server.Create(name));
+  constexpr int kFrameCount = 200;
+  std::atomic<bool> client_ok{false};
+  std::thread client_thread([&] {
+    NamedPipeClient client;
+    client_ok = client.Connect(name, Duration{3000});
+    if (!client_ok.load()) return;
+    for (int i = 1; i <= kFrameCount; ++i) {
+      if (!client.Send(MakeFrame(static_cast<std::uint32_t>(i), "x"))) return;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    client.Close();
+  });
+
+  auto channel = server.Accept(Duration{3000});
+  if (channel == nullptr) {
+    // Join before failing: a joinable thread destroyed during unwinding would
+    // turn a failed Accept into std::terminate.
+    client_thread.join();
+    HTMLPPT_CHECK(channel != nullptr);
+    return;
+  }
+  std::vector<std::uint32_t> sequences;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (sequences.size() < static_cast<std::size_t>(kFrameCount) &&
+         std::chrono::steady_clock::now() < deadline) {
+    const auto frame = channel->Receive(Duration{1});
+    if (frame.has_value()) {
+      sequences.push_back(frame->header.sequence);
+      continue;
+    }
+    if (channel->broken()) break;
+  }
+  client_thread.join();
+  HTMLPPT_CHECK(client_ok.load());
+  HTMLPPT_CHECK(!channel->broken());
+  HTMLPPT_CHECK_EQ(sequences.size(), static_cast<std::size_t>(kFrameCount));
+  for (std::size_t i = 1; i < sequences.size(); ++i) {
+    HTMLPPT_CHECK_EQ(sequences[i], sequences[i - 1] + 1);
+  }
+  channel->Close();
+  server.Close();
+}
+
 #endif // _WIN32

@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S native -B native/build -A x64
+          -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+      - name: Build
+        run: cmake --build native/build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir native/build -C Release --output-on-failure
+      - name: Static CRT configure
+        # The release shape must also configure with the static runtime.
+        run: >
+          cmake -S native -B native/build-static -A x64
+          -DHTMLPPT_BUILD_TESTS=OFF -DHTMLPPT_STATIC_CRT=ON
+      - name: Static CRT build
+        run: cmake --build native/build-static --config Release --parallel
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S native -B native/build
+          -DHTMLPPT_BUILD_TESTS=ON -DHTMLPPT_WERROR=ON
+      - name: Build
+        run: cmake --build native/build --parallel
+      - name: Test
+        run: ctest --test-dir native/build --output-on-failure
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The node tests import the vendored python-pptx, whose runtime
+      # dependencies are not vendored (python-pptx was installed with
+      # --no-deps). A clean runner has none of lxml/Pillow/typing_extensions, so
+      # install requirements.txt before the tests that import it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Test
+        run: npm test
+      # The report generator and the pptx checks were executed by no job, so a
+      # regression in the 1197-line deck script could only be found locally.
+      - name: Generate the report deck
+        run: |
+          mkdir -p out
+          python scripts/make_report_deck.py out/report-deck.pptx
+          python -c "from pptx import Presentation; deck = Presentation('out/report-deck.pptx'); assert len(deck.slides) == 15, len(deck.slides)"

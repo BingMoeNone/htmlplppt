@@ -27,6 +27,12 @@ struct Win32CoverOverlay::State {
   std::atomic<HWND> hwnd{nullptr};
   std::atomic<DWORD> thread_id{0};
   std::atomic<bool> stop{false};
+  // OS signals for the runtime: a resume and a display-topology change. The
+  // window thread sets them; the worker thread consumes them once.
+  std::atomic<bool> resume_pending{false};
+  std::atomic<bool> display_pending{false};
+  std::atomic<int> display_width{0};
+  std::atomic<int> display_height{0};
   bool visible = false;
   HANDLE ready_event = nullptr;
   HANDLE exit_event = nullptr;
@@ -248,7 +254,35 @@ LRESULT Win32CoverOverlay::HandleMessage(State& state, HWND hwnd, UINT message,
     case WM_DISPLAYCHANGE:
       ResizeToVirtualScreen(hwnd);
       if (state.visible) ApplyTopMost(hwnd);
+      state.display_width.store(GetSystemMetrics(SM_CXSCREEN),
+                                std::memory_order_relaxed);
+      state.display_height.store(GetSystemMetrics(SM_CYSCREEN),
+                                 std::memory_order_relaxed);
+      state.display_pending.store(true, std::memory_order_relaxed);
       return 0;
+    case WM_DPICHANGED:
+      // A DPI change is a display-topology change for the cover: re-cover the
+      // new virtual screen instead of leaving a black band or a stale size.
+      ResizeToVirtualScreen(hwnd);
+      if (state.visible) ApplyTopMost(hwnd);
+      state.display_width.store(GetSystemMetrics(SM_CXSCREEN),
+                                std::memory_order_relaxed);
+      state.display_height.store(GetSystemMetrics(SM_CYSCREEN),
+                                 std::memory_order_relaxed);
+      state.display_pending.store(true, std::memory_order_relaxed);
+      return 0;
+    case WM_POWERBROADCAST:
+      if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+        state.resume_pending.store(true, std::memory_order_relaxed);
+      }
+      // The loop's wait now pumps messages, so a resume reaches the overlay
+      // directly. QPC jumps across sleep, so re-assert the cover geometry and
+      // topmost instead of trusting the pre-sleep placement.
+      if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+        ResizeToVirtualScreen(hwnd);
+        if (state.visible) ApplyTopMost(hwnd);
+      }
+      return TRUE;
     case WM_CLOSE:
       return 0;
     default:
@@ -262,6 +296,21 @@ void CALLBACK Win32CoverOverlay::ForegroundEvent(HWINEVENTHOOK, DWORD, HWND,
   if (hwnd == nullptr || IsWindowVisible(hwnd) == 0) return;
   SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+bool Win32CoverOverlay::ConsumeResumeEvent() {
+  return state_->resume_pending.exchange(false, std::memory_order_relaxed);
+}
+
+bool Win32CoverOverlay::ConsumeDisplayChange(ScreenMetrics* metrics) {
+  if (!state_->display_pending.exchange(false, std::memory_order_relaxed)) {
+    return false;
+  }
+  if (metrics != nullptr) {
+    metrics->width = state_->display_width.load(std::memory_order_relaxed);
+    metrics->height = state_->display_height.load(std::memory_order_relaxed);
+  }
+  return true;
 }
 
 } // namespace htmlppt

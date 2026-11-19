@@ -11,16 +11,17 @@
 #include <utility>
 #include <vector>
 
+#include "app/config_ui.h"
+#include "app/deck_info_loader.h"
 #include "app/supervisor.h"
 #include "core/config.h"
 #include "core/config_issue.h"
 #include "core/config_schema.h"
 #include "core/deck_info.h"
 #include "core/resolve.h"
+#include "core/run_id.h"
+#include "core/utf8_path.h"
 #include "core/version.h"
-#ifdef _WIN32
-#include "platform/win32/wps_host.h"
-#endif
 
 namespace htmlppt {
 namespace {
@@ -35,7 +36,10 @@ enum class Command {
   Supervisor,
   Worker,
   Stop,
+  Reload,
   Status,
+  Diagnostics,
+  ConfigUi,
   DumpHelper,
 };
 
@@ -47,6 +51,7 @@ struct CliOptions {
   std::string run_id;
   std::uint32_t dump_pid = 0;
   std::string dump_path;
+  std::string diagnostics_out;
   CliConfigOverrides overrides;
 };
 
@@ -69,7 +74,11 @@ void PrintUsage(std::ostream& out) {
       << "  --supervisor           run the supervisor host (Windows only)\n"
       << "  --worker               run the worker host (Windows only)\n"
       << "  --stop                 stop a running supervisor (Windows only)\n"
+      << "  --reload               ask a running supervisor to reload the "
+         "config (needs --state-dir)\n"
       << "  --status               print the run black box (Windows only)\n"
+      << "  --diagnostics          write a diagnostics package (needs --out PATH)\n"
+      << "  --config-ui            open the native config editor (Windows only)\n"
       << "  --dump-helper PID PATH write a MiniDump for a process (Windows "
          "only)\n"
       << "\n"
@@ -197,8 +206,23 @@ ParseResult ParseCli(int argc, char** argv) {
         result.ok = false;
         return result;
       }
+    } else if (argument == "--reload") {
+      if (!SetCommand(&result.options, Command::Reload, &result.error)) {
+        result.ok = false;
+        return result;
+      }
     } else if (argument == "--status") {
       if (!SetCommand(&result.options, Command::Status, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--diagnostics") {
+      if (!SetCommand(&result.options, Command::Diagnostics, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+    } else if (argument == "--config-ui") {
+      if (!SetCommand(&result.options, Command::ConfigUi, &result.error)) {
         result.ok = false;
         return result;
       }
@@ -270,6 +294,12 @@ ParseResult ParseCli(int argc, char** argv) {
         return result;
       }
       result.options.overrides.state_dir = value;
+    } else if (argument == "--out") {
+      if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
+        result.ok = false;
+        return result;
+      }
+      result.options.diagnostics_out = value;
     } else if (argument == "--scheduling") {
       if (!TakeValue(argc, argv, &i, argument, &value, &result.error)) {
         result.ok = false;
@@ -314,32 +344,66 @@ ParseResult ParseCli(int argc, char** argv) {
   const Command command = result.options.command;
   const bool needs_config = command == Command::Validate ||
                             command == Command::Resolve ||
-                            command == Command::PrintConfig;
+                            command == Command::PrintConfig ||
+                            command == Command::Supervisor;
   if (needs_config && result.options.config_path.empty()) {
     result.ok = false;
-    result.error = "--config is required for this command";
+    result.error = command == Command::Supervisor
+                       ? "--config is required for --supervisor"
+                       : "--config is required for this command";
     return result;
   }
   if (!result.options.deck_info_path.empty() && command != Command::Validate &&
-      command != Command::Resolve) {
+      command != Command::Resolve && command != Command::Supervisor &&
+      command != Command::ConfigUi) {
     result.ok = false;
-    result.error = "--deck-info is only valid with --validate or --resolve";
+    result.error =
+        "--deck-info is only valid with --validate, --resolve, --supervisor, or "
+        "--config-ui";
     return result;
   }
   const bool host_command =
       command == Command::Supervisor || command == Command::Worker ||
-      command == Command::Stop || command == Command::Status;
+      command == Command::Stop || command == Command::Reload ||
+      command == Command::Status || command == Command::Diagnostics;
   if (!result.options.run_id.empty() && !host_command) {
     result.ok = false;
     result.error =
-        "--run-id is only valid with --supervisor, --worker, --stop, or "
-        "--status";
+        "--run-id is only valid with --supervisor, --worker, --stop, --reload, "
+        "--status, or --diagnostics";
     return result;
   }
-  if ((command == Command::Stop || command == Command::Status) &&
+  if ((command == Command::Stop || command == Command::Reload ||
+       command == Command::Status || command == Command::Diagnostics) &&
       result.options.run_id.empty()) {
     result.ok = false;
-    result.error = "--run-id is required for --stop or --status";
+    result.error =
+        "--run-id is required for --stop, --reload, --status, or --diagnostics";
+    return result;
+  }
+  // The id is a %TEMP% directory component and a Win32 object name, so reject
+  // separators and traversal here rather than letting the supervisor build a
+  // path it later remove_all()s.
+  if (!result.options.run_id.empty() && !IsValidRunId(result.options.run_id)) {
+    result.ok = false;
+    result.error =
+        "--run-id may contain only letters, digits, '.', '_' and '-', and must "
+        "not be '.' or '..'";
+    return result;
+  }
+  // --reload writes the request file into the run's state directory, so unlike
+  // --stop it has no event name to fall back on: guessing a directory would
+  // silently request a reload the supervisor never sees.
+  if (command == Command::Reload &&
+      (!result.options.overrides.state_dir.has_value() ||
+       result.options.overrides.state_dir->empty())) {
+    result.ok = false;
+    result.error = "--state-dir is required for --reload";
+    return result;
+  }
+  if (command == Command::ConfigUi && result.options.config_path.empty()) {
+    result.ok = false;
+    result.error = "--config-ui requires --config PATH";
     return result;
   }
   if (command == Command::DumpHelper &&
@@ -372,38 +436,11 @@ struct LoadedConfig {
 };
 
 LoadedConfig LoadConfigForCommand(const CliOptions& options) {
-  auto loaded = LoadConfigFile(options.config_path, options.overrides);
+  auto loaded =
+      LoadConfigFile(PathFromUtf8(options.config_path), options.overrides);
   LoadedConfig result;
   result.config = std::move(loaded.config);
   result.issues = std::move(loaded.issues);
-  return result;
-}
-
-struct DeckInfoLoad {
-  std::vector<ConfigIssue> issues;
-  std::optional<DeckInfo> info;
-};
-
-DeckInfoLoad LoadDeckInfoForCommand(const CliOptions& options,
-                                    const Config& config) {
-  DeckInfoLoad result;
-  if (!options.deck_info_path.empty()) {
-    JsonDeckInfoProvider provider(options.deck_info_path);
-    auto loaded = provider.Load(ResolveDeckPath(config));
-    result.issues = std::move(loaded.issues);
-    result.info = std::move(loaded.info);
-    return result;
-  }
-#ifdef _WIN32
-  SteadyClock clock;
-  WpsHostConfig host_config;
-  host_config.launch_attempts = 1;
-  WpsHost host(clock, host_config);
-  auto loaded = host.Load(ResolveDeckPath(config));
-  host.Release();
-  result.issues = std::move(loaded.issues);
-  result.info = std::move(loaded.info);
-#endif
   return result;
 }
 
@@ -416,7 +453,7 @@ int RunValidate(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfoForCommand(options, config);
+  auto deck_info = LoadDeckInfo(PathFromUtf8(options.deck_info_path), config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -445,7 +482,7 @@ int RunResolve(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfoForCommand(options, config);
+  auto deck_info = LoadDeckInfo(PathFromUtf8(options.deck_info_path), config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -481,6 +518,12 @@ int RunCli(int argc, char** argv) {
   }
   const std::string state_dir =
       parsed.options.overrides.state_dir.value_or("");
+  SupervisorRunOptions run_options;
+  run_options.state_dir = PathFromUtf8(state_dir);
+  run_options.run_id = parsed.options.run_id;
+  run_options.config_path = PathFromUtf8(parsed.options.config_path);
+  run_options.deck_info_path = PathFromUtf8(parsed.options.deck_info_path);
+  run_options.overrides = parsed.options.overrides;
   switch (parsed.options.command) {
     case Command::Version:
       std::cout << "htmlppt-watchdog " << version() << "\n";
@@ -498,15 +541,40 @@ int RunCli(int argc, char** argv) {
       std::cout << ConfigSchema() << "\n";
       return 0;
     case Command::Supervisor:
-      return RunSupervisor({state_dir, parsed.options.run_id});
+      return RunSupervisor(run_options);
     case Command::Worker:
-      return RunWorker({state_dir, parsed.options.run_id});
+      return RunWorker(run_options);
     case Command::Stop:
       return RunStop(parsed.options.run_id);
+    case Command::Reload:
+      return RunReload(parsed.options.run_id, PathFromUtf8(state_dir));
     case Command::Status:
-      return RunStatus(parsed.options.run_id, state_dir);
+      return RunStatus(parsed.options.run_id, PathFromUtf8(state_dir));
+    case Command::Diagnostics: {
+      if (parsed.options.diagnostics_out.empty()) {
+        std::cerr << "error: --diagnostics requires --out PATH\n";
+        return 2;
+      }
+      const auto dir =
+          state_dir.empty() ? std::filesystem::path{}
+                            : PathFromUtf8(state_dir);
+      return RunDiagnostics(
+          parsed.options.run_id, dir,
+          PathFromUtf8(parsed.options.config_path),
+          PathFromUtf8(parsed.options.diagnostics_out));
+    }
+    case Command::ConfigUi: {
+      ConfigUiOptions config_ui_options;
+      config_ui_options.config_path =
+          PathFromUtf8(parsed.options.config_path);
+      config_ui_options.deck_info_path =
+          PathFromUtf8(parsed.options.deck_info_path);
+      config_ui_options.allow_outside_folder =
+          parsed.options.overrides.allow_outside_folder;
+      return RunConfigUi(config_ui_options);
+    }
     case Command::DumpHelper:
-      return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
+      return RunDumpHelper(parsed.options.dump_pid, PathFromUtf8(parsed.options.dump_path));
   }
   return 2;
 }

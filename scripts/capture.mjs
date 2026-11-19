@@ -7,6 +7,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { launchChrome, openPage } from './lib/cdp.mjs';
+import { matchWindowsFont } from './lib/fonts.mjs';
 import { frameTimes } from './lib/schedule.mjs';
 
 // Runtime.evaluate reports page-side throws in `exceptionDetails` instead of
@@ -27,19 +28,25 @@ const REQUIRED_FONT = process.env.REQUIRED_FONT || 'Microsoft YaHei';
 // The rendered video bakes the font into pixels. Capturing before the intended
 // font is installed silently produces a deck with the wrong typeface, so fail
 // before launching Chrome instead of after rendering hundreds of frames.
+// Windows has no fontconfig; the family-to-file table lives in lib/fonts.mjs so
+// its fail-closed behavior is unit-tested without a Windows install.
 function assertFontAvailable() {
   let match;
-  try {
-    match = execFileSync('fc-match', [REQUIRED_FONT], { encoding: 'utf8' }).trim();
-  } catch (error) {
-    throw new Error(`font preflight failed: fc-match unavailable (${error.message})`);
-  }
-  const normalized = match.toLowerCase();
-  if (!normalized.includes(REQUIRED_FONT.toLowerCase()) && !/msyh|deng|noto sans cjk|source han/.test(normalized)) {
-    throw new Error(
-      `font preflight failed: "${REQUIRED_FONT}" resolved to "${match}". ` +
-        'Install the font under ~/.local/share/fonts and run fc-cache -f, or set REQUIRED_FONT.'
-    );
+  if (process.platform === 'win32') {
+    match = `${REQUIRED_FONT}: ${matchWindowsFont(REQUIRED_FONT)}`;
+  } else {
+    try {
+      match = execFileSync('fc-match', [REQUIRED_FONT], { encoding: 'utf8' }).trim();
+    } catch (error) {
+      throw new Error(`font preflight failed: fc-match unavailable (${error.message})`);
+    }
+    const normalized = match.toLowerCase();
+    if (!normalized.includes(REQUIRED_FONT.toLowerCase()) && !/msyh|deng|noto sans cjk|source han/.test(normalized)) {
+      throw new Error(
+        `font preflight failed: "${REQUIRED_FONT}" resolved to "${match}". ` +
+          'Install the font under ~/.local/share/fonts and run fc-cache -f, or set REQUIRED_FONT.'
+      );
+    }
   }
   console.log(`font: ${match}`);
 }

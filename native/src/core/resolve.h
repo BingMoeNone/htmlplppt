@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,26 @@ struct ResolvedTarget {
   std::string fragment;   // merged fragment without the leading '#'
   std::string stage_name;
   std::string edge_profile;
+  // Per-target Edge overrides from the target's own edge block. An empty args
+  // list means "inherit the global args/default flags"; an unset prewarm means
+  // "inherit the global prewarmProfile".
+  std::vector<std::string> edge_args;
+  // True when the target's own edge block supplied the args (including an
+  // explicit empty list, which means "use Edge's default flags", not "inherit
+  // the global args").
+  bool edge_args_set = false;
+  std::optional<bool> edge_prewarm;
+  // Asset staging mode from the config: "direct" opens the source HTML in
+  // place, "file" copies just the HTML, and "tree" copies the HTML plus its
+  // asset root. assets_root is an absolute UTF-8 path, tree mode only.
+  std::string assets_mode = "direct";
+  std::string assets_root;
+  // 0 means no cap. From assets.maxBytes.
+  std::int64_t assets_max_bytes = 0;
+  // tree-mode filters from assets.include / assets.exclude. A non-empty include
+  // whitelists; exclude always wins.
+  std::vector<std::string> assets_include;
+  std::vector<std::string> assets_exclude;
 };
 
 struct ResolveResult {

@@ -28,6 +28,12 @@ struct EdgeLaunchSpec {
 
 std::string BuildEdgeUrl(const ResolvedTarget& target);
 std::vector<std::string> DefaultEdgeFlags();
+// Prewarm spec: launches Edge once with the run's profile and an empty page so
+// the browser initializes its user-data-dir before the demo needs it. The app
+// kills it after a short bound; it never shows a window.
+EdgeLaunchSpec MakeEdgePrewarmSpec(const std::filesystem::path& edge_exe,
+                                   const std::filesystem::path& profile_dir,
+                                   const EdgeConfig& config);
 // target.edge_profile is a UTF-8 config string and is converted with
 // PathFromUtf8. edge_exe and temp_dir are native paths.
 EdgeLaunchSpec MakeEdgeLaunchSpec(const std::filesystem::path& edge_exe,

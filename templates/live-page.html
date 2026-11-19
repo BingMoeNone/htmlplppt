@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>htmlppt live page</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #06110d; color: #eaf3ee;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    display: grid; place-items: center; overflow: hidden; }
+  .card { text-align: center; padding: 4vh 6vw; }
+  .step { font-size: 6vh; letter-spacing: .06em; }
+  .hint { font-size: 2vh; color: #8fb3a4; margin-top: 3vh; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="step" id="step">step 1</div>
+  <div class="hint">Space: next step &middot; Esc: return to PowerPoint</div>
+</div>
+<script>
+// Mode-B2 live page contract:
+//   1. Space advances one deterministic step (no free-running animation), so the
+//      presenter's rhythm matches the deck.
+//   2. The return signal is the window title. On Esc (or after the last step)
+//      set document.title to TEF-LIVE-RETURN: the watchdog fades the cover in,
+//      closes Edge under it and resumes the WPS show.
+//   3. Calling window.close() after a short delay is still recommended. The
+//      watchdog now closes Edge itself, so a browser that refuses window.close
+//      on a non-script-opened window cannot strand the page on screen.
+// See references/live-content-trigger.md for the full protocol.
+(function () {
+  var steps = ['step 1', 'step 2', 'step 3'];
+  var current = 0;
+  var stepEl = document.getElementById('step');
+  var returning = false;
+
+  function render() {
+    stepEl.textContent = steps[current];
+  }
+
+  function requestReturn() {
+    if (returning) return;
+    returning = true;
+    document.title = 'TEF-LIVE-RETURN';
+    setTimeout(function () { window.close(); }, 600);
+  }
+
+  document.addEventListener('keydown', function (event) {
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      requestReturn();
+      return;
+    }
+    if (event.code !== 'Space') return;
+    event.preventDefault();
+    if (current + 1 < steps.length) {
+      current += 1;
+      render();
+    } else {
+      requestReturn();
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
