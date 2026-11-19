@@ -260,6 +260,46 @@ HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
   std::filesystem::remove_all(state_dir, error);
 }
 
+// Item 5: a startup failure returns from RunWorker before the runtime (and its
+// journal guard) exists. The compat guard must still run: remove this run's
+// watcher.lock and write the watch-log stop line, or the next legacy tool sees a
+// stale lock and a log that never ended.
+HTMLPPT_TEST_CASE(win32_worker_startup_failure_cleans_compat_state) {
+  ScopedEnvVar faults(L"HTMLPPT_FAULTS", L"start-fail");
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  const std::string run_id = RunId();
+  JobHandle job;
+  ProcessHandle supervisor;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(supervisor.LaunchSuspended(
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
+  HTMLPPT_CHECK(supervisor.Resume());
+  HANDLE stop = WaitForStopEvent(
+      htmlppt::SupervisorStopEventName(run_id), 10000);
+  HTMLPPT_CHECK(stop != nullptr);
+
+  // The worker writes the start line before startup; only the compat guard can
+  // write the matching stop line when launch fails.
+  bool saw_stop = false;
+  for (int i = 0; i < 200; ++i) {
+    if (ReadTextFile(state_dir / L"watch-log.txt")
+            .find("native watchdog stop") != std::string::npos) {
+      saw_stop = true;
+      break;
+    }
+    Sleep(50);
+  }
+  HTMLPPT_CHECK(saw_stop);
+
+  SetEvent(stop);
+  CloseHandle(stop);
+  HTMLPPT_CHECK(supervisor.WaitForExit(20000));
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"watcher.lock"));
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 // A1: the supervisor reconciles the journal a previous run left behind before
 // it resolves the config or writes a plan. The deliberately missing config still
 // fails the run with exit 1, but only after the reconcile record is journaled:

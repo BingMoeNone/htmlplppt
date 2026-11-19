@@ -135,29 +135,57 @@ StageOutcome StageTargetHtml(const ResolvedTarget& target,
                       code.message();
       return outcome;
     }
-    for (const auto& entry : it) {
-      if (!entry.is_regular_file(code)) continue;
-      if (entry.path() == source) continue;  // already staged as stage_name
-      const auto relative = std::filesystem::relative(entry.path(), root, code);
-      if (code) continue;
-      const std::string relative_text = relative.generic_string();
-      if (!PassesFilters(relative_text, target.assets_include,
-                         target.assets_exclude)) {
-        continue;
+    const std::filesystem::recursive_directory_iterator end;
+    while (it != end) {
+      const auto& entry = *it;
+      if (entry.path() != source) {
+        const bool regular = entry.is_regular_file(code);
+        if (code) {
+          outcome.error = "cannot stat asset " + Utf8Path(entry.path()) + ": " +
+                          code.message();
+          return outcome;
+        }
+        if (regular) {
+          const auto relative =
+              std::filesystem::relative(entry.path(), root, code);
+          if (code) {
+            outcome.error = "cannot resolve asset " +
+                            Utf8Path(entry.path()) + ": " + code.message();
+            return outcome;
+          }
+          const std::string relative_text = relative.generic_string();
+          if (PassesFilters(relative_text, target.assets_include,
+                            target.assets_exclude)) {
+            // The target itself is already at staged_html; a tree resource
+            // whose relative path names the same file must not replace it.
+            const auto destination = stage_dir / relative;
+            if (destination != staged_html) {
+              const auto bytes = FileSize(entry.path());
+              if (max_bytes > 0 &&
+                  copied + bytes > static_cast<std::uint64_t>(max_bytes)) {
+                outcome.error = "staged assets exceed assets.maxBytes at " +
+                                Utf8Path(relative);
+                return outcome;
+              }
+              std::string copy_error;
+              if (!CopyFile(entry.path(), destination, &copy_error)) {
+                outcome.error = std::move(copy_error);
+                return outcome;
+              }
+              copied += bytes;
+            }
+          }
+        }
       }
-      const auto bytes = FileSize(entry.path());
-      if (max_bytes > 0 &&
-          copied + bytes > static_cast<std::uint64_t>(max_bytes)) {
-        outcome.error = "staged assets exceed assets.maxBytes at " +
-                        Utf8Path(relative);
+      it.increment(code);
+      if (code) {
+        // The error_code overload is the point: the throwing range-for used to
+        // escape StageTargetHtml (and terminate the worker) on an unreadable
+        // subdirectory. Fail the target with a message instead.
+        outcome.error = "cannot read asset tree " + target.assets_root + ": " +
+                        code.message();
         return outcome;
       }
-      std::string copy_error;
-      if (!CopyFile(entry.path(), stage_dir / relative, &copy_error)) {
-        outcome.error = std::move(copy_error);
-        return outcome;
-      }
-      copied += bytes;
     }
   }
 

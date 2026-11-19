@@ -44,6 +44,8 @@ Faults ParseFaults(std::string_view text) {
       faults.multi_monitor = true;
     } else if (token == "cleanup-slow") {
       faults.cleanup_slow = true;
+    } else if (token == "start-fail") {
+      faults.start_fail = true;
     }
   }
   return faults;
@@ -52,7 +54,7 @@ Faults ParseFaults(std::string_view text) {
 bool HasAnyFault(const Faults& faults) {
   return faults.com_hang || faults.com_462 || faults.edge_slow || faults.supervisor_loss ||
          faults.cover_hang || faults.focus_deny || faults.sleep_resume ||
-         faults.multi_monitor || faults.cleanup_slow;
+         faults.multi_monitor || faults.cleanup_slow || faults.start_fail;
 }
 
 std::string FaultsToString(const Faults& faults) {
@@ -70,6 +72,7 @@ std::string FaultsToString(const Faults& faults) {
   if (faults.sleep_resume) add("sleep-resume");
   if (faults.multi_monitor) add("multi-monitor");
   if (faults.cleanup_slow) add("cleanup-slow");
+  if (faults.start_fail) add("start-fail");
   return text;
 }
 

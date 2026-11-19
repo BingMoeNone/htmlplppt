@@ -67,4 +67,10 @@ class LegacyLog {
 
 std::string UtcTimestamp();
 
+// Spec 11.3: stop-live.vbs asks for a stop by deleting watcher.lock. A missing
+// lock is only that signal when this run actually created it, and a failed
+// existence check is not a deletion.
+bool LegacyLockWasRemoved(bool lock_written, bool lock_exists,
+                          bool stat_failed);
+
 } // namespace htmlppt

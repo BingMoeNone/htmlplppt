@@ -71,8 +71,8 @@ native\build\htmlppt-watchdog.exe --validate --config demo\watcher.json
 这些条目在规格里存在但代码尚未接线，验收时**不应勾选**：
 
 - 睡眠/唤醒、显示器热插拔、DPI 变化：覆盖窗口会重新铺满并置顶，唤醒后截止时间按休眠间隔平移（`power resume` 日志）；跨屏 DPI 的逐屏重算仍未做。
-- 旧 `stop-live.vbs` 与 `--stop` 互操作（新实现只写 `watcher.lock`，不监听其删除）。
+- 旧 `stop-live.vbs` 的删除 `watcher.lock` 停止协议已实现；只有本运行成功写入的锁被删除才算停止，锁写失败或 stat 失败不会被误判。
 - CPU 占用的自动化测量（`benchmark.txt` 已给出 step/com 的 p50/p99，CPU 仍需人工观察）。
-- 故障开关已全部可用（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny`、`supervisor-loss`、`sleep-resume`、`multi-monitor`、`cleanup-slow`），见 `native/README.md` 的 Fault injection。
+- 故障开关已全部可用（`com-hang`、`com-462`、`edge-slow`、`cover-hang`、`focus-deny`、`supervisor-loss`、`sleep-resume`、`multi-monitor`、`cleanup-slow`、`start-fail`），见 `native/README.md` 的 Fault injection。
 - `display.monitor`、`focus.strategy`、`edge.prewarmProfile` 已接线（选屏、激活链选择、Edge 预热）；`tree` 的 `include`/`exclude` glob 已实现。
 - 配置 UI（§9）：`--config-ui` 编辑器（列表、详情、工具栏、Save 门禁、原子保存 + `.bak`、关闭提示、DPI 重排）与自动映射向导均已实现。

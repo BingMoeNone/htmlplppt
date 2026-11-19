@@ -293,6 +293,7 @@ so the resilience paths can be exercised on a real machine without wedging WPS:
 | `sleep-resume` | injects a 60 s suspend gap and a resume, exercising the deadline shift |
 | `multi-monitor` | injects a display-topology change (half-size reference metrics) |
 | `cleanup-slow` | delays the cleanup batch by 3 s, so `--stop` must outwait it instead of force-killing the worker |
+| `start-fail` | fails WPS launch before the show starts, exercising the worker's startup-failure cleanup |
 
 The worker journals `faults: <list>` into the black box and prints a warning, so
 an injected run is never silent:
@@ -457,12 +458,12 @@ state directory holds only `worker-plan.json`, `worker-config.json`, and
 
 While a run owns the config directory, the worker keeps the VBS-era contract
 alive: it writes `watcher.lock` next to the config file and refreshes it every
-5 s (the legacy watcher treats a lock older than 15 s as stale), appends the
-runtime journal to `watch-log.txt` when it exits, and removes the flag files it
-owns. `stop-live.vbs`-style tooling and the troubleshooting steps in
-`docs/04-reproduce.md` therefore keep working against a native run. A worker
-that is killed leaves the lock behind, which is exactly the stale-lock case the
-legacy watcher already handles.
+5 s on its own timer (never on the heartbeat thread; the legacy watcher treats a
+lock older than 15 s as stale), appends the runtime journal to `watch-log.txt`
+when it exits, and removes the flag files it owns. `stop-live.vbs`-style tooling
+and the troubleshooting steps in `docs/04-reproduce.md` therefore keep working
+against a native run. A worker that is killed leaves the lock behind, which is
+exactly the stale-lock case the legacy watcher already handles.
 
 ### Asset staging
 

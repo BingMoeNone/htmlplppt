@@ -32,6 +32,7 @@
 #include "core/faults.h"
 #include "core/journal.h"
 #include "core/journal_reconcile.h"
+#include "core/lock_refresher.h"
 #include "core/reload_policy.h"
 #include "core/resolve.h"
 #include "core/single_instance.h"
@@ -317,6 +318,10 @@ class CompatRunGuard {
                  const std::vector<std::string>* journal)
       : flags_(flags), log_(log), journal_(journal) {}
   ~CompatRunGuard() {
+    // Stop the timer before touching the files it refreshes. On the normal path
+    // this guard is declared after the runtime, so the journal is still alive.
+    refresher_.reset();
+    if (!armed_) return;
     if (log_ != nullptr) {
       if (journal_ != nullptr) {
         for (const auto& line : *journal_) log_->Append(kWatchLog, line);
@@ -328,10 +333,25 @@ class CompatRunGuard {
   CompatRunGuard(const CompatRunGuard&) = delete;
   CompatRunGuard& operator=(const CompatRunGuard&) = delete;
 
+  // The early guard only covers returns between writing the lock and building
+  // the runtime; once the real guard is in place this one must stay silent.
+  void Disarm() { armed_ = false; }
+
+  // The lock refresh runs on its own thread so the heartbeat callback never
+  // blocks on the config directory (which may be a slow network share).
+  void StartLockRefresh(CompatFlags& flags) {
+    refresher_.emplace(
+        [&flags] { return flags.WriteLock(UtcTimestamp()); }, Duration{5000});
+  }
+
+  void StopLockRefresh() { refresher_.reset(); }
+
  private:
   CompatFlags* flags_;
   LegacyLog* log_;
   const std::vector<std::string>* journal_;
+  bool armed_ = true;
+  std::optional<LockRefresher> refresher_;
 };
 
 DeckInfoResult LoadSupervisorDeckInfo(const SupervisorRunOptions& options,
@@ -1240,6 +1260,15 @@ int RunWorker(const SupervisorRunOptions& options) {
     std::size_t wps_pid_count = 0;
   } started;
   const auto startup = [&] {
+    // Spec 6.6: exercise the startup-failure exit path without needing WPS to
+    // reject a real deck. The compat guard must still remove the lock and close
+    // the watch log before this worker returns 1.
+    if (facts.faults.start_fail) {
+      started.launch_failed = true;
+      started.launch_error = 0;
+      started.launch_detail = "start-fail (injected)";
+      return;
+    }
     // Spec 8.5 prewarmProfile: initialize every target's Edge profile before
     // the show needs it. Runs inside the startup heartbeats, so the supervisor
     // keeps seeing liveness while the browser builds its profile.
@@ -1284,49 +1313,51 @@ int RunWorker(const SupervisorRunOptions& options) {
   const auto compat_dir = CompatBaseDir(options);
   std::optional<CompatFlags> compat;
   std::optional<LegacyLog> legacy;
-  std::atomic<std::int64_t> last_lock_ms{0};
+  bool lock_written = false;
   if (!compat_dir.empty()) {
     std::error_code compat_error;
     std::filesystem::create_directories(compat_dir, compat_error);
     compat.emplace(compat_dir,
                    CompatIdentity{run_id, GetCurrentProcessId(), ""});
     legacy.emplace(compat_dir);
-    if (!compat->WriteLock(UtcTimestamp())) {
+    lock_written = compat->WriteLock(UtcTimestamp());
+    if (!lock_written) {
       std::cerr << "warning: cannot write " << kLockFile << " in "
                 << Utf8Path(compat_dir) << "\n";
     }
     legacy->Append(kWatchLog, "native watchdog start run=" + run_id);
   }
+  // Every early return after the start line above must remove the lock and
+  // close the watch log. The real guard (with the runtime journal) is built
+  // after startup; this one covers the startup failures in between.
+  CompatRunGuard startup_guard(compat ? &*compat : nullptr,
+                               legacy ? &*legacy : nullptr, nullptr);
+  // Startup can block for seconds inside WPS; keep the lock fresh there too so
+  // the legacy watcher's 15 s staleness rule does not fire during it.
+  if (lock_written && compat.has_value()) {
+    startup_guard.StartLockRefresh(*compat);
+  }
 
   WorkerSessionConfig session_config;
-  // Refresh the lock from the heartbeat thread: the legacy watcher treats a
-  // lock older than 15 s as stale and may delete it.
-  session_config.on_heartbeat = [&compat, &last_lock_ms] {
-    if (!compat.has_value()) return;
-    const auto now_ms =
-        std::chrono::duration_cast<Duration>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count();
-    if (now_ms - last_lock_ms.load() < 5000) return;
-    last_lock_ms.store(now_ms);
-    compat->WriteLock(UtcTimestamp());
-  };
   session_config.inject_supervisor_loss = facts.faults.supervisor_loss;
   bool pipe_alive = true;
   // Spec 11.3: stop-live.vbs deletes watcher.lock instead of sending a frame.
   // The session polls this at the loop cadence; the check itself is throttled so
   // a tight loop does not stat the file 50 times a second.
   std::atomic<std::int64_t> last_lock_check_ms{0};
-  if (!compat_dir.empty()) {
+  if (!compat_dir.empty() && lock_written) {
     const auto lock_path = compat_dir / std::string(kLockFile);
-    session_config.external_stop = [lock_path, &last_lock_check_ms] {
+    session_config.external_stop = [lock_path, lock_written,
+                                    &last_lock_check_ms] {
       const auto now_ms = NowMs();
       if (now_ms - last_lock_check_ms.load(std::memory_order_relaxed) < 500) {
         return false;
       }
       last_lock_check_ms.store(now_ms, std::memory_order_relaxed);
       std::error_code error;
-      return !std::filesystem::exists(lock_path, error);
+      const bool exists = std::filesystem::exists(lock_path, error);
+      return LegacyLockWasRemoved(lock_written, exists,
+                                  static_cast<bool>(error));
     };
   }
   session_config.initial_sequence = RunWithStartupHeartbeats(
@@ -1371,10 +1402,16 @@ int RunWorker(const SupervisorRunOptions& options) {
       *plan, machine_config, WorkerPorts{wps, overlay, launcher, windows, clock},
       BuildWorkerHostConfig(config, facts));
   // Declared after the runtime so the journal is still alive when the guard
-  // flushes it to watch-log.txt.
+  // flushes it to watch-log.txt, and so the refresh thread is stopped before the
+  // flags are deleted. The startup guard is silent from here on.
   CompatRunGuard compat_guard(compat ? &*compat : nullptr,
                               legacy ? &*legacy : nullptr,
                               &runtime.journal());
+  startup_guard.StopLockRefresh();
+  startup_guard.Disarm();
+  if (lock_written && compat.has_value()) {
+    compat_guard.StartLockRefresh(*compat);
+  }
 
   // Legacy flag protocol (spec 11.3): mirror every loop state transition onto the
   // VBS-era flag files. RunWorker is the only writer; the session just hands each

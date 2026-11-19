@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(htmlppt_watchdog VERSION 0.1.0 LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -54,6 +56,9 @@ target_include_directories(htmlppt_core PUBLIC
   "${CMAKE_CURRENT_BINARY_DIR}/generated"
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_compile_features(htmlppt_core PUBLIC cxx_std_20)
+# LockRefresher and other core helpers own std::thread instances; the Linux
+# build needs the thread library explicitly.
+target_link_libraries(htmlppt_core PUBLIC Threads::Threads)
 htmlppt_enable_warnings(htmlppt_core)
 
 if (WIN32)

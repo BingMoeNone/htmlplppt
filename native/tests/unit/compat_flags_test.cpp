@@ -12,6 +12,7 @@
 
 using htmlppt::CompatFlags;
 using htmlppt::CompatIdentity;
+using htmlppt::LegacyLockWasRemoved;
 using htmlppt::LegacyLog;
 using htmlppt::test::TempDir;
 
@@ -49,6 +50,17 @@ bool IsIsoUtcTimestamp(const std::string& value) {
 }
 
 } // namespace
+
+HTMLPPT_TEST_CASE(compat_legacy_stop_requires_a_lock_this_run_wrote) {
+  // A failed lock write must not be read back as "the operator deleted it".
+  HTMLPPT_CHECK(!LegacyLockWasRemoved(false, false, false));
+  // A stat error is not a deletion.
+  HTMLPPT_CHECK(!LegacyLockWasRemoved(true, false, true));
+  // The normal legacy stop: this run wrote the lock and it is now gone.
+  HTMLPPT_CHECK(LegacyLockWasRemoved(true, false, false));
+  // A lock that still exists is not a stop.
+  HTMLPPT_CHECK(!LegacyLockWasRemoved(true, true, false));
+}
 
 HTMLPPT_TEST_CASE(compat_owns_and_deletes_its_flags) {
   TempDir dir;

@@ -3,7 +3,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "core/staging.h"
 
@@ -26,6 +31,12 @@ void WriteFile(const std::filesystem::path& path, const std::string& text) {
   std::filesystem::create_directories(path.parent_path(), error);
   std::ofstream out(path, std::ios::binary);
   out << text;
+}
+
+std::string ReadFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
 }
 
 ResolvedTarget MakeTarget(const std::filesystem::path& html,
@@ -111,6 +122,53 @@ HTMLPPT_TEST_CASE(staging_max_bytes_aborts_instead_of_truncating) {
   HTMLPPT_CHECK(outcome.error.find("maxBytes") != std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(dir, error);
+}
+
+HTMLPPT_TEST_CASE(staging_tree_does_not_overwrite_the_staged_html) {
+  const auto dir = MakeTempDir("htmlppt-staging-overwrite");
+  const auto root = dir / "pages";
+  // The target itself is pages/audit/index.html but lands as audit.html. A
+  // sibling pages/audit.html must not replace that staged page with its own
+  // bytes during the tree copy.
+  WriteFile(root / "audit" / "index.html", "<html>target</html>");
+  WriteFile(root / "audit.html", "<html>resource</html>");
+  auto target = MakeTarget(root / "audit" / "index.html", "tree", root);
+  target.stage_name = "audit.html";
+
+  const auto outcome = StageTargetHtml(target, dir / "stage", 0);
+  HTMLPPT_CHECK(outcome.staged);
+  HTMLPPT_CHECK_EQ(outcome.html_path, dir / "stage" / "audit.html");
+  const std::string staged = ReadFile(outcome.html_path);
+  HTMLPPT_CHECK(staged.find("target") != std::string::npos);
+  HTMLPPT_CHECK(staged.find("resource") == std::string::npos);
+
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
+
+// On Linux the iterator increment is the only way to reach an unreadable
+// subdirectory after the range-for constructor succeeded. The old range-for
+// threw filesystem_error out of StageTargetHtml; the error_code increment must
+// turn it into a staged=false outcome instead.
+HTMLPPT_TEST_CASE(staging_tree_unreadable_subdirectory_fails_cleanly) {
+#ifndef _WIN32
+  const auto dir = MakeTempDir("htmlppt-staging-unreadable");
+  const auto root = dir / "assets";
+  WriteFile(root / "page.html", "<html>tree</html>");
+  WriteFile(root / "blocked" / "asset.txt", "asset");
+  HTMLPPT_CHECK_EQ(::chmod((root / "blocked").c_str(), 0), 0);
+
+  const auto outcome =
+      StageTargetHtml(MakeTarget(root / "page.html", "tree", root),
+                      dir / "stage", 0);
+  HTMLPPT_CHECK_EQ(::chmod((root / "blocked").c_str(), 0700), 0);
+
+  HTMLPPT_CHECK(!outcome.staged);
+  HTMLPPT_CHECK(outcome.error.find("cannot read asset tree") !=
+                std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+#endif
 }
 
 HTMLPPT_TEST_CASE(staging_tree_mode_applies_include_and_exclude_globs) {

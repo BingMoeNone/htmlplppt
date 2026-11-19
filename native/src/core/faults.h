@@ -18,11 +18,12 @@ struct Faults {
   bool sleep_resume = false;     // inject a long suspend gap + resume
   bool multi_monitor = false;    // inject a display-topology change
   bool cleanup_slow = false;     // cleanup starts after a 3 s sleep (stop budget)
+  bool start_fail = false;       // WPS launch fails before the show starts
 };
 
 // Parses a comma- or space-separated list: com-hang, com-462, edge-slow, supervisor-loss,
-// cover-hang, focus-deny, sleep-resume, multi-monitor, cleanup-slow. Unknown
-// names are ignored so a typo cannot fail a demo run.
+// cover-hang, focus-deny, sleep-resume, multi-monitor, cleanup-slow, start-fail.
+// Unknown names are ignored so a typo cannot fail a demo run.
 Faults ParseFaults(std::string_view text);
 
 // Human-readable list of the active faults, empty when none are set. Used for
