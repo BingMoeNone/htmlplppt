@@ -307,11 +307,11 @@ void ReconcilePreviousRun(Journal& journal,
     detail += " previous=" + previous_run_id;
   }
   detail += " " + decision.reason;
-  AppendJournal(journal, run_id, "Supervisor", "reconcile", detail);
+  AppendJournal(journal, run_id, "", "reconcile", detail);
   if (!decision.kill_edge) return;
 
   const std::size_t killed = TerminatePids(edge_pids);
-  AppendJournal(journal, run_id, "Supervisor", "reconcile",
+  AppendJournal(journal, run_id, "", "reconcile",
                 "reconcile: killed " + std::to_string(killed) + " of " +
                     std::to_string(edge_pids.size()) + " edge processes");
 }
@@ -585,11 +585,28 @@ int RunStop(std::string_view run_id) {
     if (outcome.empty()) return std::nullopt;
     return outcome;
   };
+  // Only "clean" is a successful stop. A SafeMode end and a forced cleanup each
+  // report a non-zero exit, so a script cannot mistake a degraded run for a
+  // user-requested stop.
+  const auto report_outcome =
+      [&](const std::optional<std::string>& outcome) -> std::optional<int> {
+    if (!outcome.has_value()) return std::nullopt;
+    if (*outcome == "clean") return 0;
+    if (*outcome == "safemode") {
+      std::cerr << "error: run " << run_id << " ended in SafeMode\n";
+      return 3;
+    }
+    std::cerr << "error: run " << run_id
+              << " was stopped after a forced cleanup\n";
+    return 1;
+  };
   const std::wstring name = SupervisorStopEventName(run_id);
   HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
   if (event == nullptr) {
-    const auto outcome = read_outcome();
-    if (outcome.has_value() && *outcome == "clean") return 0;
+    if (const auto code = report_outcome(read_outcome());
+        code.has_value()) {
+      return *code;
+    }
     std::cerr << "error: no running supervisor for run " << run_id << "\n";
     return 1;
   }
@@ -609,8 +626,10 @@ int RunStop(std::string_view run_id) {
       // and a terminal retry, say) must see the same result instead of reading
       // an empty file and reporting a clean stop as a failure. The next
       // supervisor with this run id deletes it before starting.
-      const auto outcome = read_outcome();
-      if (outcome.has_value() && *outcome == "clean") return 0;
+      if (const auto code = report_outcome(read_outcome());
+          code.has_value()) {
+        return *code;
+      }
       std::cerr << "error: supervisor did not finish cleanup for run " << run_id
                 << "\n";
       return 1;
@@ -861,14 +880,14 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // that record would otherwise shadow the previous state and hide every
   // leftover the reconcile step exists to clean up.
   const std::vector<JournalRecord> previous_tail = journal.read_tail(50);
-  AppendJournal(journal, run_id, "Supervisor", "start", "supervisor start");
+  AppendJournal(journal, run_id, "", "start", "supervisor start");
   // A reload marker belongs to the run that was live when it was written. This
   // run owns the state dir now (the mutex above proves it), so a marker left by
   // an earlier run is stale: clearing it keeps the first safe point from
   // restarting the fresh worker for a reload nobody asked for.
   if (std::filesystem::exists(state_dir / "reload.request")) {
     if (ClearStaleReloadRequest(state_dir)) {
-      AppendJournal(journal, run_id, "Supervisor", "reload",
+      AppendJournal(journal, run_id, "", "reload",
                     "reload: cleared a stale request");
     } else {
       std::cerr << "warning: cannot clear a stale reload request in "
@@ -901,10 +920,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   for (const auto& warning : plan_warnings) {
     // Same "warn and journal" contract as the worker's global display path, so
     // an out-of-range per-target monitor is never a silent fallback.
-    AppendJournal(journal, run_id, "Plan", "display warning", warning);
+    AppendJournal(journal, run_id, "", "display warning", warning);
     std::cerr << "warning: " << warning << "\n";
   }
-  AppendJournal(journal, run_id, "Plan", "plan", "worker plan written");
+  AppendJournal(journal, run_id, "", "plan", "worker plan written");
   std::optional<DeckInfo> run_deck_info = std::move(startup_deck);
 
   NamedPipeServer server;
@@ -970,7 +989,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     cleanup("Faulted", "forced");
     return 1;
   }
-  AppendJournal(journal, run_id, "Worker", "start", "worker started");
+  AppendJournal(journal, run_id, "", "start", "worker started");
 
   const auto create_dump = [&](std::uint32_t pid) -> bool {
     const auto crash_dir = state_dir / "crash";
@@ -1000,6 +1019,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
 
   const auto apply = [&](const std::vector<SupervisorAction>& actions)
       -> std::optional<int> {
+    // A terminal batch can carry more than one action (SafeMode, then the legacy
+    // fallback). Record every action, tear the run down once, and return the
+    // most specific exit code after the loop instead of an early return that
+    // would silently drop the fallback.
+    std::optional<int> exit_code;
     for (const auto& action : actions) {
       switch (action.kind) {
         case SupervisorActionKind::StartWorker:
@@ -1007,10 +1031,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         case SupervisorActionKind::RequestDump:
           if (worker.pid() != 0) {
             if (create_dump(worker.pid())) {
-              AppendJournal(journal, run_id, "Worker", "dump",
+              AppendJournal(journal, run_id, "", "dump",
                             "dump requested");
             } else {
-              AppendJournal(journal, run_id, "Worker", "dump",
+              AppendJournal(journal, run_id, "", "dump",
                             "dump request failed");
             }
           }
@@ -1023,20 +1047,20 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             channel.reset();
           }
           server.Close();
-          AppendJournal(journal, run_id, "Worker", "terminate",
+          AppendJournal(journal, run_id, "", "terminate",
                         "worker terminated");
           break;
         case SupervisorActionKind::RestartWorker:
           channel.reset();
           server.Close();
           if (!server.Create(SupervisorPipeName(run_id)) || !launch_worker()) {
-            AppendJournal(journal, run_id, "Worker", "restart",
+            AppendJournal(journal, run_id, "", "restart",
                           "worker restart failed");
             cleanup("Faulted", "forced");
             return 1;
           }
           worker_lost = false;
-          AppendJournal(journal, run_id, "Worker", "restart",
+          AppendJournal(journal, run_id, "", "restart",
                         "worker restarted");
           // A replacement process starts its heartbeat sequence over, so the
           // liveness trackers of the dead worker must not judge it: without
@@ -1046,18 +1070,24 @@ int RunSupervisor(const SupervisorRunOptions& options) {
           break;
         case SupervisorActionKind::EnterSafeMode:
           AppendJournal(journal, run_id, "SafeMode", "action", action.detail);
-          cleanup("SafeMode");
-          return 3;
+          if (!exit_code.has_value()) exit_code = 3;
+          break;
         case SupervisorActionKind::RunLegacyFallback:
           AppendJournal(journal, run_id, "SafeMode", "legacy", action.detail);
-          cleanup("SafeMode");
-          return 4;
+          // The legacy fallback is the more specific outcome of a safe mode.
+          exit_code = 4;
+          break;
         case SupervisorActionKind::StopComplete:
           cleanup();
           return 0;
       }
     }
-    return std::nullopt;
+    if (exit_code.has_value()) {
+      // The outcome is not "clean": --stop must not report a clean stop for a
+      // run that ended degraded.
+      cleanup("SafeMode", "safemode");
+    }
+    return exit_code;
   };
 
   // Set when the worker's final Cleanup frame arrives. Combined with exit code
@@ -1161,11 +1191,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         channel->Send(frame);
         const bool exited = worker.WaitForExit(kWorkerStopCleanupTimeoutMs);
         clean = exited;
-        if (exited && last_worker_state.has_value() &&
-            *last_worker_state != static_cast<std::uint8_t>(State::Boot)) {
-          // A worker that reached the loop and then failed to exit cleanly did
-          // not finish its cleanup; the next start must reconcile leftover
-          // state instead of trusting an "Exited" record.
+        if (exited) {
+          // Any non-zero exit means the worker did not finish its cleanup,
+          // including a worker that crashed before its first heartbeat: the Boot
+          // state is not an exemption, or a start-up crash would be reported --
+          // and reconciled -- as a clean stop.
           DWORD worker_code = 0;
           if (GetExitCodeProcess(worker.process(), &worker_code) != 0 &&
               worker_code != 0) {
@@ -1182,7 +1212,7 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         // to restart it; its cleanup guards never ran, so this stop is forced.
         clean = false;
       }
-      AppendJournal(journal, run_id, "Worker", "stop",
+      AppendJournal(journal, run_id, "", "stop",
                     clean ? "worker exited after cleanup"
                           : "stop forced before cleanup");
       cleanup(clean ? "Exited" : "Faulted", clean ? "clean" : "forced");
@@ -1393,14 +1423,14 @@ int RunSupervisor(const SupervisorRunOptions& options) {
         const bool exited = worker.WaitForExit(2000);
         if (exited && GetExitCodeProcess(worker.process(), &worker_code) != 0 &&
             worker_code == 0) {
-          AppendJournal(journal, run_id, "Worker", "clean exit",
+          AppendJournal(journal, run_id, "", "clean exit",
                         "worker exited after cleanup");
           cleanup();
           return 0;
         }
         if (!exited) job.Terminate();
       }
-      AppendJournal(journal, run_id, "Worker", "exit", "worker exited");
+      AppendJournal(journal, run_id, "", "exit", "worker exited");
       // This worker did not end cleanly, so the next process must not inherit
       // its Cleanup flag. A pending reload pause died with it; the request file
       // stays and is retried against the replacement.
