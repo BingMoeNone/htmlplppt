@@ -100,6 +100,12 @@ bool WorkerRuntime::Step() {
   ObserveShow();
   ObserveCover();
   ObserveEdge();
+  if (pending_stop_.has_value() && host_.faults.cleanup_slow &&
+      !injected_cleanup_slow_) {
+    injected_cleanup_slow_ = true;
+    AppendJournal("fault injected: cleanup-slow (3000 ms)");
+    ports_.clock.sleep_until(ports_.clock.now() + Duration{3000});
+  }
   if (pending_stop_.has_value()) {
     std::string reason = std::move(*pending_stop_);
     pending_stop_.reset();
@@ -345,6 +351,13 @@ void WorkerRuntime::Execute(const Action& action) {
       LaunchEdge(action.slide);
       break;
     case ActionKind::KillEdge:
+      if (machine_.state() == State::Faulted) {
+        // A failed ResumeShow keeps Edge and its renamed title alive: that is
+        // the retry signal ObserveEdge reads after return_retry_interval. The
+        // cleanup and structural-failure paths close Edge from their own states.
+        AppendJournal("keep Edge for return retry");
+        break;
+      }
       edge_.Kill();
       // The runtime ended the process itself: stop observing it so the next
       // step cannot report a closure that the runtime already caused.

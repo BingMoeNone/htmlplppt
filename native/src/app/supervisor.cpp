@@ -65,6 +65,31 @@ std::int64_t NowMs() {
       .count();
 }
 
+// A worker's cleanup can block in ExitShow/FocusWps for ~6 s and then has to
+// tear down its temp dir, flags and lock. The old fixed 2 s wait killed it in
+// the middle of that work and still reported a clean stop.
+constexpr std::uint32_t kWorkerStopCleanupTimeoutMs = 10000;
+
+// --stop cannot see the supervisor's exit code: the stop event is closed before
+// the process returns. The supervisor writes this small outcome file before
+// closing the event, and --stop reads it to distinguish a clean stop from a
+// forced one. The run id is sanitized so a hostile value cannot escape the temp
+// directory.
+std::string SafeRunId(std::string_view run_id) {
+  std::string safe;
+  safe.reserve(run_id.size());
+  for (const char c : run_id) {
+    const auto byte = static_cast<unsigned char>(c);
+    safe.push_back(std::isalnum(byte) != 0 || c == '-' || c == '_' ? c : '_');
+  }
+  return safe;
+}
+
+std::filesystem::path StopStatusPath(std::string_view run_id) {
+  return std::filesystem::temp_directory_path() /
+         ("htmlppt-stop-" + SafeRunId(run_id) + ".status");
+}
+
 std::filesystem::path DefaultStateDir() {
   wchar_t buffer[MAX_PATH] = {};
   const DWORD length =
@@ -463,12 +488,27 @@ int RunStop(std::string_view run_id) {
   SetEvent(event);
   CloseHandle(event);
   // The supervisor closes the event as its last cleanup step; wait for that
-  // so --stop returns only after worker termination and journal flush.
+  // so --stop returns only after worker termination and journal flush. The
+  // supervisor itself waits up to kWorkerStopCleanupTimeoutMs for the worker,
+  // so this outer bound has to include that budget.
   const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::seconds(10);
+                        std::chrono::seconds(20);
   for (;;) {
     HANDLE probe = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
-    if (probe == nullptr) return 0;
+    if (probe == nullptr) {
+      // Event gone: read the outcome the supervisor wrote before closing it.
+      const auto status_path = StopStatusPath(run_id);
+      std::ifstream status(status_path, std::ios::binary);
+      std::string outcome;
+      status >> outcome;
+      status.close();
+      std::error_code remove_error;
+      std::filesystem::remove(status_path, remove_error);
+      if (outcome == "clean") return 0;
+      std::cerr << "error: supervisor did not finish cleanup for run " << run_id
+                << "\n";
+      return 1;
+    }
     CloseHandle(probe);
     if (std::chrono::steady_clock::now() >= deadline) {
       std::cerr << "error: supervisor cleanup timed out for run " << run_id
@@ -607,6 +647,10 @@ int RunSupervisor(const SupervisorRunOptions& options) {
     return 1;
   }
   ResetEvent(stop_event);
+  // A stale outcome from a previous run with the same id must not make a
+  // crashed supervisor look like a clean stop.
+  std::error_code stop_status_error;
+  std::filesystem::remove(StopStatusPath(run_id), stop_status_error);
 
   const auto identity = MakeInstanceIdentity(state_dir, "supervisor");
   const std::wstring mutex_name(identity.mutex_name.begin(),
@@ -864,16 +908,41 @@ int RunSupervisor(const SupervisorRunOptions& options) {
 
   for (;;) {
     if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+      bool clean = true;
       if (channel != nullptr) {
         Frame frame;
         frame.header.type = FrameType::Stop;
         frame.header.sequence = 1;
         frame.header.timestamp_ms = static_cast<std::uint64_t>(NowMs());
         channel->Send(frame);
-        worker.WaitForExit(2000);
+        const bool exited = worker.WaitForExit(kWorkerStopCleanupTimeoutMs);
+        clean = exited;
+        if (exited && last_worker_state.has_value() &&
+            *last_worker_state != static_cast<std::uint8_t>(State::Boot)) {
+          // A worker that reached the loop and then failed to exit cleanly did
+          // not finish its cleanup; the next start must reconcile leftover
+          // state instead of trusting an "Exited" record.
+          DWORD worker_code = 0;
+          if (GetExitCodeProcess(worker.process(), &worker_code) != 0 &&
+              worker_code != 0) {
+            clean = false;
+          }
+        }
+        if (!exited) {
+          job.Terminate();
+          worker.WaitForExit(2000);
+        }
       }
-      cleanup();
-      return 0;
+      AppendJournal(journal, run_id, "Worker", "stop",
+                    clean ? "worker exited after cleanup"
+                          : "stop forced before cleanup");
+      {
+        std::ofstream status(StopStatusPath(run_id),
+                             std::ios::binary | std::ios::trunc);
+        if (status) status << (clean ? "clean" : "forced");
+      }
+      cleanup(clean ? "Exited" : "Faulted");
+      return clean ? 0 : 1;
     }
 
     bool worker_exited = false;

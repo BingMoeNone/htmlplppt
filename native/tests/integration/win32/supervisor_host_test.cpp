@@ -215,6 +215,32 @@ class WpsTestProcesses {
   std::vector<std::uint32_t> before_;
 };
 
+// Sets a process environment variable for the duration of a test: the
+// supervisor and its worker inherit it, which is how fault injection travels.
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const wchar_t* name, const wchar_t* value) : name_(name) {
+    const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (size > 0) {
+      saved_.resize(size);
+      GetEnvironmentVariableW(name, saved_.data(), size);
+      saved_.resize(size - 1);
+    }
+    SetEnvironmentVariableW(name, value);
+  }
+  ~ScopedEnvVar() {
+    SetEnvironmentVariableW(name_.c_str(),
+                            saved_.empty() ? nullptr : saved_.c_str());
+  }
+
+  ScopedEnvVar(const ScopedEnvVar&) = delete;
+  ScopedEnvVar& operator=(const ScopedEnvVar&) = delete;
+
+ private:
+  std::wstring name_;
+  std::wstring saved_;
+};
+
 } // namespace
 
 HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
@@ -715,13 +741,76 @@ HTMLPPT_TEST_CASE(win32_cli_stop) {
 
   const auto stop_result = RunCli(
       {L"--stop", L"--run-id", std::wstring(run_id.begin(), run_id.end())},
-      5000);
+      20000);
   HTMLPPT_CHECK(stop_result.completed);
   HTMLPPT_CHECK_EQ(stop_result.exit_code, DWORD{0});
-  HTMLPPT_CHECK(supervisor.WaitForExit(10000));
+  HTMLPPT_CHECK(supervisor.WaitForExit(20000));
   DWORD exit_code = 0;
   GetExitCodeProcess(supervisor.process(), &exit_code);
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
+// A stop must wait for the worker's own cleanup instead of force-killing it
+// after a fixed 2 s. cleanup-slow makes that phase outlast the old budget; the
+// worker's guards are what remove watcher.lock and flush watch-log.txt, so a
+// forced stop leaves both behind and --stop still used to return 0.
+HTMLPPT_TEST_CASE(win32_cli_stop_waits_for_slow_cleanup) {
+  if (!WpsInstalled()) {
+    std::cout << "SKIP: WPS not installed\n";
+    return;
+  }
+  ScopedEnvVar faults(L"HTMLPPT_FAULTS", L"cleanup-slow");
+  WpsTestProcesses wps_processes;
+  const auto state_dir = TempStateDir();
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  const std::string run_id = RunId();
+  JobHandle job;
+  ProcessHandle supervisor;
+  HTMLPPT_CHECK(job.Create());
+  HTMLPPT_CHECK(supervisor.LaunchSuspended(
+      ExePath(), SupervisorArgs(state_dir, run_id, inputs), job));
+  HTMLPPT_CHECK(supervisor.Resume());
+  HANDLE stop = WaitForStopEvent(
+      htmlppt::SupervisorStopEventName(run_id), 10000);
+  HTMLPPT_CHECK(stop != nullptr);
+
+  // Start the stop only after the worker opened the show: the slow phase under
+  // test is its cleanup, not the WPS startup.
+  bool saw_show_start = false;
+  for (int i = 0; i < 150; ++i) {
+    auto blackbox = SharedBlackbox::Open(
+        htmlppt::SupervisorBlackboxName(run_id));
+    if (blackbox != nullptr) {
+      for (const auto& record : blackbox->Snapshot()) {
+        if (std::string(record.detail).find("start show") != std::string::npos) {
+          saw_show_start = true;
+          break;
+        }
+      }
+    }
+    if (saw_show_start) break;
+    Sleep(100);
+  }
+  HTMLPPT_CHECK(saw_show_start);
+
+  SetEvent(stop);
+  CloseHandle(stop);
+  const auto stop_result = RunCli(
+      {L"--stop", L"--run-id", std::wstring(run_id.begin(), run_id.end())},
+      30000);
+  HTMLPPT_CHECK(stop_result.completed);
+  HTMLPPT_CHECK_EQ(stop_result.exit_code, DWORD{0});
+  HTMLPPT_CHECK(supervisor.WaitForExit(30000));
+  DWORD exit_code = 0;
+  GetExitCodeProcess(supervisor.process(), &exit_code);
+  HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  // These are written by the worker's cleanup guards, so they prove the stop
+  // waited for the worker instead of terminating it mid-cleanup.
+  HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"watcher.lock"));
+  const std::string watch_log = ReadTextFile(state_dir / L"watch-log.txt");
+  HTMLPPT_CHECK(watch_log.find("native watchdog stop") != std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }

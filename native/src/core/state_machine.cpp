@@ -313,13 +313,13 @@ std::vector<Action> StateMachine::OnCoverHold(const Event& event) {
     show_active_ = true;
     SetDeadline(TimeoutKind::CoverDone, event.at + ReturnCoverMaxHold());
     auto actions = Journal("resumed at slide " + std::to_string(slide), slide);
-    // Close Edge while the cover is still opaque. A page that only renamed its
-    // title (the documented TEF-LIVE-RETURN signal) would otherwise stay
-    // full-screen on top of the resumed show once the cover fades out. This is
-    // deliberately after the return request, so a failed resume can still be
-    // retried by watching the title.
-    actions.push_back({ActionKind::KillEdge, slide, "return: close Edge"});
+    // Resume before closing Edge: if the resume fails the machine enters
+    // Faulted, and the page's still-renamed Edge title is the signal that lets
+    // the operator (or the rate-limited retry) try the return again. Closing
+    // Edge first erases that signal. The cover stays opaque until the fade-out
+    // below, so Edge is still closed before it is revealed.
     actions.push_back({ActionKind::ResumeShow, slide, "resume WPS"});
+    actions.push_back({ActionKind::KillEdge, slide, "return: close Edge"});
     actions.push_back({ActionKind::FocusWps, slide, "focus WPS"});
     actions.push_back({ActionKind::CoverFadeOut, slide, "fade out cover"});
     return actions;
@@ -466,6 +466,13 @@ std::vector<Action> StateMachine::OnFailure(const Event& event) {
     com_window_.record(event.at);
     if (com_window_.expired(event.at)) {
       return HandleStructuralFailure("COM busy: " + event.detail);
+    }
+    // Startup goes through the same 2 s window as Monitoring: the first polls
+    // happen while WPS is still warming, and one Busy/Unavailable sample there
+    // must not skip the window and end the whole run in SafeMode. The next poll
+    // is the retry.
+    if (state_ == State::Warming || state_ == State::Boot) {
+      return Journal("transient COM failure while warming: " + event.detail);
     }
   }
   RetryOperation operation = RetryOperation::None;

@@ -171,6 +171,26 @@ HTMLPPT_TEST_CASE(worker_runtime_continuous_com_error_reaches_safe_mode) {
   HTMLPPT_CHECK(h.runtime.snapshot().safe_mode);
 }
 
+// Warming owns the same COM error window as Monitoring: one Busy poll right
+// after Start must not skip the window and jump to SafeMode. The worker keeps
+// polling, and only a contiguous outage longer than the window is structural.
+HTMLPPT_TEST_CASE(worker_runtime_warming_com_error_keeps_polling) {
+  WorkerHarness h;
+  h.presentation.show = MakeShowState(HostStatus::Busy, false, 0);
+  h.Start();
+  h.runtime.Step();                             // first COM error in Warming
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Warming);
+  HTMLPPT_CHECK(!h.runtime.snapshot().safe_mode);
+  HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "COM busy"));
+  h.advance(Duration{1000});
+  h.runtime.Step();                             // still inside the window
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Warming);
+  h.advance(Duration{1000});
+  h.runtime.Step();                             // window expired -> SafeMode
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::SafeMode);
+  HTMLPPT_CHECK(h.runtime.snapshot().safe_mode);
+}
+
 HTMLPPT_TEST_CASE(worker_runtime_fades_cover_in_holds_and_reports_done) {
   WorkerHarness h;
   h.config.startup_ignore = Duration{0};
@@ -410,6 +430,30 @@ HTMLPPT_TEST_CASE(worker_runtime_reports_return_failure_when_resume_show_fails) 
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "resume show failed"));
   HTMLPPT_CHECK(JournalContains(h.runtime.journal(), "WPS resume failed"));
   HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+}
+
+// A failed ResumeShow must keep Edge alive: the still-renamed title is the only
+// signal that can retry the return. Closing Edge in the same action batch used
+// to clear edge_pid_/return_sent_, so Faulted could never be left again and the
+// operator had to recover by hand.
+HTMLPPT_TEST_CASE(worker_runtime_keeps_edge_for_retry_after_failed_resume) {
+  WorkerHarness h = HLiveAtSlide1();
+  h.windows.windows = {MakeWindow(2, h.launcher.pid, "TEF-LIVE-RETURN")};
+  h.runtime.Step();                             // ReturnRequested -> Returning
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  h.presentation.fail_next_resume = true;
+  h.advance(h.host.cover.fade + h.host.cover.hold + Duration{1});
+  h.runtime.Step();                             // ResumeShow fails -> Faulted
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+  HTMLPPT_CHECK_EQ(h.launcher.kill_calls, 0);   // Edge is still there to retry
+  h.advance(h.host.return_retry_interval - Duration{1});
+  h.runtime.Step();                             // one tick inside: no retry
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Faulted);
+  h.advance(Duration{1});
+  h.runtime.Step();                             // boundary: title retries return
+  HTMLPPT_CHECK_EQ(h.runtime.snapshot().state, State::Returning);
+  HTMLPPT_CHECK_EQ(h.presentation.resume_slides.size(), 1u);
+  HTMLPPT_CHECK_EQ(h.launcher.kill_calls, 0);
 }
 
 // Task 6: a stop request must run the machine's cleanup batch exactly once and

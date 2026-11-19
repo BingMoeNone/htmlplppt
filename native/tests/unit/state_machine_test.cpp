@@ -519,6 +519,26 @@ HTMLPPT_TEST_CASE(state_machine_return_kills_edge_before_the_cover_fades_out) {
   HTMLPPT_CHECK(HasAction(actions, ActionKind::ResumeShow));
 }
 
+HTMLPPT_TEST_CASE(state_machine_return_resumes_before_closing_edge) {
+  Machine m;
+  m.ReachLive();
+  m.machine->Handle(MakeReturnRequested(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::Returning);
+  m.Advance(2000);  // the host fade completes; CoverHold is a host event
+  const auto actions = m.machine->Handle(MakeCoverHold(m.clock.now()));
+  HTMLPPT_CHECK(m.machine->state() == State::ReturnCoverOut);
+  std::size_t resume_index = actions.size();
+  std::size_t kill_index = actions.size();
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    if (actions[i].kind == ActionKind::ResumeShow) resume_index = i;
+    if (actions[i].kind == ActionKind::KillEdge) kill_index = i;
+  }
+  // Resume first: if it fails the runtime enters Faulted, and the page's still
+  // renamed title is the retry signal. Closing Edge first erases that signal.
+  HTMLPPT_CHECK(resume_index < kill_index);
+  HTMLPPT_CHECK(kill_index < actions.size());
+}
+
 HTMLPPT_TEST_CASE(state_machine_structural_failure_enters_safe_mode) {
   Machine m;
   const auto actions = m.machine->Handle(

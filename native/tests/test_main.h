@@ -69,10 +69,13 @@ inline int run_all() {
     }                                                                 \
   } while (0)
 
+// CHECK_EQ copies both operands. Binding `const auto&` to model.rows()[i]
+// would dangle: the temporary vector dies at the end of the declaration, so a
+// later comparison reads freed storage. Copy the value before that happens.
 #define HTMLPPT_CHECK_EQ(lhs, rhs)                                    \
   do {                                                                \
-    const auto& left_value = (lhs);                                   \
-    const auto& right_value = (rhs);                                  \
+    const auto left_value = (lhs);                                    \
+    const auto right_value = (rhs);                                   \
     if (!(left_value == right_value)) {                               \
       std::ostringstream message;                                     \
       message << __FILE__ << ":" << __LINE__                          \

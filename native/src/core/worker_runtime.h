@@ -165,6 +165,9 @@ class WorkerRuntime : public WorkerDriver {
   ClockPoint last_step_time_{};
   bool injected_sleep_resume_ = false;
   bool injected_multi_monitor_ = false;
+  // The cleanup-slow fault sleeps once, before the cleanup batch starts, so the
+  // supervisor's stop budget is exercised instead of its old fixed 2 s wait.
+  bool injected_cleanup_slow_ = false;
   // The session's heartbeat safe-point flag; set only while the loop is parked in
   // Monitoring. Owned by the caller (RunWorkerSession's loop stack).
   std::atomic<bool>* safe_point_ = nullptr;

@@ -292,6 +292,7 @@ so the resilience paths can be exercised on a real machine without wedging WPS:
 | `supervisor-loss` | the worker is told the supervisor is gone at start; the loop must continue |
 | `sleep-resume` | injects a 60 s suspend gap and a resume, exercising the deadline shift |
 | `multi-monitor` | injects a display-topology change (half-size reference metrics) |
+| `cleanup-slow` | delays the cleanup batch by 3 s, so `--stop` must outwait it instead of force-killing the worker |
 
 The worker journals `faults: <list>` into the black box and prints a warning, so
 an injected run is never silent:
