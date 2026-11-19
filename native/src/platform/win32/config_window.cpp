@@ -944,18 +944,17 @@ void ConfigWindow::StopWatchdogPoll() {
 bool ConfigWindow::HandleEditorKey(bool focus_in_edit, bool ctrl, bool shift,
                                    int vk) {
   if (!ctrl) return false;
+  // A focused detail EDIT owns the whole text-editing shortcut family. Running
+  // the model's undo or redo here would repopulate the pane and silently drop
+  // text typed but not Applied yet, so every Ctrl+Z/Y variant falls through to
+  // the control (a single-line EDIT has native undo; redo is simply a no-op).
+  if (focus_in_edit) return false;
   ToolbarHandler* handler = nullptr;
   const wchar_t* fallback = nullptr;
   if (vk == 'Z') {
     if (shift) {
       handler = &redo_handler_;
       fallback = L"cannot redo";
-    } else if (focus_in_edit) {
-      // The focused detail EDIT owns its plain Ctrl+Z: leave the key to the
-      // control's native text undo instead of undoing the whole model. Ctrl+Y
-      // and Ctrl+Shift+Z stay editor redo below because a single-line EDIT has
-      // no native redo.
-      return false;
     } else {
       handler = &undo_handler_;
       fallback = L"cannot undo";

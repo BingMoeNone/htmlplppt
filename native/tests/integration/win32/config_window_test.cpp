@@ -1471,16 +1471,15 @@ HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
   HTMLPPT_CHECK_EQ(redos, 2);
   HTMLPPT_CHECK_EQ(undos, 1);
 
-  // Focus in a detail EDIT: plain Ctrl+Z belongs to the control's own text undo
-  // and is not consumed, so the user does not lose in-field undo. Ctrl+Y and
-  // Ctrl+Shift+Z stay editor redo because the single-line EDIT has no native
-  // redo.
+  // Focus in a detail EDIT: the control owns its text editing, so Ctrl+Z,
+  // Ctrl+Y and Ctrl+Shift+Z all fall through. Running the model's redo there
+  // would repopulate the pane and silently discard text the user has typed but
+  // not Applied yet.
   HTMLPPT_CHECK(!window.HandleEditorKey(true, true, false, 'Z'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK(window.HandleEditorKey(true, true, false, 'Y'));
-  HTMLPPT_CHECK_EQ(redos, 3);
-  HTMLPPT_CHECK(window.HandleEditorKey(true, true, true, 'Z'));
-  HTMLPPT_CHECK_EQ(redos, 4);
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, true, false, 'Y'));
+  HTMLPPT_CHECK(!window.HandleEditorKey(true, true, true, 'Z'));
+  HTMLPPT_CHECK_EQ(redos, 2);
   HTMLPPT_CHECK_EQ(undos, 1);
 
   HTMLPPT_CHECK(!window.HandleEditorKey(false, false, false, 'Z'));
@@ -1489,7 +1488,7 @@ HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
   HTMLPPT_CHECK(!window.HandleEditorKey(true, false, false, 'Z'));
   HTMLPPT_CHECK(!window.HandleEditorKey(true, false, false, 'Y'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK_EQ(redos, 4);
+  HTMLPPT_CHECK_EQ(redos, 2);
 
   // The WM_KEYDOWN route runs the same routing; without a physical Ctrl key
   // (a test cannot fake the thread's key state) an unrelated key must not
@@ -1526,7 +1525,7 @@ HTMLPPT_TEST_CASE(win32_config_window_routes_the_undo_and_redo_keys) {
   HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Z'));
   HTMLPPT_CHECK(window.HandleEditorKey(false, true, false, 'Y'));
   HTMLPPT_CHECK_EQ(undos, 1);
-  HTMLPPT_CHECK_EQ(redos, 4);
+  HTMLPPT_CHECK_EQ(redos, 2);
 
   window.Close();
   PumpUntilDestroyed(window.handle());
