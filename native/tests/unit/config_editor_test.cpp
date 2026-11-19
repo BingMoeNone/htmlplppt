@@ -446,6 +446,29 @@ HTMLPPT_TEST_CASE(config_editor_save_with_backup_round_trips_a_cjk_path) {
   HTMLPPT_CHECK_EQ(reloaded.config->active.targets.size(), std::size_t{1});
 }
 
+HTMLPPT_TEST_CASE(config_editor_ignores_an_edit_that_changes_nothing) {
+  const auto dir = MakeDir();
+  ConfigEditorModel model(MakeConfig(dir));
+  std::string error;
+  // Re-applying the current values must not arm Save or add an undo step: a
+  // no-op Apply otherwise looks like an edit and Ctrl+Z appears broken.
+  HTMLPPT_CHECK(model.SetSlide(0, 1, &error));
+  HTMLPPT_CHECK(model.SetHtml(0, "page1.html", &error));
+  HTMLPPT_CHECK(model.SetLabel(0, "One", &error));
+  HTMLPPT_CHECK(model.SetEnabled(0, true, &error));
+  htmlppt::TargetEdit edit;
+  edit.slide = 1;
+  edit.label = "One";
+  edit.html = "page1.html";
+  edit.enabled = true;
+  edit.assets_mode = "inherit";
+  HTMLPPT_CHECK(model.ApplyEdit(0, edit, &error));
+  HTMLPPT_CHECK(!model.dirty());
+  HTMLPPT_CHECK(!model.CanUndo());
+  std::error_code fs_error;
+  std::filesystem::remove_all(dir, fs_error);
+}
+
 HTMLPPT_TEST_CASE(config_editor_display_rows_mark_the_failing_target) {
   const auto dir = MakeDir();
   ConfigEditorModel model(MakeConfig(dir));

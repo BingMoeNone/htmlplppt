@@ -66,6 +66,7 @@ bool ConfigEditorModel::SetSlide(std::size_t index, int slide,
     if (error != nullptr) *error = "slide must be >= 1";
     return false;
   }
+  if (config_.active.targets[index].slide == slide) return true;
   RecordHistory();
   config_.active.targets[index].slide = slide;
   dirty_ = true;
@@ -79,6 +80,7 @@ bool ConfigEditorModel::SetHtml(std::size_t index, std::string html,
     if (error != nullptr) *error = "html must not be empty";
     return false;
   }
+  if (config_.active.targets[index].html == html) return true;
   RecordHistory();
   config_.active.targets[index].html = std::move(html);
   dirty_ = true;
@@ -88,6 +90,7 @@ bool ConfigEditorModel::SetHtml(std::size_t index, std::string html,
 bool ConfigEditorModel::SetLabel(std::size_t index, std::string label,
                                  std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
+  if (config_.active.targets[index].label == label) return true;
   RecordHistory();
   config_.active.targets[index].label = std::move(label);
   dirty_ = true;
@@ -97,6 +100,7 @@ bool ConfigEditorModel::SetLabel(std::size_t index, std::string label,
 bool ConfigEditorModel::SetEnabled(std::size_t index, bool enabled,
                                    std::string* error) {
   if (!CheckIndex(index, target_count(), error)) return false;
+  if (config_.active.targets[index].enabled == enabled) return true;
   RecordHistory();
   config_.active.targets[index].enabled = enabled;
   dirty_ = true;
@@ -180,6 +184,23 @@ bool ConfigEditorModel::ApplyEdit(std::size_t index, const TargetEdit& edit,
   if (edit.html.empty()) {
     if (error != nullptr) *error = "html must not be empty";
     return false;
+  }
+  // Applying the pane unchanged is not an edit: recording history and arming
+  // Save for a no-op makes undo look broken and the save prompt pointless.
+  const bool slide_changed = !match_target && target.slide != edit.slide;
+  const bool label_changed = target.label != edit.label;
+  const bool html_changed = target.html != edit.html;
+  const bool enabled_changed = target.enabled != edit.enabled;
+  bool assets_changed = false;
+  if (edit.assets_mode == "inherit") {
+    assets_changed = target.assets_set;
+  } else if (!edit.assets_mode.empty()) {
+    assets_changed =
+        !target.assets_set || target.assets.mode != edit.assets_mode;
+  }
+  if (!slide_changed && !label_changed && !html_changed && !enabled_changed &&
+      !assets_changed) {
+    return true;
   }
   RecordHistory();
   if (!match_target) target.slide = edit.slide;
