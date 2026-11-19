@@ -9,10 +9,29 @@ FlagWrite EmptyFlag(std::string_view name) {
   return FlagWrite{std::string(name), std::string{}};
 }
 
+// focus-agent.ps1 expects "<profile>|<exitFlag>|<readyFlag>" and writes the two
+// named files itself, so the payload carries the paths under the compat base
+// directory. Directories contain no "|", and the legacy parser splits on every
+// "|", so the field order is the whole contract.
+std::string AgentArmPayload(std::string_view edge_profile,
+                            std::string_view flag_dir) {
+  std::string payload(edge_profile);
+  payload += '|';
+  payload += flag_dir;
+  payload += '\\';
+  payload += kEdgeClosedFlag;
+  payload += '|';
+  payload += flag_dir;
+  payload += '\\';
+  payload += kCoverReadyFlag;
+  return payload;
+}
+
 } // namespace
 
 std::vector<FlagWrite> FlagsForStateTransition(State from, State to,
-                                               std::string_view edge_profile) {
+                                               std::string_view edge_profile,
+                                               std::string_view flag_dir) {
   // A step that publishes the same state is not a transition: a steady Live loop
   // must not rewrite cover-ready/agent-arm on every poll.
   if (from == to) return {};
@@ -22,7 +41,7 @@ std::vector<FlagWrite> FlagsForStateTransition(State from, State to,
     case State::Live:
       return {EmptyFlag(kCoverReadyFlag),
               FlagWrite{std::string(kAgentArmFlag),
-                        std::string(edge_profile) + "|exit=0|ready=1"}};
+                        AgentArmPayload(edge_profile, flag_dir)}};
     case State::SafeMode:
       return {EmptyFlag(kCoverHideFlag)};
     case State::Stopping:

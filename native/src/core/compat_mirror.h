@@ -18,14 +18,18 @@ struct FlagWrite {
 // Maps one state transition to the legacy flag files the worker must write, in
 // write order. Identical states and transitions the legacy protocol does not
 // signal return an empty vector. `edge_profile` is read only when entering Live,
-// where it becomes the agent-arm payload; every other row ignores it.
+// where it becomes the agent-arm profile; every other row ignores it.
+// `flag_dir` is the compat base directory (the folder the flag files live in);
+// it is read in the same row to spell the two paths the persistent focus agent
+// writes, with Windows separators. Both strings are only read on a transition
+// into Live.
 //
 // Covered transitions (each row is one flag file, in this order; the source
 // state may be any state except the destination itself):
 //
 //   -> CoverIn      cover-fade.flag   (empty)
 //   -> Live         cover-ready.flag  (empty)
-//                   agent-arm.flag    ("<edge_profile>|exit=0|ready=1")
+//                   agent-arm.flag    ("<edge_profile>|<flag_dir>\edge-closed.flag|<flag_dir>\cover-ready.flag")
 //   -> SafeMode     cover-hide.flag   (empty)
 //   -> Stopping     cover-stop.flag   (empty)
 //                   agent-stop.flag   (empty)
@@ -41,6 +45,7 @@ struct FlagWrite {
 // ReturnCoverOut before Monitoring. The literal Stopping and Live -> Monitoring
 // rows are kept for drivers that publish those transitions directly.
 std::vector<FlagWrite> FlagsForStateTransition(State from, State to,
-                                               std::string_view edge_profile);
+                                               std::string_view edge_profile,
+                                               std::string_view flag_dir);
 
 } // namespace htmlppt

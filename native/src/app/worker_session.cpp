@@ -203,8 +203,8 @@ std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
     if (from == snapshot.state) return;
     const std::string profile =
         edge_profile == nullptr ? std::string{} : edge_profile(snapshot);
-    for (const FlagWrite& row :
-         FlagsForStateTransition(from, snapshot.state, profile)) {
+    for (const FlagWrite& row : FlagsForStateTransition(
+             from, snapshot.state, profile, flags.base_dir().string())) {
       // A failed write must not claim a log line: the legacy tools read the log
       // as the history of what actually reached the filesystem.
       if (!flags.WriteFlag(row.name, row.payload)) continue;

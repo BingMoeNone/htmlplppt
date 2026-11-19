@@ -54,15 +54,18 @@ bool ValidateWorkerPlanRunId(const WorkerPlan& plan, std::string_view run_id,
                              std::string* error);
 
 // Builds the on_step callback RunWorker installs for the legacy flag mirror. The
-// returned callback is value-semantic and owns the previous state, so copying
-// WorkerSessionConfig around the loop cannot lose a transition; `initial_state`
+// returned callback captures `flags`, `log`, and `edge_profile` by reference and
+// shares its previous-state cursor with every copy of the callback, so the
+// caller must keep the two objects alive for the session's lifetime. `initial_state`
 // is the driver's state before the first Step. For every state change it asks
-// FlagsForStateTransition for the rows, writes each row through `flags` (which
-// stays ownership-aware and therefore never deletes another run's flags), and
-// appends one watch-log.txt line per successful write. `edge_profile` is read
-// only when the state enters Live, where it becomes the agent-arm payload, so
-// the caller can resolve the current target lazily. RunWorker is the only
-// production owner; the win32 suite installs the same callback on a fake driver.
+// FlagsForStateTransition for the rows (with the compat base directory, so the
+// agent-arm payload names the files focus-agent.ps1 writes), writes each row
+// through `flags` (which stays ownership-aware and therefore never deletes
+// another run's flags), and appends one watch-log.txt line per successful write.
+// `edge_profile` is read only when the state enters Live, where it becomes the
+// agent-arm profile, so the caller can resolve the current target lazily.
+// RunWorker is the only production owner; the win32 suite installs the same
+// callback on a fake driver.
 std::function<void(const StateSnapshot&)> MakeCompatFlagMirror(
     CompatFlags& flags, LegacyLog& log,
     std::function<std::string(const StateSnapshot&)> edge_profile,

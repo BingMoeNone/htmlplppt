@@ -34,6 +34,10 @@ class CompatFlags {
 
   const CompatIdentity& identity() const { return identity_; }
 
+  // The directory the legacy flag files live in. The flag mirror needs it to
+  // spell the two paths the persistent focus agent writes.
+  const std::filesystem::path& base_dir() const { return base_dir_; }
+
   bool WriteLock(std::string_view timestamp);
   bool WriteFlag(std::string_view name, std::string_view payload = {});
   std::string ReadFlag(std::string_view name) const;

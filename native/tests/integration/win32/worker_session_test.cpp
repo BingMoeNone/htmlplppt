@@ -714,10 +714,16 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_cycle)
   HTMLPPT_CHECK_EQ(rc, 0);
   HTMLPPT_CHECK(client_ok.load());
   HTMLPPT_CHECK(error.empty());
+  // focus-agent.ps1 reads the payload as "<profile>|<exitFlag>|<readyFlag>" and
+  // writes those two paths itself, so the mirror must name them under the
+  // compat directory instead of the legacy "exit=0|ready=1" pair.
+  const std::string flag_dir = dir.path().string();
+  const std::string agent_arm = "tef-live-page1|" + flag_dir +
+                                "\\edge-closed.flag|" + flag_dir +
+                                "\\cover-ready.flag";
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverFadeFlag), std::string{});
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverReadyFlag), std::string{});
-  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentArmFlag),
-                   std::string{"tef-live-page1|exit=0|ready=1"});
+  HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentArmFlag), agent_arm);
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kEdgeClosedFlag), std::string{});
   for (const std::string_view name :
        {htmlppt::kCoverDoneFlag, htmlppt::kCoverStopFlag,
@@ -743,8 +749,7 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_legacy_flags_for_a_scripted_live_cycle)
       static_cast<std::size_t>(
           std::count(watch_log.begin(), watch_log.end(), '\n')),
       static_cast<std::size_t>(4));
-  HTMLPPT_CHECK(watch_log.find("tef-live-page1|exit=0|ready=1") !=
-                std::string::npos);
+  HTMLPPT_CHECK(watch_log.find(agent_arm) != std::string::npos);
 
   // Another run's flag is untouched: the mirror is ownership-aware.
   HTMLPPT_CHECK_EQ(other.ReadFlag(htmlppt::kLockFile),
@@ -805,10 +810,12 @@ HTMLPPT_TEST_CASE(worker_session_mirrors_stop_flags_for_a_scripted_stop_to_exite
   HTMLPPT_CHECK_EQ(rc, 0);
   HTMLPPT_CHECK(client_ok.load());
   HTMLPPT_CHECK(error.empty());
+  const std::string flag_dir = dir.path().string();
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverFadeFlag), std::string{});
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverReadyFlag), std::string{});
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentArmFlag),
-                   std::string{"tef-live-page1|exit=0|ready=1"});
+                   "tef-live-page1|" + flag_dir + "\\edge-closed.flag|" +
+                       flag_dir + "\\cover-ready.flag");
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kCoverStopFlag), std::string{});
   HTMLPPT_CHECK_EQ(flags.ReadFlag(htmlppt::kAgentStopFlag), std::string{});
   // Leaving Live for Exited is a stop, not the return path: no edge-closed.
