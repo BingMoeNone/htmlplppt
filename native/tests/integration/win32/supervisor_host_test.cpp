@@ -280,6 +280,23 @@ class ScopedCurrentDir {
 
 } // namespace
 
+HTMLPPT_TEST_CASE(win32_cli_accepts_a_cjk_config_path) {
+  // The Windows CRT builds argv in the ANSI code page, so a config under a CJK
+  // directory used to arrive mangled and --validate failed with "cannot load".
+  // main() must parse the UTF-16 command line and hand the CLI UTF-8 instead.
+  const auto root = TempStateDir();
+  const auto state_dir = root / L"\u6F14\u793A";
+  std::filesystem::create_directories(state_dir);
+  const auto inputs = WriteSupervisorInputs(state_dir);
+  const CliResult result =
+      RunCli({L"--validate", L"--config", inputs.config.wstring(),
+              L"--deck-info", inputs.deck_info.wstring()});
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{0});
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+}
+
 HTMLPPT_TEST_CASE(win32_supervisor_fails_before_launch_on_bad_config) {
   const auto state_dir = TempStateDir();
   const auto inputs = WriteSupervisorInputs(state_dir);

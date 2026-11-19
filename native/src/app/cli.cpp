@@ -20,6 +20,7 @@
 #include "core/deck_info.h"
 #include "core/resolve.h"
 #include "core/run_id.h"
+#include "core/utf8_path.h"
 #include "core/version.h"
 
 namespace htmlppt {
@@ -435,7 +436,8 @@ struct LoadedConfig {
 };
 
 LoadedConfig LoadConfigForCommand(const CliOptions& options) {
-  auto loaded = LoadConfigFile(options.config_path, options.overrides);
+  auto loaded =
+      LoadConfigFile(PathFromUtf8(options.config_path), options.overrides);
   LoadedConfig result;
   result.config = std::move(loaded.config);
   result.issues = std::move(loaded.issues);
@@ -451,7 +453,7 @@ int RunValidate(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfo(options.deck_info_path, config);
+  auto deck_info = LoadDeckInfo(PathFromUtf8(options.deck_info_path), config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -480,7 +482,7 @@ int RunResolve(const CliOptions& options) {
   Config& config = *loaded.config;
   std::vector<ConfigIssue> issues = std::move(loaded.issues);
 
-  auto deck_info = LoadDeckInfo(options.deck_info_path, config);
+  auto deck_info = LoadDeckInfo(PathFromUtf8(options.deck_info_path), config);
   for (auto& issue : deck_info.issues) issues.push_back(std::move(issue));
 
   ResolveOptions resolve_options;
@@ -517,10 +519,10 @@ int RunCli(int argc, char** argv) {
   const std::string state_dir =
       parsed.options.overrides.state_dir.value_or("");
   SupervisorRunOptions run_options;
-  run_options.state_dir = state_dir;
+  run_options.state_dir = PathFromUtf8(state_dir);
   run_options.run_id = parsed.options.run_id;
-  run_options.config_path = parsed.options.config_path;
-  run_options.deck_info_path = parsed.options.deck_info_path;
+  run_options.config_path = PathFromUtf8(parsed.options.config_path);
+  run_options.deck_info_path = PathFromUtf8(parsed.options.deck_info_path);
   run_options.overrides = parsed.options.overrides;
   switch (parsed.options.command) {
     case Command::Version:
@@ -545,31 +547,34 @@ int RunCli(int argc, char** argv) {
     case Command::Stop:
       return RunStop(parsed.options.run_id);
     case Command::Reload:
-      return RunReload(parsed.options.run_id, state_dir);
+      return RunReload(parsed.options.run_id, PathFromUtf8(state_dir));
     case Command::Status:
-      return RunStatus(parsed.options.run_id, state_dir);
+      return RunStatus(parsed.options.run_id, PathFromUtf8(state_dir));
     case Command::Diagnostics: {
       if (parsed.options.diagnostics_out.empty()) {
         std::cerr << "error: --diagnostics requires --out PATH\n";
         return 2;
       }
-      const auto dir = state_dir.empty() ? std::filesystem::path{}
-                                         : std::filesystem::path(state_dir);
+      const auto dir =
+          state_dir.empty() ? std::filesystem::path{}
+                            : PathFromUtf8(state_dir);
       return RunDiagnostics(
           parsed.options.run_id, dir,
-          std::filesystem::path(parsed.options.config_path),
-          std::filesystem::path(parsed.options.diagnostics_out));
+          PathFromUtf8(parsed.options.config_path),
+          PathFromUtf8(parsed.options.diagnostics_out));
     }
     case Command::ConfigUi: {
       ConfigUiOptions config_ui_options;
-      config_ui_options.config_path = parsed.options.config_path;
-      config_ui_options.deck_info_path = parsed.options.deck_info_path;
+      config_ui_options.config_path =
+          PathFromUtf8(parsed.options.config_path);
+      config_ui_options.deck_info_path =
+          PathFromUtf8(parsed.options.deck_info_path);
       config_ui_options.allow_outside_folder =
           parsed.options.overrides.allow_outside_folder;
       return RunConfigUi(config_ui_options);
     }
     case Command::DumpHelper:
-      return RunDumpHelper(parsed.options.dump_pid, parsed.options.dump_path);
+      return RunDumpHelper(parsed.options.dump_pid, PathFromUtf8(parsed.options.dump_path));
   }
   return 2;
 }
