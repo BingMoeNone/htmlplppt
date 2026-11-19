@@ -802,6 +802,11 @@ int RunSupervisor(const SupervisorRunOptions& options) {
   // latch is set the request is ignored until the file disappears.
   bool reload_request_stuck = false;
 
+  // The last worker state already journalled. Reconciliation reads the last
+  // state record, so the worker's own states must reach journal.jsonl; the
+  // cursor keeps a steady Monitoring loop from writing one record per heartbeat.
+  std::optional<std::uint8_t> last_worker_state;
+
   // Hot reload: rebuild the plan exactly as startup does, then replace the
   // worker through the existing restart batch. A failed rebuild stops here and
   // keeps the old worker; the request is consumed so a broken config cannot
@@ -900,6 +905,20 @@ int RunSupervisor(const SupervisorRunOptions& options) {
             }
             if (auto code = apply(core.Handle(event)); code.has_value()) {
               return *code;
+            }
+
+            // Journal the worker's states so reconciliation can see where a
+            // crashed run really was. Transition-only: a steady Monitoring loop
+            // would otherwise append one record per heartbeat and drown the
+            // journal's signal.
+            if (payload.has_value() &&
+                (!last_worker_state.has_value() ||
+                 *last_worker_state != payload->state)) {
+              last_worker_state = payload->state;
+              const std::string state_name =
+                  StateName(static_cast<State>(payload->state));
+              AppendJournal(journal, run_id, state_name, "state",
+                            "worker state " + state_name);
             }
 
             // Hot reload (spec 9.6). --reload writes an empty request file;

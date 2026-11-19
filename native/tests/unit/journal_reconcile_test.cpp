@@ -64,6 +64,35 @@ HTMLPPT_TEST_CASE(reconcile_different_run_cleans_up) {
   HTMLPPT_CHECK(decision.hide_overlay);
 }
 
+// A run that stopped cleanly journals its terminal Exited state. That state is
+// already released, so the next start -- even under a different run id -- must
+// not "clean up" it and journal "left state behind"; it is clean with no
+// leftover actions to take.
+HTMLPPT_TEST_CASE(reconcile_exited_from_a_foreign_run_is_clean) {
+  ReconcileFacts facts;
+  facts.edge_process_alive = true;
+  facts.overlay_owned = true;
+  facts.can_restore_wps = true;
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-done", "Exited", 5)}, facts, "run-new");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Clean);
+  HTMLPPT_CHECK(!decision.kill_edge);
+  HTMLPPT_CHECK(!decision.hide_overlay);
+  HTMLPPT_CHECK(!decision.resume_wps);
+  HTMLPPT_CHECK_EQ(decision.target_slide, 5);
+  HTMLPPT_CHECK(decision.reason.find("exited cleanly") != std::string::npos);
+}
+
+HTMLPPT_TEST_CASE(reconcile_exited_after_stopping_is_clean) {
+  // The terminal state wins over a preceding Stopping record: LastStateRecord
+  // picks the most recent state, and a clean stop must not become a cleanup.
+  const auto decision = htmlppt::ReconcileStartup(
+      {Record("run-1", "Stopping", 5), Record("run-1", "Exited", 5)},
+      ReconcileFacts{}, "run-1");
+  HTMLPPT_CHECK(decision.outcome == ReconcileOutcome::Clean);
+  HTMLPPT_CHECK(decision.reason.find("exited cleanly") != std::string::npos);
+}
+
 HTMLPPT_TEST_CASE(reconcile_faulted_enters_safe_mode) {
   const auto decision = htmlppt::ReconcileStartup(
       {Record("run-1", "Faulted", 5)}, ReconcileFacts{}, "run-1");

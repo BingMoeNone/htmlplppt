@@ -18,6 +18,8 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "app/supervisor.h"
 #include "app/worker_session.h"
 #include "core/worker_plan.h"
@@ -266,6 +268,35 @@ HTMLPPT_TEST_CASE(win32_supervisor_reconciles_the_previous_journal) {
   std::filesystem::remove_all(state_dir, error);
 }
 
+// A1: a run that stopped cleanly records its terminal Exited state. The next
+// start for any run id must classify that as a clean previous run; treating it
+// as leftover state used to journal "reconcile: cleanup ... left state behind"
+// after every completed run.
+HTMLPPT_TEST_CASE(win32_supervisor_completed_run_reconciles_clean) {
+  const auto state_dir = TempStateDir();
+  {
+    std::ofstream journal(state_dir / L"journal.jsonl", std::ios::binary);
+    journal << "{\"event\":\"start\",\"state\":\"Exited\",\"run_id\":"
+               "\"done-run\",\"sequence\":0,\"timestamp\":"
+               "\"2026-01-01T00:00:00Z\",\"slide\":1,"
+               "\"detail\":\"supervisor stop\"}\n";
+  }
+  const std::string run_id = RunId();
+  const auto result = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(run_id.begin(), run_id.end())},
+      10000);
+  HTMLPPT_CHECK(result.completed);
+  HTMLPPT_CHECK_EQ(result.exit_code, DWORD{1});
+  const std::string journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(journal.find("reconcile: clean previous=done-run") !=
+                std::string::npos);
+  HTMLPPT_CHECK(journal.find("reconcile: cleanup") == std::string::npos);
+  std::error_code error;
+  std::filesystem::remove_all(state_dir, error);
+}
+
 // A1: a fresh state directory has no journal, so reconciliation must be a clean
 // no-op. This pins plan Review Focus #1: an empty journal can never drive the
 // startup into SafeMode.
@@ -426,12 +457,43 @@ HTMLPPT_TEST_CASE(win32_supervisor_starts_and_stops) {
   // watcher.lock next to the config while it is alive.
   HTMLPPT_CHECK(std::filesystem::exists(state_dir / L"watcher.lock"));
 
+  // The supervisor journals every worker state transition so reconciliation can
+  // see where a crashed run really was. Wait for the first transition before
+  // stopping; the throttle assertion below needs at least one record.
+  bool saw_state_record = false;
+  for (int i = 0; i < 100; ++i) {
+    if (ReadTextFile(state_dir / L"journal.jsonl")
+            .find("\"event\":\"state\"") != std::string::npos) {
+      saw_state_record = true;
+      break;
+    }
+    Sleep(50);
+  }
+  HTMLPPT_CHECK(saw_state_record);
+
   SetEvent(stop);
   CloseHandle(stop);
   HTMLPPT_CHECK(supervisor.WaitForExit(10000));
   DWORD exit_code = 0;
   GetExitCodeProcess(supervisor.process(), &exit_code);
   HTMLPPT_CHECK_EQ(exit_code, DWORD{0});
+  // Transition-only: a steady Monitoring heartbeat must not append one record
+  // per heartbeat, or every journal read would be flooded with duplicate states.
+  std::vector<std::string> journaled_states;
+  {
+    std::istringstream lines(ReadTextFile(state_dir / L"journal.jsonl"));
+    std::string line;
+    while (std::getline(lines, line)) {
+      const auto record = nlohmann::json::parse(line, nullptr, false);
+      if (record.is_discarded() || !record.is_object()) continue;
+      if (record.value("event", std::string{}) != "state") continue;
+      journaled_states.push_back(record.value("state", std::string{}));
+    }
+  }
+  HTMLPPT_CHECK(!journaled_states.empty());
+  for (std::size_t i = 1; i < journaled_states.size(); ++i) {
+    HTMLPPT_CHECK(journaled_states[i] != journaled_states[i - 1]);
+  }
   // On a clean stop the worker removes the flags it owns and flushes its
   // journal into watch-log.txt, which is what the VBS tooling reads.
   HTMLPPT_CHECK(!std::filesystem::exists(state_dir / L"watcher.lock"));
@@ -515,6 +577,21 @@ HTMLPPT_TEST_CASE(win32_supervisor_clean_worker_exit_is_terminal) {
   // The journal is JSONL: a restart is event "restart" with detail
   // "worker restarted", so match the detail text, not a display label.
   HTMLPPT_CHECK(journal.find("worker restarted") == std::string::npos);
+
+  // The completed run's next start reconciles it as clean: its terminal Exited
+  // record is not leftover state, so it must not journal "cleanup".
+  const std::string next_run_id = RunId() + "-next";
+  const auto next = RunCli(
+      {L"--supervisor", L"--config", (state_dir / L"missing.json").wstring(),
+       L"--state-dir", state_dir.wstring(), L"--run-id",
+       std::wstring(next_run_id.begin(), next_run_id.end())},
+      10000);
+  HTMLPPT_CHECK(next.completed);
+  HTMLPPT_CHECK_EQ(next.exit_code, DWORD{1});
+  const std::string next_journal = ReadTextFile(state_dir / L"journal.jsonl");
+  HTMLPPT_CHECK(next_journal.find("reconcile: clean previous=" + run_id) !=
+                std::string::npos);
+  HTMLPPT_CHECK(next_journal.find("reconcile: cleanup") == std::string::npos);
   std::error_code error;
   std::filesystem::remove_all(state_dir, error);
 }

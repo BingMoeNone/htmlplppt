@@ -29,6 +29,14 @@ ReconcileDecision ReconcileStartup(const std::vector<JournalRecord>& tail,
   const JournalRecord* last = LastStateRecord(tail);
   if (last == nullptr) return Clean("empty journal", 0);
 
+  // A completed run journals its terminal Exited state (the supervisor's own
+  // stop record). That run already released its resources, so it is clean no
+  // matter which run id owns the record; treating it as a foreign leftover used
+  // to journal "cleanup ... left state behind" after every completed run.
+  if (last->state == "Exited") {
+    return Clean("previous run exited cleanly", last->slide);
+  }
+
   ReconcileDecision decision;
   decision.target_slide = last->slide;
   const bool same_run = std::string_view(last->run_id) == run_id;
