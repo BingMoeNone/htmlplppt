@@ -74,6 +74,14 @@ enum class StartDecision {
 StartDecision DecideStart(bool supervisor_running, bool watchdog_live,
                           bool save_enabled, bool dirty);
 
+// True when the deck scan can run: the export opens and closes the deck through
+// the shared WPS instance, so scanning during a run ends the show the worker is
+// presenting. `watchdog_running` is the editor's own child (its cached view
+// flag), `supervisor_running` the state-dir mutex, and `watchdog_live` the
+// per-config watcher.lock. Any of them closes the gate.
+bool CanScanDeck(bool watchdog_running, bool supervisor_running,
+                 bool watchdog_live);
+
 #ifdef _WIN32
 // True when a supervisor owns the single-instance mutex for `state_dir`. The
 // supervisor holds it for its whole run and closes it as its last cleanup step,

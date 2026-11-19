@@ -205,6 +205,11 @@ class ConfigWindow {
   // reports the outcome.
   void SetScanHandler(ToolbarHandler handler);
   void SetThumbnailsHandler(std::function<void()> handler);
+  // The scan gate: closed while a watchdog owns the deck, because the export
+  // opens and closes the presentation the worker is showing. A click that still
+  // reaches the window while the gate is closed is ignored.
+  void SetScanEnabled(bool enabled);
+  bool scan_enabled() const { return scan_enabled_; }
   // The auto-mapping wizard (§9.3). The app owns the modal window and the model
   // import, and writes the success status ("imported N targets") itself; the
   // view only forwards the click and reports a rejection.
@@ -393,6 +398,7 @@ class ConfigWindow {
   std::function<int()> close_prompt_handler_;
   bool save_enabled_ = false;
   bool start_enabled_ = false;
+  bool scan_enabled_ = true;
   bool dirty_ = false;
   UINT dpi_ = 96;
 };

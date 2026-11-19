@@ -113,6 +113,11 @@ StartDecision DecideStart(bool supervisor_running, bool watchdog_live,
                       : StartDecision::BlockedConfig;
 }
 
+bool CanScanDeck(bool watchdog_running, bool supervisor_running,
+                 bool watchdog_live) {
+  return !watchdog_running && !supervisor_running && !watchdog_live;
+}
+
 #ifdef _WIN32
 namespace {
 

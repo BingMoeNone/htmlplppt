@@ -182,6 +182,25 @@ HTMLPPT_TEST_CASE(win32_decide_start_matrix) {
                 StartDecision::BlockedConfig);
 }
 
+// The deck scan is safe only while no run owns the config: the export opens and
+// closes the presentation through the shared WPS instance, which ends the show a
+// worker is presenting. Every liveness source must close the gate, including a
+// run started by another editor with another --state-dir (the lock probe).
+HTMLPPT_TEST_CASE(win32_can_scan_deck_matrix) {
+  HTMLPPT_CHECK(htmlppt::CanScanDeck(/*watchdog_running=*/false,
+                                     /*supervisor_running=*/false,
+                                     /*watchdog_live=*/false));
+  HTMLPPT_CHECK(!htmlppt::CanScanDeck(/*watchdog_running=*/true,
+                                      /*supervisor_running=*/false,
+                                      /*watchdog_live=*/false));
+  HTMLPPT_CHECK(!htmlppt::CanScanDeck(/*watchdog_running=*/false,
+                                      /*supervisor_running=*/true,
+                                      /*watchdog_live=*/false));
+  HTMLPPT_CHECK(!htmlppt::CanScanDeck(/*watchdog_running=*/false,
+                                      /*supervisor_running=*/false,
+                                      /*watchdog_live=*/true));
+}
+
 // The per-config gate reads the real compat lock, not the state dir: a worker
 // writes watcher.lock next to the config it was launched with, so a run started
 // from another editor (or with another --state-dir) is still detected.

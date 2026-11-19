@@ -907,6 +907,13 @@ void ConfigWindow::SetStartEnabled(bool enabled) {
   }
 }
 
+void ConfigWindow::SetScanEnabled(bool enabled) {
+  scan_enabled_ = enabled;
+  if (scan_button_ != nullptr) {
+    EnableWindow(scan_button_, enabled ? TRUE : FALSE);
+  }
+}
+
 void ConfigWindow::SetWatchdogPollHandler(std::function<void()> handler) {
   watchdog_poll_handler_ = std::move(handler);
 }
@@ -1075,6 +1082,10 @@ void ConfigWindow::ValidateConfig() {
 }
 
 void ConfigWindow::ScanDeck() {
+  // A disabled button already drops mouse clicks, but WM_COMMAND can still
+  // arrive (a queued message, a keyboard activation): never start an export
+  // that would close the presentation a worker is showing.
+  if (!scan_enabled_) return;
   if (!scan_handler_) return;
   std::wstring error;
   if (!scan_handler_(&error)) {

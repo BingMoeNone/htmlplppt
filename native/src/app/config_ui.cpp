@@ -272,6 +272,11 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
     const bool watchdog_live = IsWatchdogLiveForConfig(config_path);
     window.SetStartEnabled(!blocked && !profiles_blocked && !watchdog_running &&
                            !supervisor_running && !watchdog_live);
+    // Scanning opens and closes the deck through the shared WPS instance, which
+    // ends a show the watchdog is presenting; close the gate for every liveness
+    // source, not just this editor's child.
+    window.SetScanEnabled(
+        CanScanDeck(watchdog_running, supervisor_running, watchdog_live));
     window.SetDirty(model.dirty());
     if (profiles_blocked) return kMultiProfileSaveDisabled;
     if (!blocked) return {};
@@ -431,9 +436,21 @@ int RunConfigUi(const ConfigUiOptions& ui_options) {
   // kThumbnailsReadyMessage. The deck comes from the live model, so a scan
   // follows the config being edited rather than the file on disk.
   window.SetScanHandler([&window, &model, &scan_mutex, &scan_result,
-                         &scan_thread, thumbnail_dir](std::wstring* error) {
+                         &scan_thread, &watchdog_running, state_dir, config_path,
+                         thumbnail_dir](std::wstring* error) {
     if (scan_thread.joinable()) {
       if (error != nullptr) *error = L"a deck scan is already running";
+      return false;
+    }
+    // The export opens and closes the deck through the shared WPS instance, so
+    // it would end a show the watchdog is presenting. Probe at click time: the
+    // button's enabled state can be stale, and a run started by another editor
+    // never touches this editor's child flag.
+    if (!CanScanDeck(watchdog_running, IsSupervisorRunning(state_dir),
+                     IsWatchdogLiveForConfig(config_path))) {
+      if (error != nullptr) {
+        *error = L"stop the watchdog before scanning the deck";
+      }
       return false;
     }
     const std::filesystem::path deck = ResolveDeckPath(model.config());

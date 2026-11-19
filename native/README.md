@@ -347,7 +347,9 @@ same permission.
 3. **Add** appends a target with a placeholder HTML, **Remove** asks for
    confirmation and drops the selected target, and **Validate** re-runs the
    resolver and shows the first issue -- including a config-wide error such as a
-   missing deck, which has no row of its own.
+   missing deck, which has no row of its own. **Scan deck** exports one
+   thumbnail per slide; it stays disabled while a watchdog owns the config,
+   because the export opens and closes the deck WPS is presenting.
 4. **Save** stays disabled while the model is clean or blocked by an error. It
    writes a sibling temporary file and only then replaces the config, copying
    the previous contents to `<name>.bak`; a failed write never truncates the
@@ -418,7 +420,9 @@ journal path. `--reload` asks the live run to rebuild its plan: the supervisor
 pauses the worker at a safe point, waits for the paused heartbeat, rebuilds and
 replaces the process, and resumes the old worker if the rebuild fails. A reload
 cannot switch to a different deck (that needs a restart), because reopening the
-deck would close the one the running show uses. `--stop` sets the stop event and
+deck would close the one the running show uses. A request left behind by an
+earlier run is removed when the next run starts, so a stale marker cannot
+restart a fresh worker. `--stop` sets the stop event and
 returns after the supervisor has terminated the worker, flushed the journal, and
 closed its handles; it exits 0 after a clean stop. A config or deck that cannot
 be resolved fails before a worker is launched, journals the reason, and exits 1.

@@ -781,6 +781,49 @@ HTMLPPT_TEST_CASE(win32_config_window_forwards_the_scan_button) {
   HTMLPPT_CHECK(IsWindow(handle) == 0);
 }
 
+// The scan is also a view gate: while a run owns the deck the app disables the
+// button, and a click that still reaches the window (a queued command, a stale
+// keyboard activation) must not start an export that would close the live
+// presentation.
+HTMLPPT_TEST_CASE(win32_config_window_scan_follows_the_gate) {
+  htmlppt::ConfigWindow window;
+  htmlppt::ConfigWindowOptions options;
+  options.show = false;
+  HTMLPPT_CHECK(window.Create(options));
+  const HWND handle = window.handle();
+  HTMLPPT_CHECK(window.scan_button() != nullptr);
+  const auto click_scan = [&window] {
+    SendMessageW(window.handle(), WM_COMMAND,
+                 MAKEWPARAM(GetDlgCtrlID(window.scan_button()), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(window.scan_button()));
+  };
+
+  int scans = 0;
+  window.SetScanHandler([&scans](std::wstring* error) {
+    ++scans;
+    if (error != nullptr) error->clear();
+    return true;
+  });
+  click_scan();
+  HTMLPPT_CHECK_EQ(scans, 1);
+
+  window.SetScanEnabled(false);
+  HTMLPPT_CHECK(!window.scan_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.scan_button()) == 0);
+  click_scan();
+  HTMLPPT_CHECK_EQ(scans, 1);
+
+  window.SetScanEnabled(true);
+  HTMLPPT_CHECK(window.scan_enabled());
+  HTMLPPT_CHECK(IsWindowEnabled(window.scan_button()) != 0);
+  click_scan();
+  HTMLPPT_CHECK_EQ(scans, 2);
+
+  window.Close();
+  PumpUntilDestroyed(handle);
+  HTMLPPT_CHECK(IsWindow(handle) == 0);
+}
+
 // The mapping wizard is an app action like Scan: the view forwards the click,
 // the app owns the modal wizard and the "imported N targets" status, and a
 // rejection shows the app's reason (a deck without slide information, say).
